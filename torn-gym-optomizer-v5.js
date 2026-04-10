@@ -1,0 +1,1140 @@
+// ==UserScript==
+// @name         Torn Gym Optimizer — NC17
+// @namespace    NC17-GymOptimizer-v5
+// @version      5.0.0
+// @description  Multi-month gym planning with real-time energy tracking and daily progress
+// @author       Built for NC17 [1171127]
+// @match        https://www.torn.com/gym.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const API_KEY = '###PDA-APIKEY###';
+
+  const Store = {
+    get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); }        catch {} },
+  };
+  const KEYS = { ROT: 'nc17_rot', SET: 'nc17_set', COL: 'nc17_col', SNAP: 'nc17_snap' };
+
+  const MEM = {
+    view: 'main', collapsed: false,
+    stats: null, energy: null, settings: null, schedule: null, snap: null,
+    fetchError: null, fetchStarted: null,
+  };
+
+  const DEFAULTS = {
+    primaryGym:   'isoyamas',
+    secondaryGym: 'frontline',
+    ignoredStats: { def: false, str: false, spd: false, dex: true },
+    safetyM:      15,
+    dailyEnergy:  1000,
+    // STR/SPD ratio targets as % of total stats (DEX = 0 since ignored)
+    ratioTargets: { def: 40, str: 28, spd: 28, dex: 4 },
+    // Actual observed gain per train — fill in from your own training data
+    // 0 = use formula estimate instead
+    gainPerTrain: { isoTrain: 0, flTrain: 0 }, // e.g. isoTrain: 2100000, flTrain: 900000
+  };
+
+  const GYMS = {
+    isoyamas:     { def: 8.0, str: null, spd: null, dex: null },
+    frontline:    { def: null, str: 7.5, spd: 7.5,  dex: null },
+    gym3000:      { str: 8.0, def: null, spd: null,  dex: null },
+    totalrebound: { spd: 8.0, def: null, str: null,  dex: null },
+    balboas:      { def: 7.5, dex: 7.5, str: null,   spd: null },
+    elites:       { dex: 8.0, def: null, str: null,   spd: null },
+    georges:      { def: 7.3, str: 7.3, spd: 7.3,    dex: 7.3  },
+  };
+
+  const GYM_ENERGY = {
+    isoyamas: 50, gym3000: 50, totalrebound: 50, elites: 50,
+    frontline: 25, balboas: 25, georges: 10,
+  };
+
+  const GYM_NAME = {
+    isoyamas: "Mr. Isoyama's", frontline: 'Frontline Fitness',
+    gym3000: 'Gym 3000', totalrebound: 'Total Rebound',
+    balboas: "Balboa's", elites: 'Elites', georges: "George's",
+  };
+
+  const HANKS = { def: 36, str: 28.5, spd: 28.5, dex: 7 };
+
+  const LABEL = { def: 'Defense', str: 'Strength', spd: 'Speed', dex: 'Dexterity' };
+  const COLOR = { def: '#60aaff', str: '#ff7060', spd: '#40e880', dex: '#ffcc40' };
+  const STATS  = ['def', 'str', 'spd', 'dex'];
+
+  // ── GYM HELPERS ──────────────────────────────────────────────────────────────
+  function bestGym(stat, pg, sg) {
+    if (GYMS[pg]?.[stat] != null) return pg;
+    if (GYMS[sg]?.[stat] != null) return sg;
+    return 'georges';
+  }
+
+  function effMult(stat, buffs, pg, sg) {
+    const g = bestGym(stat, pg, sg);
+    const dots = GYMS[g][stat] || 0;
+    return dots * (1 + (buffs?.[stat] || 0) / 100);
+  }
+
+  // ── HEADROOM ─────────────────────────────────────────────────────────────────
+  function headrooms(s) {
+    const isoCeil = s.def / 1.25;
+    const flCeil  = (s.str + s.spd) / 1.25;
+    return {
+      def: Math.max(0, flCeil  - s.dex - s.def),
+      str: Math.max(0, isoCeil - s.str),
+      spd: Math.max(0, isoCeil - s.spd),
+      dex: Math.max(0, flCeil  - s.def - s.dex),
+    };
+  }
+
+  function gymOpen(s) {
+    return {
+      fl:  (s.str + s.spd) >= 1.25 * (s.def + s.dex),
+      iso: s.def >= 1.25 * Math.max(s.str, s.spd, s.dex),
+    };
+  }
+
+  // ── MULTI-MONTH PLANNER ───────────────────────────────────────────────────────
+  //
+  // Gain model:
+  //   gain_per_train = gymDots * buff * 4 * (0.00019106 * stat + 0.00226263 * happy + 0.55) * perks / 150 * ePerTrain
+  //   At NC17 stat ranges (~500-800M), happy ~5000, perks ~1.35:
+  //   Isoyama 50E DEF train: ~2.0-2.5M per train
+  //   Frontline 25E STR/SPD train: ~0.8-1.1M per train
+  //   We use the wiki formula with estimated happy=5000, perks=1.35
+  //
+  // Planning logic (in priority order):
+  //
+  // 1. Identify PEAK stats each month = those with the highest steadfast buff.
+  //
+  // 2. HEADROOM UNLOCK weighting: among peak stats, if training one stat
+  //    directly creates headroom for a DIFFERENT stat that is the target of a
+  //    FUTURE month, weight toward the unlocking stat proportionally to how much
+  //    headroom the next month needs. This is why DEF gets extra weight in April
+  //    even when STR is also peak — every DEF train adds 1/1.25 of SPD headroom
+  //    needed for May.
+  //
+  // 3. RATIO imbalance weighting: among stats sharing the same gym, weight
+  //    toward whichever is further below its ratio target.
+  //
+  // 4. FEASIBILITY CAP: if projected headroom for next month is insufficient
+  //    even training the unlocking stat exclusively, show the achievable % and
+  //    plan for what's actually possible, not an impossible ideal.
+  //
+  // 5. FORCED training: only if a non-peak stat will breach a constraint that
+  //    the peak stats cannot unlock (e.g. STR growing faster than DEF in a month
+  //    where only STR is peak and Isoyama's would close).
+
+  const HAPPY_EST = 5000;
+  const PERKS_EST = 1.35;
+
+  function gainPerTrain(stat, statVal, buffPct, gymKey) {
+    const dots = GYMS[gymKey]?.[stat] || 0;
+    if (!dots) return 0;
+    const buff      = 1 + buffPct / 100;
+    const ePerTrain = GYM_ENERGY[gymKey];
+    const cal       = MEM.settings?.gainPerTrain || {};
+    // Use calibrated value if set, otherwise fall back to formula
+    if (gymKey === 'isoyamas' && cal.isoTrain > 0) return cal.isoTrain * buff;
+    if ((gymKey === 'frontline' || gymKey === 'balboas') && cal.flTrain > 0) return cal.flTrain * buff;
+    return ((dots * 4) * ((0.00019106 * statVal) + (0.00226263 * HAPPY_EST) + 0.55)) * PERKS_EST / 150 * ePerTrain * buff;
+  }
+
+  function projGain(stat, statVal, buffPct, gymKey, energy) {
+    const ePerTrain = GYM_ENERGY[gymKey];
+    const trains = Math.floor(energy / ePerTrain);
+    return gainPerTrain(stat, statVal, buffPct, gymKey) * trains;
+  }
+
+  function ratioOf(s) {
+    const t = s.def + s.str + s.spd + s.dex;
+    if (!t) return { def:0, str:0, spd:0, dex:0 };
+    return { def: s.def/t*100, str: s.str/t*100, spd: s.spd/t*100, dex: s.dex/t*100 };
+  }
+
+  function planHorizon(startStats, schedule, settings) {
+    const ignored   = settings.ignoredStats || {};
+    const safetyPts = (settings.safetyM || 15) * 1e6;
+    const dailyE    = settings.dailyEnergy || 1000;
+    const ratio     = settings.ratioTargets || HANKS;
+    const active    = STATS.filter(s => !ignored[s]);
+
+    const GYM_FOR = {
+      def: settings.primaryGym,
+      str: settings.secondaryGym,
+      spd: settings.secondaryGym,
+      dex: 'georges',
+    };
+
+    let simStats = { ...startStats };
+    const now = new Date();
+    const months = [];
+
+    for (let mi = 0; mi < schedule.length; mi++) {
+      const rot = schedule[mi];
+      const [ry, rm] = rot.month.split('-').map(Number);
+      // Skip months before current
+      if (ry < now.getFullYear() || (ry === now.getFullYear() && rm - 1 < now.getMonth())) continue;
+
+      const buffs = rot.buffs || { def:0, str:0, spd:0, dex:0 };
+      const daysInMonth = new Date(ry, rm, 0).getDate();
+      const isCurrent = (ry === now.getFullYear() && rm - 1 === now.getMonth());
+      const days = isCurrent
+        ? (new Date(ry, rm, 0).getDate() - now.getDate() + 1)
+        : daysInMonth;
+      const totalE = dailyE * days;
+
+      // Step 1: identify peak-buff stats this month
+      const maxBuff = Math.max(...active.map(s => buffs[s] || 0));
+      const peakStats = active.filter(s => (buffs[s] || 0) === maxBuff);
+      const nonPeakStats = active.filter(s => !peakStats.includes(s));
+
+      // Step 2: look ahead — what does next month need?
+      const nextRot = schedule.find((r, i) => {
+        if (i <= mi) return false;
+        const [ny, nm] = r.month.split('-').map(Number);
+        return ny > ry || nm > rm;
+      });
+
+      // Identify next month's peak stats and what headroom they need
+      const nextHeadroomNeeded = {}; // stat → how much headroom needed for next month
+      if (nextRot) {
+        const nextBuffs = nextRot.buffs || {};
+        const nextMaxBuff = Math.max(...active.map(s => nextBuffs[s] || 0));
+        const nextPeakStats = active.filter(s => (nextBuffs[s]||0) === nextMaxBuff);
+        const nextDays = (() => { const [ny,nm] = nextRot.month.split('-').map(Number); return new Date(ny,nm,0).getDate(); })();
+        const nextTotalE = dailyE * nextDays;
+
+        for (const ns of nextPeakStats) {
+          const gk = GYM_FOR[ns];
+          const trains = Math.floor(nextTotalE / GYM_ENERGY[gk] / nextPeakStats.length);
+          const growth = gainPerTrain(ns, simStats[ns]||1e6, nextBuffs[ns]||0, gk) * trains;
+          // This stat needs `growth + safetyPts` of headroom going into next month
+          nextHeadroomNeeded[ns] = growth + safetyPts;
+        }
+      }
+
+      // Step 3: compute base weights for peak stats
+      // Base = equal share
+      // + ratio deficit bonus (stats behind target get more)
+      // + headroom unlock bonus (stats that create headroom for next month's targets get more)
+      const curRatios = ratioOf(simStats);
+      const hd = headrooms(simStats);
+
+      const weights = {};
+      for (const s of peakStats) {
+        weights[s] = 1.0; // base equal share
+
+        // Ratio deficit: how far below target
+        const deficit = Math.max(0, (ratio[s]||0) - curRatios[s]);
+        weights[s] += deficit * 0.3;
+
+        // Headroom unlock: does training this stat grow headroom for a next-month target?
+        // Training DEF grows SPD/STR headroom by gain/1.25 (Isoyama's ceiling rises)
+        // Training STR/SPD grows DEF headroom by gain/1.25 (Frontline ceiling lowers)
+        for (const [ns, needed] of Object.entries(nextHeadroomNeeded)) {
+          const currentHd = hd[ns] || 0;
+          const gap = Math.max(0, needed - currentHd);
+          if (gap <= 0) continue;
+
+          // Does training `s` help `ns`?
+          let unlockRate = 0;
+          if (ns === 'spd' || ns === 'str') {
+            // ns needs Isoyama's headroom = DEF/1.25 - ns
+            // Training DEF (s==='def') increases this by gain/1.25
+            if (s === 'def') unlockRate = 1 / 1.25;
+          }
+          if (ns === 'def') {
+            // ns needs Frontline headroom = (STR+SPD)/1.25 - DEF - DEX
+            // Training STR or SPD (s==='str'/'spd') increases this by gain/1.25
+            if (s === 'str' || s === 'spd') unlockRate = 1 / 1.25;
+          }
+
+          if (unlockRate > 0) {
+            // Bonus proportional to gap vs available gain this month
+            const gk = GYM_FOR[s];
+            const maxGainThisMonth = projGain(s, simStats[s]||1e6, buffs[s]||0, gk, totalE);
+            const unlockableGap = Math.min(gap, maxGainThisMonth * unlockRate);
+            const unlockFraction = gap > 0 ? unlockableGap / gap : 0;
+            weights[s] += unlockFraction * 2.0; // strong bonus for unlocking next month
+          }
+        }
+      }
+
+      // Normalize weights and compute splits
+      const totalWeight = Object.values(weights).reduce((a,b)=>a+b,0);
+      const splits = { def:0, str:0, spd:0, dex:0 };
+      peakStats.forEach(s => { splits[s] = Math.round((weights[s]/totalWeight) * totalE); });
+
+      // Clamp splits to valid train multiples and fix rounding
+      for (const s of peakStats) {
+        const ePerTrain = GYM_ENERGY[GYM_FOR[s]];
+        splits[s] = Math.floor(splits[s] / ePerTrain) * ePerTrain;
+      }
+      const splitSum = peakStats.reduce((a,s)=>a+splits[s],0);
+      const rem = totalE - splitSum;
+      if (rem > 0 && peakStats.length) {
+        // Give remainder to highest-weight stat (as extra trains if possible)
+        const topPeak = [...peakStats].sort((a,b)=>weights[b]-weights[a])[0];
+        const ePerTrain = GYM_ENERGY[GYM_FOR[topPeak]];
+        splits[topPeak] += Math.floor(rem / ePerTrain) * ePerTrain;
+      }
+
+      // Step 4: project end-of-month stats with this split
+      const projStats = { ...simStats };
+      for (const s of active) {
+        if (!splits[s]) continue;
+        projStats[s] = (projStats[s]||0) + projGain(s, simStats[s]||1e6, buffs[s]||0, GYM_FOR[s], splits[s]);
+      }
+
+      // Step 5: forced minimum for non-peak stats only if headroom gap can't be
+      // covered by peak stat training
+      const forcedTraining = {};
+      const forcedReasons = [];
+      for (const ns of nonPeakStats) {
+        const hd2 = headrooms(projStats);
+        if (hd2[ns] >= safetyPts) continue;
+        // How much do we need to train ns to get its headroom to safetyPts?
+        const gk = GYM_FOR[ns];
+        const ePerTrain = GYM_ENERGY[gk];
+        const gap = safetyPts - hd2[ns];
+        // Each ns train grows ns-headroom — for def: headroom grows by -1 (DEF threatens Frontline)
+        // Actually for non-peak breach: train the stat that RELIEVES the constraint
+        // If ns=def is threatening Frontline, we need more STR or SPD (which are peak anyway)
+        // If ns=str/spd threatening Isoyama's, we need more DEF
+        // This case only fires if DEF is non-peak and Isoyama's is threatened
+        const gainPT = gainPerTrain(ns, projStats[ns]||1e6, buffs[ns]||0, gk);
+        if (gainPT > 0) {
+          const trainsNeeded = Math.ceil(gap / (gainPT / 1.25));
+          const energyNeeded = trainsNeeded * ePerTrain;
+          if (energyNeeded > 0) {
+            forcedTraining[ns] = energyNeeded;
+            forcedReasons.push(`${LABEL[ns]}: ${trainsNeeded} trains (${GYM_NAME[gk]}) to maintain gym access`);
+            // Deduct from top peak stat
+            const topPeak = [...peakStats].sort((a,b)=>splits[b]-splits[a])[0];
+            if (topPeak) splits[topPeak] = Math.max(0, splits[topPeak] - energyNeeded);
+            splits[ns] = (splits[ns]||0) + energyNeeded;
+            // Update projection
+            projStats[ns] = (projStats[ns]||0) + projGain(ns, simStats[ns]||1e6, buffs[ns]||0, gk, energyNeeded);
+          }
+        }
+      }
+
+      // Step 6: compute headroom feasibility for next month's targets
+      const feasibility = {};
+      if (nextRot) {
+        const projHd = headrooms(projStats);
+        for (const [ns, needed] of Object.entries(nextHeadroomNeeded)) {
+          const available = projHd[ns] || 0;
+          feasibility[ns] = {
+            needed,
+            available,
+            pct: Math.min(100, Math.round(available / needed * 100)),
+            ok: available >= needed,
+          };
+        }
+      }
+
+      // Step 7: breach check
+      const projH = headrooms(projStats);
+      const breaches = [];
+      for (const s of active) {
+        if (projH[s] < safetyPts) {
+          breaches.push({ stat: s, room: projH[s], gym: s==='def'?'Frontline':"Isoyama's" });
+        }
+      }
+
+      // topTwo for Now instruction: highest-weighted peak stats
+      const topTwo = [...peakStats]
+        .sort((a,b) => (weights[b]||0) - (weights[a]||0))
+        .slice(0, 2)
+        .map(s => ({ stat: s, gym: GYM_FOR[s] }));
+
+      months.push({
+        month: rot.month, label: rot.label||rot.month, buffs, days, totalE,
+        peakStats, topTwo, splits, weights, forcedTraining, forcedReasons,
+        projStats, breaches, feasibility, isCurrent, GYM_FOR, maxBuff,
+      });
+      simStats = projStats;
+    }
+
+    return months;
+  }
+
+  // ── REAL-TIME INSTRUCTION ────────────────────────────────────────────────────
+  function buildInstruction(currentE, snap, stats, currentMonth, settings) {
+    if (!currentMonth) return null;
+    const { topTwo, splits, buffs, GYM_FOR } = currentMonth;
+    if (!topTwo || !topTwo.length) return null;
+
+    const primary   = topTwo[0]?.stat;
+    const secondary = topTwo[1]?.stat || null;
+    if (!primary) return null;
+
+    // Today's gains from snapshot
+    const gains = {};
+    STATS.forEach(s => { gains[s] = snap ? Math.max(0, (stats[s]||0) - (snap[s]||0)) : 0; });
+
+    // Which stat to train now: compare today's gain progress to planned split ratio
+    const totalGains = (gains[primary]||0) + (gains[secondary]||0);
+    const primaryGainFrac  = totalGains > 0 ? (gains[primary]||0) / totalGains : 0;
+    const totalSplit = (splits[primary]||0) + (splits[secondary]||0);
+    const primarySplitFrac = totalSplit > 0 ? (splits[primary]||0) / totalSplit : 0.6;
+    const trainStat = (primaryGainFrac <= primarySplitFrac || totalGains === 0)
+      ? primary : (secondary || primary);
+
+    const gymKey    = GYM_FOR[trainStat];
+    const ePerTrain = GYM_ENERGY[gymKey];
+    const trains    = Math.floor(currentE / ePerTrain);
+    const energyUsed = trains * ePerTrain;
+    const leftover  = currentE - energyUsed;
+
+    // Daily target gains for progress display
+    const dailyTargetGains = {};
+    const dailyE = settings.dailyEnergy || 1000;
+    for (const stat of [primary, secondary]) {
+      if (!stat || (settings.ignoredStats||{})[stat]) continue;
+      const gk = GYM_FOR[stat];
+      const monthlyE = splits[stat] || 0;
+      const totalMonthE = (splits[primary]||0) + (splits[secondary]||0);
+      const dailyShare = totalMonthE > 0
+        ? Math.round((monthlyE / totalMonthE) * dailyE)
+        : Math.round(dailyE / 2);
+      dailyTargetGains[stat] = projGain(stat, stats[stat]||1e6, buffs[stat]||0, gk, dailyShare);
+    }
+
+    return {
+      trainStat, gymKey, gymName: GYM_NAME[gymKey], ePerTrain,
+      trains, energyUsed, leftover, currentE,
+      gains, primary, secondary, dailyTargetGains, GYM_FOR,
+    };
+  }
+
+  // ── FORMAT ───────────────────────────────────────────────────────────────────
+  function fmt(n) {
+    if (n == null) return '—';
+    if (n >= 1e9) return (n/1e9).toFixed(3)+'B';
+    if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+    if (n >= 1e3) return (n/1e3).toFixed(0)+'K';
+    return String(Math.round(n));
+  }
+
+  function todayKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  function daysLeft() {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth()+1, 0).getDate() - n.getDate();
+  }
+
+  // ── SNAPSHOT ─────────────────────────────────────────────────────────────────
+  function updateSnap(stats) {
+    const today = todayKey();
+    const ex = (() => { try { return JSON.parse(Store.get(KEYS.SNAP)); } catch { return null; } })();
+    if (!ex || ex.date !== today) {
+      const snap = { date: today, ...stats };
+      Store.set(KEYS.SNAP, JSON.stringify(snap));
+      return snap;
+    }
+    return ex;
+  }
+
+  // ── API ──────────────────────────────────────────────────────────────────────
+
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(Store.get(KEYS.SET)) || {};
+      // Deep merge — nested objects get merged, not replaced
+      const merged = { ...DEFAULTS };
+      for (const key of Object.keys(DEFAULTS)) {
+        if (saved[key] !== undefined) {
+          if (typeof DEFAULTS[key] === 'object' && DEFAULTS[key] !== null && !Array.isArray(DEFAULTS[key])) {
+            merged[key] = { ...DEFAULTS[key], ...saved[key] };
+          } else {
+            merged[key] = saved[key];
+          }
+        }
+      }
+      return merged;
+    } catch { return { ...DEFAULTS }; }
+  }
+  function saveSettings(s) { Store.set(KEYS.SET, JSON.stringify(s)); }
+  // Pre-populated schedule — overridden by anything saved in localStorage
+  const DEFAULT_SCHEDULE = [
+  {
+    "month": "2026-04",
+    "buffs": {
+      "def": 14,
+      "str": 14,
+      "spd": 10,
+      "dex": 10
+    },
+    "label": "Apr \u2014 DEF/STR"
+  },
+  {
+    "month": "2026-05",
+    "buffs": {
+      "def": 10,
+      "str": 10,
+      "spd": 14,
+      "dex": 14
+    },
+    "label": "May \u2014 SPD/DEX"
+  },
+  {
+    "month": "2026-06",
+    "buffs": {
+      "def": 14,
+      "str": 14,
+      "spd": 10,
+      "dex": 10
+    },
+    "label": "Jun \u2014 DEF/STR"
+  },
+  {
+    "month": "2026-07",
+    "buffs": {
+      "def": 10,
+      "str": 10,
+      "spd": 14,
+      "dex": 14
+    },
+    "label": "Jul \u2014 SPD/DEX"
+  }
+];
+
+  function loadSchedule() {
+    try {
+      const saved = JSON.parse(Store.get(KEYS.ROT));
+      return (saved && saved.length) ? saved : DEFAULT_SCHEDULE;
+    } catch { return DEFAULT_SCHEDULE; }
+  }
+  function saveSchedule(s) { Store.set(KEYS.ROT, JSON.stringify(s)); }
+
+  // ── CSS ──────────────────────────────────────────────────────────────────────
+  const CSS = `
+    #nc17 {
+      position:fixed;top:10px;right:10px;width:300px;background:#12141c;
+      border:2px solid #404460;border-radius:10px;z-index:99999;
+      font-family:Georgia,serif;font-size:13px;color:#e8eaf8;
+      box-shadow:0 8px 32px rgba(0,0,0,0.85);touch-action:none;overflow:hidden;
+    }
+    #nc17 * { box-sizing:border-box; }
+    #nc17-hdr {
+      background:#1c1f2e;padding:11px 14px;border-bottom:2px solid #404460;
+      display:flex;justify-content:space-between;align-items:center;
+      cursor:grab;user-select:none;
+    }
+    #nc17-title {
+      font-size:11px;letter-spacing:2px;color:#b0bce0;font-weight:700;
+      text-transform:uppercase;font-family:'Courier New',monospace;
+    }
+    #nc17-tabs { display:flex;gap:6px; }
+    .nc17-tab {
+      font-size:10px;font-family:'Courier New',monospace;padding:4px 9px;
+      border:1px solid #505878;border-radius:4px;background:transparent;
+      color:#8898c8;cursor:pointer;pointer-events:all;
+    }
+    .nc17-tab.on { background:#2a3260;color:#d0e0ff;border-color:#7080d0; }
+    .nc17-sec { padding:14px 16px;border-bottom:1px solid #2a2d40; }
+    .nc17-sec:last-child { border-bottom:none; }
+    .nc17-lbl {
+      font-size:9px;letter-spacing:2px;color:#8090b8;text-transform:uppercase;
+      margin:0 0 12px 0;font-weight:700;font-family:'Courier New',monospace;display:block;
+    }
+    .nc17-crit {
+      background:#3a1010;border:1px solid #cc3030;border-radius:5px;
+      padding:10px 12px;margin-bottom:8px;font-size:12px;color:#ff9898;line-height:1.6;
+    }
+    .nc17-warn {
+      background:#2e2008;border:1px solid #aa7010;border-radius:5px;
+      padding:10px 12px;margin-bottom:8px;font-size:12px;color:#ffd870;line-height:1.6;
+    }
+    .nc17-cmd {
+      background:#181c2e;border:2px solid #4a5090;border-radius:8px;padding:16px;
+    }
+    .nc17-cmd-stat { font-size:26px;font-weight:700;margin-bottom:4px; }
+    .nc17-cmd-gym  { font-size:13px;color:#c0cce8;margin-bottom:12px;font-family:'Courier New',monospace; }
+    .nc17-cmd-trains { font-size:22px;font-weight:700;font-family:'Courier New',monospace;margin-bottom:4px; }
+    .nc17-cmd-detail { font-size:12px;color:#8090b8;font-family:'Courier New',monospace;line-height:2.0; }
+    .nc17-cmd-div { border-top:1px solid #2a2d40;margin:12px 0; }
+    .nc17-cmd-next { font-size:12px;margin-top:10px; }
+    .nc17-prog-row { display:flex;align-items:center;gap:12px;margin-bottom:14px; }
+    .nc17-prog-name { font-size:12px;width:68px; }
+    .nc17-prog-track { flex:1;height:10px;background:#1e2130;border-radius:5px;overflow:hidden; }
+    .nc17-prog-fill  { height:100%;border-radius:5px; }
+    .nc17-prog-val   { font-size:11px;font-family:'Courier New',monospace;color:#c0cce8;width:48px;text-align:right; }
+    .nc17-row {
+      display:flex;justify-content:space-between;align-items:center;
+      padding:10px 4px;border-bottom:1px solid #2a2d40;font-size:13px;
+    }
+    .nc17-row:last-child { border-bottom:none; }
+    .nc17-row-key { color:#c0cce8; }
+    .nc17-row-val { font-weight:700;font-size:14px;font-family:'Courier New',monospace; }
+    .nc17-pills { display:flex;gap:8px;margin-bottom:14px; }
+    .nc17-pill {
+      flex:1;text-align:center;padding:8px;border-radius:6px;border:2px solid;
+      font-size:13px;font-weight:700;font-family:'Courier New',monospace;
+    }
+    .nc17-pill.open   { border-color:#257535;background:#0d1a10;color:#60f090; }
+    .nc17-pill.closed { border-color:#752525;background:#1e0d0d;color:#ff7878; }
+    .nc17-pill-name { font-size:9px;letter-spacing:1px;opacity:0.8;margin-bottom:4px;font-weight:400; }
+    .nc17-stat-row {
+      display:flex;justify-content:space-between;
+      padding:10px 4px;border-bottom:1px solid #2a2d40;font-size:13px;
+    }
+    .nc17-stat-row:last-child { border-bottom:none; }
+    .nc17-plan-month { margin-bottom:20px; }
+    .nc17-plan-hdr {
+      font-size:11px;font-family:'Courier New',monospace;font-weight:700;
+      color:#a0b0e0;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid #2a2d40;
+    }
+    .nc17-plan-row {
+      display:flex;justify-content:space-between;
+      padding:9px 4px;border-bottom:1px solid #1e2130;font-size:12px;
+    }
+    .nc17-plan-row:last-child { border-bottom:none; }
+    .nc17-plan-breach { font-size:11px;color:#ffd870;margin-top:6px;font-family:'Courier New',monospace; }
+    .nc17-set-grp { margin-bottom:16px; }
+    .nc17-set-lbl {
+      font-size:9px;letter-spacing:2px;color:#8090b8;text-transform:uppercase;
+      margin-bottom:8px;font-weight:700;font-family:'Courier New',monospace;
+    }
+    .nc17-radios { display:flex;gap:8px;flex-wrap:wrap;margin-top:2px; }
+    .nc17-radio {
+      padding:6px 10px;border:1px solid #505878;border-radius:4px;
+      font-size:10px;font-family:'Courier New',monospace;color:#8898c8;
+      cursor:pointer;background:transparent;pointer-events:all;
+    }
+    .nc17-radio.on { background:#2a3260;color:#d0e0ff;border-color:#7080d0; }
+    .nc17-inp-row { display:flex;align-items:center;gap:8px;margin-bottom:12px; }
+    .nc17-inp-lbl { font-size:12px;color:#b0bce0;width:110px; }
+    .nc17-inp {
+      flex:1;background:#1c1f2e;border:1px solid #505878;border-radius:4px;
+      color:#e0e8ff;font-size:12px;font-family:'Courier New',monospace;
+      padding:6px 9px;outline:none;
+    }
+    .nc17-inp:focus { border-color:#7080d0; }
+    .nc17-inp-unit { font-size:11px;color:#6070a0; }
+    .nc17-rot-row { display:flex;align-items:center;gap:6px;margin-bottom:10px; }
+    .nc17-rot-month { font-size:10px;color:#8090b8;width:54px;font-family:'Courier New',monospace; }
+    .nc17-rot-tag   { font-size:9px;color:#6070a0;width:24px;text-align:center;font-family:'Courier New',monospace; }
+    .nc17-rot-inp {
+      width:36px;background:#1c1f2e;border:1px solid #505878;border-radius:3px;
+      color:#e0e8ff;font-size:11px;font-family:'Courier New',monospace;
+      padding:4px;text-align:center;outline:none;
+    }
+    .nc17-rot-inp:focus { border-color:#7080d0; }
+    .nc17-btn {
+      font-size:11px;font-family:'Courier New',monospace;letter-spacing:1px;
+      text-transform:uppercase;border:1px solid #5070c0;border-radius:5px;
+      background:#1e2a50;color:#90b8ff;cursor:pointer;padding:9px 18px;pointer-events:all;
+    }
+    .nc17-btn:active { background:#253060; }
+    #nc17-ftr {
+      padding:8px 16px;font-size:10px;color:#7080a8;
+      display:flex;justify-content:space-between;
+      border-top:1px solid #2a2d40;cursor:pointer;
+      font-family:'Courier New',monospace;letter-spacing:1px;
+    }
+    #nc17-ftr:active { color:#b0c0e0; }
+  `;
+
+  // ── RENDER ───────────────────────────────────────────────────────────────────
+  function render() {
+    // Always try to read current energy from DOM — it's live on the page
+    const domEnergy = readEnergyFromDOM();
+    if (domEnergy != null) MEM.energy = domEnergy;
+    const { stats, energy, settings, schedule, snap } = MEM;
+    let plan = [];
+    try { if (stats && settings && schedule) plan = planHorizon(stats, schedule, settings); }
+    catch(e) { console.error('[GymOpt] planHorizon error:', e); }
+    MEM._planLength = plan.length;
+    const curMonth = plan.find(m => m.isCurrent) || plan[0] || null;
+    let instr = null;
+    try { if (stats && curMonth) instr = buildInstruction(energy ?? 0, snap, stats, curMonth, settings); }
+    catch(e) { console.error('[GymOpt] buildInstruction error:', e); }
+    const open = gymOpen(stats || {def:0,str:0,spd:0,dex:0});
+    const hd   = stats ? headrooms(stats) : null;
+
+    if (!document.getElementById('nc17-css')) {
+      const s = document.createElement('style');
+      s.id = 'nc17-css'; s.textContent = CSS;
+      document.head.appendChild(s);
+    }
+
+    let panel = document.getElementById('nc17');
+    if (!panel) {
+      panel = document.createElement('div'); panel.id = 'nc17';
+      document.body.appendChild(panel);
+    }
+
+    try {
+      panel.innerHTML = buildHTML(stats, energy, settings, schedule, plan, curMonth, instr, open, hd);
+    } catch(e) {
+      panel.innerHTML = `<div style="padding:14px;color:#ff8080;font-family:'Courier New',monospace;font-size:11px;background:#12141c;border-radius:8px;">
+        Render error: ${e.message}<br><br>Please report this.
+      </div>`;
+      console.error('[GymOpt] render error:', e);
+    }
+    try { bindEvents(panel, settings, schedule); } catch(e) { console.error('[GymOpt] bindEvents error:', e); }
+    try { makeDraggable(panel.querySelector('#nc17-hdr'), panel); } catch {}
+  }
+
+  // ── HTML ─────────────────────────────────────────────────────────────────────
+  function buildHTML(stats, energy, settings, schedule, plan, curMonth, instr, open, hd) {
+    const col = MEM.collapsed, view = MEM.view;
+
+    const hdr = `<div id="nc17-hdr">
+      <span id="nc17-title">⚡ Gym Optimizer</span>
+      <div id="nc17-tabs">
+        <button class="nc17-tab ${view==='main'?'on':''}" data-view="main">Now</button>
+        <button class="nc17-tab ${view==='plan'?'on':''}" data-view="plan">Plan</button>
+        <button class="nc17-tab ${view==='setup'?'on':''}" data-view="setup">Setup</button>
+      </div>
+    </div>`;
+
+    const ftr = `<div id="nc17-ftr">
+      <span>NC17 v5.1.1${energy != null ? ' · '+energy+'E' : ''}</span>
+      <span>${col ? '▼ expand' : '▲ collapse'}</span>
+    </div>`;
+
+    if (col) return hdr + ftr;
+    if (!stats) {
+      const errMsg = MEM.fetchError;
+      const elapsed = MEM.fetchStarted ? Date.now() - MEM.fetchStarted : 0;
+      const timedOut = elapsed > 8000;
+      return hdr + `<div class="nc17-sec" style="line-height:1.8;">
+        ${errMsg
+          ? `<div class="nc17-crit" style="font-size:11px;line-height:1.6;">${errMsg}</div>`
+          : timedOut
+            ? `<div class="nc17-warn" style="font-size:11px;line-height:1.6;">Fetch timed out. Open gym.php while on torn.com — not from a bookmark or external link. API key: ${API_KEY.slice(0,6)}...</div>`
+            : `<span style="color:#8090b0;">⏳ Loading stats...</span>`
+        }
+      </div>` + ftr;
+    }
+
+    if (view === 'setup') return hdr + setupHTML(settings, schedule) + ftr;
+    if (view === 'plan')  return hdr + planViewHTML(plan, settings)  + ftr;
+
+    return hdr + instrHTML(instr, curMonth, settings) + progressHTML(instr, stats) + gymStatusHTML(open, hd, settings) + statsHTML(stats) + ftr;
+  }
+
+  function instrHTML(instr, curMonth, settings) {
+    if (!curMonth) return `<div class="nc17-sec"><div class="nc17-warn">No rotation for this month. Add it in Setup.<br><span style="font-size:10px;color:#505878;">Plan has ${MEM._planLength||0} months. Schedule has ${(MEM.schedule||[]).length} entries.</span></div></div>`;
+
+    const buffStr = curMonth.topTwo.map(r => `${LABEL[r.stat]} +${curMonth.buffs[r.stat]}%`).join(' · ');
+
+    if (!instr || instr.trains === 0) {
+      const msg = instr
+        ? `${instr.currentE}E now — need ${instr.ePerTrain}E/train in ${instr.gymName}`
+        : `Debug: instr=null, energy=${MEM.energy}, curMonth=${curMonth?.month}, topTwo=${JSON.stringify(curMonth?.topTwo?.map(t=>t.stat))}`;
+      return `<div class="nc17-sec">
+        <div class="nc17-lbl">Right Now · ${curMonth.label}</div>
+        <div class="nc17-cmd" style="color:#6070a8;font-size:12px;line-height:1.6;">${msg}</div>
+      </div>`;
+    }
+
+    const other = instr.trainStat === instr.primary ? instr.secondary : instr.primary;
+    const leftNote = instr.leftover > 0 ? `${instr.leftover}E leftover` : 'exact';
+
+    return `<div class="nc17-sec">
+      <div class="nc17-lbl">Right Now · ${curMonth.label}</div>
+      <div class="nc17-cmd">
+        <div class="nc17-cmd-stat" style="color:${COLOR[instr.trainStat]}">${LABEL[instr.trainStat]}</div>
+        <div class="nc17-cmd-gym">${instr.gymName} · ${instr.ePerTrain}E per train</div>
+        <div class="nc17-cmd-trains">${instr.trains} trains</div>
+        <div class="nc17-cmd-detail">
+          Uses ${instr.energyUsed}E of your ${instr.currentE}E · ${leftNote}<br>
+          ${daysLeft()}d left in month
+        </div>
+        ${other && !settings.ignoredStats?.[other] ? `
+        <div class="nc17-cmd-div"></div>
+        <div class="nc17-cmd-next" style="color:${COLOR[other]}aa">
+          Then: ${LABEL[other]} when more E available
+        </div>` : ''}
+        <div class="nc17-cmd-div"></div>
+        <div class="nc17-cmd-detail">${buffStr}</div>
+      </div>
+    </div>`;
+  }
+
+  function progressHTML(instr, stats) {
+    if (!instr || !MEM.snap) return '';
+    const gains = instr.gains;
+    const targets = instr.dailyTargetGains || {};
+    const active = [instr.primary, instr.secondary].filter(s => s && !MEM.settings?.ignoredStats?.[s]);
+
+    // Always show if we have targets, even if gains are zero yet
+    const hasTargets = active.some(s => (targets[s]||0) > 0);
+    if (!hasTargets) return '';
+
+    return `<div class="nc17-sec">
+      <div class="nc17-lbl">Daily Progress</div>
+      ${active.map(s => {
+        const gained  = gains[s] || 0;
+        const target  = targets[s] || 0;
+        const remaining = Math.max(0, target - gained);
+        const pct = target > 0 ? Math.min(100, Math.round(gained / target * 100)) : 0;
+        // Color: green ≥80%, yellow 40-79%, red <40%
+        const barColor = pct >= 80 ? '#40d870' : pct >= 40 ? '#ffd060' : COLOR[s];
+        const textColor = pct >= 80 ? '#40d870' : pct >= 40 ? '#ffd060' : '#ff8080';
+        return `<div style="margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;">
+            <span style="color:${COLOR[s]}cc;font-weight:700;">${LABEL[s]}</span>
+            <span style="font-family:'Courier New',monospace;color:${textColor};">+${fmt(gained)} / ${fmt(target)}</span>
+          </div>
+          <div style="height:10px;background:#1e2130;border-radius:5px;overflow:hidden;margin-bottom:4px;">
+            <div style="width:${pct}%;height:100%;background:${barColor};border-radius:5px;transition:width 0.4s;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;font-family:'Courier New',monospace;color:#606880;">
+            <span>${pct}% done</span>
+            <span>${remaining > 0 ? fmt(remaining)+' remaining' : '✓ target hit'}</span>
+          </div>
+        </div>`;
+      }).join('')}
+      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Targets = planned trains × est. gain/train · Resets midnight</div>
+    </div>`;
+  }
+
+  function gymStatusHTML(open, hd, settings) {
+    if (!hd) return '';
+    const active = STATS.filter(s => !settings.ignoredStats?.[s]);
+    return `<div class="nc17-sec">
+      <div class="nc17-lbl">Gym Access</div>
+      <div class="nc17-pills">
+        <div class="nc17-pill ${open.fl?'open':'closed'}">
+          <div class="nc17-pill-name">Frontline</div>${open.fl?'OPEN':'CLOSED'}
+        </div>
+        <div class="nc17-pill ${open.iso?'open':'closed'}">
+          <div class="nc17-pill-name">Isoyama's</div>${open.iso?'OPEN':'CLOSED'}
+        </div>
+      </div>
+      <div class="nc17-lbl">Headroom Before Gym Closes</div>
+      ${active.map(s => {
+        const raw = hd[s];
+        const safe = Math.max(0, raw - settings.safetyM * 1e6);
+        const gym = (s==='def'||s==='dex') ? 'Frontline' : "Isoyama's";
+        return `<div class="nc17-row">
+          <span class="nc17-row-key" style="color:${COLOR[s]}cc">${LABEL[s]}</span>
+          <span style="font-size:10px;color:#505878;flex:1;padding:0 8px;">→ ${gym}</span>
+          <span class="nc17-row-val" style="color:${safe<settings.safetyM*1e6?'#ffd870':'#e0e8f8'}">${fmt(raw)}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function statsHTML(stats) {
+    return `<div class="nc17-sec">
+      <div class="nc17-lbl">Current Stats</div>
+      ${STATS.map(s=>`<div class="nc17-stat-row">
+        <span style="color:${COLOR[s]}bb">${LABEL[s]}</span>
+        <span style="color:#e0e8f8;font-weight:700;font-family:'Courier New',monospace;">${fmt(stats[s])}</span>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  function planViewHTML(plan, settings) {
+    if (!plan.length) return `<div class="nc17-sec"><div class="nc17-warn">No rotation data. Add buff schedule in Setup.</div></div>`;
+
+    return `<div class="nc17-sec">
+      <div class="nc17-lbl">Multi-Month Plan</div>
+      ${plan.map(m => {
+        const { splits, GYM_FOR: GF, peakStats, forcedTraining, forcedReasons, breaches, buffs, weights, feasibility } = m;
+
+        // Peak stat rows — sorted by weight (highest first = what optimizer prioritizes)
+        const sortedPeak = [...peakStats].sort((a,b) => (weights[b]||0) - (weights[a]||0));
+        const peakRows = sortedPeak.map((s, i) => {
+          const e = splits[s]||0;
+          const gk = GF[s];
+          const trains = Math.floor(e / GYM_ENERGY[gk]);
+          const isTop = i === 0;
+          return `<div class="nc17-plan-row">
+            <span style="color:${COLOR[s]};font-weight:700;">${LABEL[s]}</span>
+            <span style="color:#7080a8;font-size:11px;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}%${isTop ? ' ★' : ''}</span>
+            <span style="color:#c0cce8;font-family:'Courier New',monospace;font-weight:700;">${trains} trains</span>
+          </div>`;
+        }).join('');
+
+        // Forced rows
+        const forcedStats = Object.keys(forcedTraining||{}).filter(s => (forcedTraining[s]||0) > 0);
+        const forcedRows = forcedStats.map(s => {
+          const e = forcedTraining[s]||0;
+          const gk = GF[s];
+          const trains = Math.ceil(e / GYM_ENERGY[gk]);
+          return `<div class="nc17-plan-row" style="opacity:0.8;">
+            <span style="color:${COLOR[s]}99">${LABEL[s]}</span>
+            <span style="color:#6a5020;font-size:11px;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}% ⚠ min</span>
+            <span style="color:#aa8030;font-family:'Courier New',monospace;">${trains} trains</span>
+          </div>`;
+        }).join('');
+
+        // Feasibility rows — how much of next month's target this month's plan enables
+        const feasRows = Object.entries(feasibility||{}).map(([ns, f]) => {
+          const color = f.pct >= 80 ? '#40d870' : f.pct >= 50 ? '#ffd060' : '#ff8080';
+          return `<div style="font-size:11px;font-family:'Courier New',monospace;color:${color};margin-top:5px;">
+            → ${LABEL[ns]} headroom for next month: ${f.pct}%${f.ok ? ' ✓' : ` (${fmt(f.available)} of ${fmt(f.needed)} needed)`}
+          </div>`;
+        }).join('');
+
+        return `<div class="nc17-plan-month">
+          <div class="nc17-plan-hdr">${m.label}${m.isCurrent?' ← now':''} · ${m.days}d · peak +${m.maxBuff}%</div>
+          ${peakRows}
+          ${forcedRows}
+          ${feasRows}
+          ${forcedReasons.length ? `<div class="nc17-plan-breach" style="color:#aa8030;margin-top:5px;">↳ ${forcedReasons.join(' | ')}</div>` : ''}
+          ${breaches.length ? `<div class="nc17-plan-breach" style="margin-top:5px;">⚠ ${breaches.map(b=>`${LABEL[b.stat]} → ${b.gym}: ${fmt(b.room)} left`).join(', ')}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
+  // ── SETUP HTML ───────────────────────────────────────────────────────────────
+  function setupHTML(settings, schedule) {
+    const gymOpts = [
+      {v:'isoyamas',l:"Isoyama's (DEF 8×)"},{v:'gym3000',l:'Gym 3000 (STR 8×)'},
+      {v:'totalrebound',l:'Total Rebound (SPD 8×)'},{v:'elites',l:'Elites (DEX 8×)'},
+      {v:'frontline',l:'Frontline (STR+SPD 7.5×)'},{v:'balboas',l:"Balboa's (DEF+DEX 7.5×)"},
+    ];
+    const now = new Date();
+    const months = Array.from({length:6},(_,i)=>{
+      const d = new Date(now.getFullYear(),now.getMonth()+i,1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    });
+    const rotRows = months.map(m => {
+      const ex = schedule.find(r=>r.month===m);
+      const b = ex?.buffs||{def:0,str:0,spd:0,dex:0};
+      return `<div class="nc17-rot-row" data-month="${m}">
+        <span class="nc17-rot-month">${m}</span>
+        <span class="nc17-rot-tag" style="color:${COLOR.def}">DEF</span>
+        <input class="nc17-rot-inp" data-field="def" value="${b.def}" type="number" min="0" max="30">
+        <span class="nc17-rot-tag" style="color:${COLOR.str}">STR</span>
+        <input class="nc17-rot-inp" data-field="str" value="${b.str}" type="number" min="0" max="30">
+        <span class="nc17-rot-tag" style="color:${COLOR.spd}">SPD</span>
+        <input class="nc17-rot-inp" data-field="spd" value="${b.spd}" type="number" min="0" max="30">
+        <span class="nc17-rot-tag" style="color:${COLOR.dex}">DEX</span>
+        <input class="nc17-rot-inp" data-field="dex" value="${b.dex}" type="number" min="0" max="30">
+      </div>`;
+    }).join('');
+
+    return `
+      <div class="nc17-sec">
+        <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Active Stats</div>
+          <div class="nc17-radios">${STATS.map(s=>{
+            const off=settings.ignoredStats?.[s];
+            return `<div class="nc17-radio ${off?'':'on'}" data-set="ignoredStats.${s}"
+              style="color:${off?'#505878':COLOR[s]+'cc'};border-color:${off?'#303050':COLOR[s]+'55'}">
+              ${LABEL[s]} ${off?'✗':'✓'}</div>`;
+          }).join('')}</div>
+        </div>
+        <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Primary Gym (8× dot)</div>
+          <div class="nc17-radios">${gymOpts.slice(0,4).map(g=>`
+            <div class="nc17-radio ${settings.primaryGym===g.v?'on':''}" data-set="primaryGym" data-val="${g.v}">${g.l}</div>`).join('')}
+          </div>
+        </div>
+        <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Secondary Gym (7.5× dot)</div>
+          <div class="nc17-radios">${gymOpts.map(g=>`
+            <div class="nc17-radio ${settings.secondaryGym===g.v?'on':''}" data-set="secondaryGym" data-val="${g.v}">${g.l}</div>`).join('')}
+          </div>
+        </div>
+        <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Training Params</div>
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl">Daily Energy</span>
+            <input class="nc17-inp" data-set="dailyEnergy" value="${settings.dailyEnergy}" type="number" min="100" max="5000" step="50">
+          </div>
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl">Safety Buffer</span>
+            <input class="nc17-inp" data-set="safetyM" value="${settings.safetyM}" type="number" min="1" max="200">
+            <span class="nc17-inp-unit">M</span>
+          </div>
+        </div>
+        <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Stat Ratio Targets (%)</div>
+          <div style="font-size:10px;color:#6070a0;margin-bottom:8px;font-family:'Courier New',monospace;">Used to weight STR vs SPD when both are peak. DEX ignored.</div>
+          ${['def','str','spd'].map(s => `
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl" style="color:${COLOR[s]}cc">${LABEL[s]}</span>
+            <input class="nc17-inp" data-set="ratioTargets.${s}" value="${settings.ratioTargets?.[s] ?? DEFAULTS.ratioTargets[s]}" type="number" min="0" max="100" step="0.5">
+            <span class="nc17-inp-unit">%</span>
+          </div>`).join('')}
+        </div>
+        <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Actual Gain Per Train (optional)</div>
+          <div style="font-size:10px;color:#6070a0;margin-bottom:8px;font-family:'Courier New',monospace;">Fill from real training data for accurate projections. Leave 0 to use formula estimate.</div>
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl">Isoyama's 50E</span>
+            <input class="nc17-inp" data-set="gainPerTrain.isoTrain" value="${settings.gainPerTrain?.isoTrain ?? 0}" type="number" min="0" max="10000000" step="50000">
+            <span class="nc17-inp-unit">stat/train</span>
+          </div>
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl">Frontline 25E</span>
+            <input class="nc17-inp" data-set="gainPerTrain.flTrain" value="${settings.gainPerTrain?.flTrain ?? 0}" type="number" min="0" max="10000000" step="50000">
+            <span class="nc17-inp-unit">stat/train</span>
+          </div>
+        </div>
+      </div>
+      <div class="nc17-sec">
+        <div class="nc17-set-lbl">Faction Buff Rotation (%)</div>
+        <div id="nc17-rot">${rotRows}</div>
+        <div style="margin-top:12px;"><button class="nc17-btn" id="nc17-save">Save All</button></div>
+      </div>`;
+  }
+
+  // ── EVENTS ───────────────────────────────────────────────────────────────────
+  function bindEvents(panel, settings, schedule) {
+    panel.querySelectorAll('.nc17-tab').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); MEM.view = btn.dataset.view; render(); });
+    });
+
+    const ftr = panel.querySelector('#nc17-ftr');
+    if (ftr) ftr.addEventListener('click', () => {
+      MEM.collapsed = !MEM.collapsed;
+      Store.set(KEYS.COL, MEM.collapsed ? '1' : '0');
+      render();
+    });
+
+    panel.querySelectorAll('.nc17-radio[data-set]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        const key = el.dataset.set;
+        if (key.startsWith('ignoredStats.')) {
+          const s = key.split('.')[1];
+          if (!MEM.settings.ignoredStats) MEM.settings.ignoredStats = {};
+          MEM.settings.ignoredStats[s] = !MEM.settings.ignoredStats[s];
+        } else {
+          MEM.settings[key] = el.dataset.val;
+        }
+        saveSettings(MEM.settings);
+        render();
+      });
+    });
+
+    const saveBtn = panel.querySelector('#nc17-save');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        panel.querySelectorAll('.nc17-inp[data-set]').forEach(inp => {
+          const key = inp.dataset.set;
+          const val = parseFloat(inp.value);
+          if (key.includes('.')) {
+            const [parent, child] = key.split('.');
+            if (!MEM.settings[parent]) MEM.settings[parent] = {};
+            MEM.settings[parent][child] = val;
+          } else {
+            MEM.settings[key] = val;
+          }
+        });
+        const newSched = [];
+        panel.querySelectorAll('.nc17-rot-row[data-month]').forEach(row => {
+          const month = row.dataset.month, buffs = {};
+          row.querySelectorAll('.nc17-rot-inp').forEach(inp => { buffs[inp.dataset.field] = parseFloat(inp.value)||0; });
+          if (Object.values(buffs).some(v=>v>0)) {
+            const ex = MEM.schedule.find(r=>r.month===month);
+            newSched.push({ month, buffs, label: ex?.label || month });
+          }
+        });
+        saveSettings(MEM.settings);
+        saveSchedule(newSched);
+        MEM.schedule = newSched;
+        saveBtn.textContent = '✓ Saved!';
+        setTimeout(render, 600);
+      });
+    }
+  }
+
+  // ── DRAG ─────────────────────────────────────────────────────────────────────
+  function makeDraggable(handle, panel) {
+    if (!handle) return;
+    let on=false, ox=0, oy=0;
+    function isDraggable(t) { return t===handle || t.id==='nc17-title'; }
+    function start(cx,cy,t) { if(!isDraggable(t))return; on=true; const r=panel.getBoundingClientRect(); ox=cx-r.left; oy=cy-r.top; panel.style.right='auto'; }
+    function move(cx,cy) { if(!on)return; panel.style.left=Math.min(window.innerWidth-panel.offsetWidth,Math.max(0,cx-ox))+'px'; panel.style.top=Math.min(window.innerHeight-panel.offsetHeight,Math.max(0,cy-oy))+'px'; }
+    function end() { on=false; }
+    handle.addEventListener('mousedown', e=>start(e.clientX,e.clientY,e.target));
+    document.addEventListener('mousemove', e=>move(e.clientX,e.clientY));
+    document.addEventListener('mouseup', end);
+    handle.addEventListener('touchstart', e=>start(e.touches[0].clientX,e.touches[0].clientY,e.target),{passive:true});
+    document.addEventListener('touchmove', e=>{if(on){e.preventDefault();move(e.touches[0].clientX,e.touches[0].clientY);}},{passive:false});
+    document.addEventListener('touchend', end);
+  }
+
+  // ── DOM ENERGY READ ──────────────────────────────────────────────────────────
+  // Torn displays current energy in the sidebar on gym.php — read it directly.
+  // No API call, no access level required.
+  function readEnergyFromDOM() {
+    try {
+      // Torn's energy bar — try multiple selectors across game versions
+      const selectors = [
+        '[class*="energy"] [class*="current"]',
+        '[class*="energy-bar"] [class*="value"]',
+        'ul.status-icons li[class*="energy"] span',
+        '[data-type="Energy"] [class*="current"]',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const val = parseInt(el.textContent.replace(/[^0-9]/g, ''), 10);
+          if (!isNaN(val) && val >= 0) return val;
+        }
+      }
+      // Fallback: scan all text for energy pattern like "142 / 150"
+      const energyText = document.body.innerText.match(/Energy[^\d]*(\d+)\s*\/\s*(\d+)/i);
+      if (energyText) return parseInt(energyText[1], 10);
+    } catch {}
+    return null;
+  }
+
+  // ── BOOT ─────────────────────────────────────────────────────────────────────
+  async function init() {
+    await new Promise(r => setTimeout(r, 800));
+    MEM.settings  = loadSettings();
+    MEM.schedule  = loadSchedule();
+    MEM.collapsed = Store.get(KEYS.COL) === '1';
+    render();
+
+    // Fetch stats exactly as v4 did — plain fetch, battlestats only, r.json()
+    try {
+      const r = await fetch(`https://api.torn.com/user/?selections=battlestats&key=${API_KEY}`);
+      const d = await r.json();
+      if (!d.error) {
+        MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
+        MEM.snap   = updateSnap(MEM.stats);
+      } else {
+        MEM.fetchError = `API error ${d.error.code}: ${d.error.error}`;
+      }
+    } catch(e) {
+      MEM.fetchError = `Fetch failed: ${e.message}`;
+    }
+    render();
+
+    if (MEM.stats) {
+      // Read energy directly from gym page DOM — no extra API call needed
+      MEM.energy = readEnergyFromDOM();
+      render();
+
+      // Refresh every 5 minutes
+      setInterval(async () => {
+        try {
+          const r = await fetch(`https://api.torn.com/user/?selections=battlestats&key=${API_KEY}`);
+          const d = await r.json();
+          if (!d.error) {
+            MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
+            MEM.energy = readEnergyFromDOM();
+          }
+        } catch {}
+        render();
+      }, 5 * 60 * 1000);
+    }
+  }
+
+  init();
+})();
