@@ -5,6 +5,8 @@
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
+// @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-gym-optomizer-v5.js
+// @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-gym-optomizer-v5.js
 // @grant        none
 // ==/UserScript==
 
