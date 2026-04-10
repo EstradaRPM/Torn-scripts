@@ -102,12 +102,11 @@
 
   // ── MULTI-MONTH PLANNER ───────────────────────────────────────────────────────
   //
-  // Gain model:
-  //   gain_per_train = gymDots * buff * 4 * (0.00019106 * stat + 0.00226263 * happy + 0.55) * perks / 150 * ePerTrain
-  //   At NC17 stat ranges (~500-800M), happy ~5000, perks ~1.35:
-  //   Isoyama 50E DEF train: ~2.0-2.5M per train
-  //   Frontline 25E STR/SPD train: ~0.8-1.1M per train
-  //   We use the wiki formula with estimated happy=5000, perks=1.35
+  // Gain model (standard Torn wiki formula):
+  //   gain_per_train = gymDots * (0.00019106 * stat + 0.00226263 * happy + 0.55) * ePerTrain / 150 * perks * buff
+  //   At NC17 stat ranges (~300M), happy ~3500, perks ~1.04, 14% faction buff:
+  //   Isoyama 50E DEF train: ~160-170K per train
+  //   Frontline 25E STR/SPD train: ~80-85K per train
   //
   // Planning logic (in priority order):
   //
@@ -142,7 +141,7 @@
     // Use real happiness from API when available; fall back to estimate only if not yet fetched
     const happy = MEM.happy ?? HAPPY_EST;
     const perks = MEM.settings?.perksEst ?? PERKS_EST;
-    return ((dots * 4) * ((0.00019106 * statVal) + (0.00226263 * happy) + 0.55)) * perks / 150 * ePerTrain * buff;
+    return (dots * ((0.00019106 * statVal) + (0.00226263 * happy) + 0.55)) * perks / 150 * ePerTrain * buff;
   }
 
   function projGain(stat, statVal, buffPct, gymKey, energy) {
