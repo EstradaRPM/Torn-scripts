@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.3.0
+// @version      5.4.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -858,20 +858,25 @@
 
     return `<div class="nc17-sec">
       <div class="nc17-lbl">Multi-Month Plan</div>
-      ${plan.map(m => {
+      ${plan.map((m, mi) => {
         const { splits, GYM_FOR: GF, peakStats, forcedTraining, forcedReasons, breaches, buffs, weights, feasibility } = m;
 
         // Peak stat rows — sorted by weight (highest first = what optimizer prioritizes)
         const sortedPeak = [...peakStats].sort((a,b) => (weights[b]||0) - (weights[a]||0));
+        const prevFeasibility = mi > 0 ? (plan[mi-1].feasibility||{}) : {};
         const peakRows = sortedPeak.map((s, i) => {
           const e = splits[s]||0;
           const gk = GF[s];
           const trains = Math.floor(e / GYM_ENERGY[gk]);
           const isTop = i === 0;
+          const prevFeas = prevFeasibility[s];
+          const feasNote = prevFeas && !prevFeas.ok
+            ? ` <span style="color:#ff8080;font-size:10px;font-weight:400;">(~${prevFeas.pct}% achievable)</span>`
+            : '';
           return `<div class="nc17-plan-row">
             <span style="color:${COLOR[s]};font-weight:700;">${LABEL[s]}</span>
             <span style="color:#7080a8;font-size:11px;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}%${isTop ? ' ★' : ''}</span>
-            <span style="color:#c0cce8;font-family:'Courier New',monospace;font-weight:700;">${trains} trains</span>
+            <span style="color:#c0cce8;font-family:'Courier New',monospace;font-weight:700;">${trains} trains${feasNote}</span>
           </div>`;
         }).join('');
 
@@ -902,7 +907,7 @@
           ${forcedRows}
           ${feasRows}
           ${forcedReasons.length ? `<div class="nc17-plan-breach" style="color:#aa8030;margin-top:5px;">↳ ${forcedReasons.join(' | ')}</div>` : ''}
-          ${breaches.length ? `<div class="nc17-plan-breach" style="margin-top:5px;">⚠ ${breaches.map(b=>`${LABEL[b.stat]} → ${b.gym}: ${fmt(b.room)} left`).join(', ')}</div>` : ''}
+          ${breaches.length ? `<div class="nc17-plan-breach" style="margin-top:5px;">⚠ ${breaches.map(b=>`${LABEL[b.stat]} → ${b.gym}: ${b.room === 0 ? '≈0M' : fmt(b.room)} left`).join(', ')}</div>` : ''}
         </div>`;
       }).join('')}
     </div>`;
