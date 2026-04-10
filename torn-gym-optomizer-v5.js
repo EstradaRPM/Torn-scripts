@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.2.0
+// @version      5.3.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -25,7 +25,7 @@
 
   const MEM = {
     view: 'main', collapsed: false,
-    stats: null, energy: null, settings: null, schedule: null, snap: null,
+    stats: null, energy: null, happy: null, settings: null, schedule: null, snap: null,
     fetchError: null, fetchStarted: null,
   };
 
@@ -37,9 +37,8 @@
     dailyEnergy:  1000,
     // STR/SPD ratio targets as % of total stats (DEX = 0 since ignored)
     ratioTargets: { def: 40, str: 28, spd: 28, dex: 4 },
-    // Actual observed gain per train — fill in from your own training data
-    // 0 = use formula estimate instead
-    gainPerTrain: { isoTrain: 0, flTrain: 0 }, // e.g. isoTrain: 2100000, flTrain: 900000
+    // Combined multiplier from education, merits, and other stat perks (e.g. 1.35 = +35%)
+    perksEst:     1.35,
   };
 
   const GYMS = {
@@ -140,11 +139,10 @@
     if (!dots) return 0;
     const buff      = 1 + buffPct / 100;
     const ePerTrain = GYM_ENERGY[gymKey];
-    const cal       = MEM.settings?.gainPerTrain || {};
-    // Use calibrated value if set, otherwise fall back to formula
-    if (gymKey === 'isoyamas' && cal.isoTrain > 0) return cal.isoTrain * buff;
-    if ((gymKey === 'frontline' || gymKey === 'balboas') && cal.flTrain > 0) return cal.flTrain * buff;
-    return ((dots * 4) * ((0.00019106 * statVal) + (0.00226263 * HAPPY_EST) + 0.55)) * PERKS_EST / 150 * ePerTrain * buff;
+    // Use real happiness from API when available; fall back to estimate only if not yet fetched
+    const happy = MEM.happy ?? HAPPY_EST;
+    const perks = MEM.settings?.perksEst ?? PERKS_EST;
+    return ((dots * 4) * ((0.00019106 * statVal) + (0.00226263 * happy) + 0.55)) * perks / 150 * ePerTrain * buff;
   }
 
   function projGain(stat, statVal, buffPct, gymKey, energy) {
@@ -410,10 +408,14 @@
       dailyTargetGains[stat] = projGain(stat, stats[stat]||1e6, buffs[stat]||0, gk, dailyShare);
     }
 
+    // Compute estimated gain per single train for the recommended stat
+    const estGainPerTrain = gainPerTrain(trainStat, stats[trainStat]||1e6, buffs[trainStat]||0, gymKey);
+
     return {
       trainStat, gymKey, gymName: GYM_NAME[gymKey], ePerTrain,
       trains, energyUsed, leftover, currentE,
       gains, primary, secondary, dailyTargetGains, GYM_FOR,
+      estGainPerTrain,
     };
   }
 
@@ -707,7 +709,7 @@
     </div>`;
 
     const ftr = `<div id="nc17-ftr">
-      <span>NC17 v5.2.0${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
+      <span>NC17 v5.3.0${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
       <span>${col ? '▼ expand' : '▲ collapse'}</span>
     </div>`;
 
@@ -763,7 +765,8 @@
         <div class="nc17-cmd-trains">${instr.trains} trains</div>
         <div class="nc17-cmd-detail">
           Uses ${instr.energyUsed}E of your ${instr.currentE}E · ${leftNote}<br>
-          ${daysLeft()}d left in month
+          ${daysLeft()}d left in month<br>
+          ~${fmt(instr.estGainPerTrain)} per train · happy ${MEM.happy != null ? fmt(MEM.happy) : 'est '+fmt(HAPPY_EST)}
         </div>
         ${other && !settings.ignoredStats?.[other] ? `
         <div class="nc17-cmd-div"></div>
@@ -980,17 +983,12 @@
           </div>`).join('')}
         </div>
         <div class="nc17-set-grp">
-          <div class="nc17-set-lbl">Actual Gain Per Train (optional)</div>
-          <div style="font-size:10px;color:#6070a0;margin-bottom:8px;font-family:'Courier New',monospace;">Fill from real training data for accurate projections. Leave 0 to use formula estimate.</div>
+          <div class="nc17-set-lbl">Combat Perks Multiplier</div>
+          <div style="font-size:10px;color:#6070a0;margin-bottom:8px;font-family:'Courier New',monospace;">Combined stat bonus from education, merits &amp; other perks. Check your Torn profile for the total % and enter it here (e.g. 1.35 = +35%).</div>
           <div class="nc17-inp-row">
-            <span class="nc17-inp-lbl">Isoyama's 50E</span>
-            <input class="nc17-inp" data-set="gainPerTrain.isoTrain" value="${settings.gainPerTrain?.isoTrain ?? 0}" type="number" min="0" max="10000000" step="50000">
-            <span class="nc17-inp-unit">stat/train</span>
-          </div>
-          <div class="nc17-inp-row">
-            <span class="nc17-inp-lbl">Frontline 25E</span>
-            <input class="nc17-inp" data-set="gainPerTrain.flTrain" value="${settings.gainPerTrain?.flTrain ?? 0}" type="number" min="0" max="10000000" step="50000">
-            <span class="nc17-inp-unit">stat/train</span>
+            <span class="nc17-inp-lbl">Perks ×</span>
+            <input class="nc17-inp" data-set="perksEst" value="${settings.perksEst ?? PERKS_EST}" type="number" min="1.0" max="3.0" step="0.01">
+            <span class="nc17-inp-unit">× multiplier</span>
           </div>
         </div>
       </div>
@@ -1114,12 +1112,16 @@
     MEM.collapsed = Store.get(KEYS.COL) === '1';
     render();
 
-    // Fetch stats exactly as v4 did — plain fetch, battlestats only, r.json()
+    // Fetch battlestats + bars (for real happiness and energy values)
     try {
-      const r = await fetch(`https://api.torn.com/user/?selections=battlestats&key=${API_KEY}`);
+      const r = await fetch(`https://api.torn.com/user/?selections=battlestats,bars&key=${API_KEY}`);
       const d = await r.json();
       if (!d.error) {
         MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
+        MEM.happy  = d.happy?.current ?? null;
+        // Prefer DOM energy (real-time) but fall back to bars energy if DOM scrape fails
+        const domE = readEnergyFromDOM();
+        MEM.energy = domE ?? d.energy?.current ?? null;
         MEM.snap   = updateSnap(MEM.stats);
       } else {
         MEM.fetchError = `API error ${d.error.code}: ${d.error.error}`;
@@ -1130,18 +1132,18 @@
     render();
 
     if (MEM.stats) {
-      // Read energy directly from gym page DOM — no extra API call needed
-      MEM.energy = readEnergyFromDOM();
       render();
 
       // Refresh every 5 minutes
       setInterval(async () => {
         try {
-          const r = await fetch(`https://api.torn.com/user/?selections=battlestats&key=${API_KEY}`);
+          const r = await fetch(`https://api.torn.com/user/?selections=battlestats,bars&key=${API_KEY}`);
           const d = await r.json();
           if (!d.error) {
             MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
-            MEM.energy = readEnergyFromDOM();
+            MEM.happy  = d.happy?.current ?? MEM.happy;
+            const domE = readEnergyFromDOM();
+            MEM.energy = domE ?? d.energy?.current ?? MEM.energy;
           }
         } catch {}
         render();
