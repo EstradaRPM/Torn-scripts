@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.0.0
+// @version      5.2.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
-// @match        https://www.torn.com/gym.php*
+// @match        https://www.torn.com/*
 // @grant        none
 // ==/UserScript==
 
@@ -12,6 +12,10 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
+
+  // Set to true to display the panel on any torn.com page (for use while not on gym.php).
+  // Set to false to restrict to gym.php only.
+  const TEST_MODE = true;
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -522,13 +526,16 @@
       position:fixed;top:10px;right:10px;width:300px;background:#12141c;
       border:2px solid #404460;border-radius:10px;z-index:99999;
       font-family:Georgia,serif;font-size:13px;color:#e8eaf8;
-      box-shadow:0 8px 32px rgba(0,0,0,0.85);touch-action:none;overflow:hidden;
+      box-shadow:0 8px 32px rgba(0,0,0,0.85);overflow:hidden;
     }
     #nc17 * { box-sizing:border-box; }
     #nc17-hdr {
       background:#1c1f2e;padding:11px 14px;border-bottom:2px solid #404460;
       display:flex;justify-content:space-between;align-items:center;
-      cursor:grab;user-select:none;
+      cursor:grab;user-select:none;touch-action:none;
+    }
+    #nc17-body {
+      max-height:calc(85vh - 80px);overflow-y:auto;touch-action:pan-y;
     }
     #nc17-title {
       font-size:11px;letter-spacing:2px;color:#b0bce0;font-weight:700;
@@ -700,29 +707,34 @@
     </div>`;
 
     const ftr = `<div id="nc17-ftr">
-      <span>NC17 v5.1.1${energy != null ? ' · '+energy+'E' : ''}</span>
+      <span>NC17 v5.2.0${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
       <span>${col ? '▼ expand' : '▲ collapse'}</span>
     </div>`;
 
     if (col) return hdr + ftr;
+
+    let body;
     if (!stats) {
       const errMsg = MEM.fetchError;
       const elapsed = MEM.fetchStarted ? Date.now() - MEM.fetchStarted : 0;
       const timedOut = elapsed > 8000;
-      return hdr + `<div class="nc17-sec" style="line-height:1.8;">
+      body = `<div class="nc17-sec" style="line-height:1.8;">
         ${errMsg
           ? `<div class="nc17-crit" style="font-size:11px;line-height:1.6;">${errMsg}</div>`
           : timedOut
             ? `<div class="nc17-warn" style="font-size:11px;line-height:1.6;">Fetch timed out. Open gym.php while on torn.com — not from a bookmark or external link. API key: ${API_KEY.slice(0,6)}...</div>`
             : `<span style="color:#8090b0;">⏳ Loading stats...</span>`
         }
-      </div>` + ftr;
+      </div>`;
+    } else if (view === 'setup') {
+      body = setupHTML(settings, schedule);
+    } else if (view === 'plan') {
+      body = planViewHTML(plan, settings);
+    } else {
+      body = instrHTML(instr, curMonth, settings) + progressHTML(instr, stats) + gymStatusHTML(open, hd, settings) + statsHTML(stats);
     }
 
-    if (view === 'setup') return hdr + setupHTML(settings, schedule) + ftr;
-    if (view === 'plan')  return hdr + planViewHTML(plan, settings)  + ftr;
-
-    return hdr + instrHTML(instr, curMonth, settings) + progressHTML(instr, stats) + gymStatusHTML(open, hd, settings) + statsHTML(stats) + ftr;
+    return hdr + `<div id="nc17-body">${body}</div>` + ftr;
   }
 
   function instrHTML(instr, curMonth, settings) {
@@ -1095,6 +1107,7 @@
 
   // ── BOOT ─────────────────────────────────────────────────────────────────────
   async function init() {
+    if (!TEST_MODE && !location.pathname.startsWith('/gym.php')) return;
     await new Promise(r => setTimeout(r, 800));
     MEM.settings  = loadSettings();
     MEM.schedule  = loadSchedule();
