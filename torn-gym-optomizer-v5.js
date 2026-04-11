@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.9.0
+// @version      5.10.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.9.0';
+  const SCRIPT_VERSION = '5.10.0';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -32,7 +32,7 @@
     fetchError: null, fetchStarted: null,
     extraBonus: null, extraBonusSource: null, // null until fetch completes; source = 'api'|'cache'|'manual'
     // Daily energy tracking (TCT-aligned)
-    lastTctDate: null, dayStartE: null, prevE: null,
+    lastTctDate: null, dayStartE: null, prevE: null, spentToday: 0,
   };
 
   const DEFAULTS = {
@@ -759,8 +759,9 @@
       const s = JSON.parse(Store.get(KEYS.ETST));
       if (s && s.d) {
         MEM.lastTctDate = s.d;
-        MEM.dayStartE   = s.startE ?? null;
-        MEM.prevE       = s.prevE  ?? null;
+        MEM.dayStartE   = s.startE     ?? null;
+        MEM.prevE       = s.prevE      ?? null;
+        MEM.spentToday  = s.spentToday ?? 0;
       }
     } catch {}
   }
@@ -775,7 +776,8 @@
       MEM.lastTctDate = today;
       MEM.dayStartE   = currentE;
       MEM.prevE       = currentE;
-      Store.set(KEYS.ETST, JSON.stringify({ d: today, startE: currentE, prevE: currentE }));
+      MEM.spentToday  = 0;
+      Store.set(KEYS.ETST, JSON.stringify({ d: today, startE: currentE, prevE: currentE, spentToday: 0 }));
       return;
     }
 
@@ -794,10 +796,17 @@
 
       MEM.lastTctDate = today;
       MEM.dayStartE   = currentE;
+      MEM.spentToday  = 0;
+    }
+
+    // Track energy drops between readings as training spend (regen only goes up, so any
+    // net drop means the player trained — accumulate it into today's running total)
+    if (MEM.prevE != null && currentE < MEM.prevE) {
+      MEM.spentToday = (MEM.spentToday ?? 0) + (MEM.prevE - currentE);
     }
 
     MEM.prevE = currentE;
-    Store.set(KEYS.ETST, JSON.stringify({ d: MEM.lastTctDate, startE: MEM.dayStartE, prevE: MEM.prevE }));
+    Store.set(KEYS.ETST, JSON.stringify({ d: MEM.lastTctDate, startE: MEM.dayStartE, prevE: MEM.prevE, spentToday: MEM.spentToday ?? 0 }));
   }
 
   // ── API ──────────────────────────────────────────────────────────────────────
@@ -1107,6 +1116,14 @@
     const other = instr.trainStat === instr.primary ? instr.secondary : instr.primary;
     const leftNote = instr.leftover > 0 ? `${instr.leftover}E leftover` : 'exact';
 
+    // Trains possible today = current E + estimated natural regen until TCT midnight
+    const nowTI        = new Date();
+    const minsToReset  = Math.round(
+      (new Date(Date.UTC(nowTI.getUTCFullYear(), nowTI.getUTCMonth(), nowTI.getUTCDate() + 1)) - nowTI) / 60000
+    );
+    const regenRem     = Math.round((settings?.baseRegen ?? 600) / 1440 * minsToReset);
+    const trainsToday  = Math.floor((instr.currentE + regenRem) / instr.ePerTrain);
+
     return `<div class="nc17-sec">
       <div class="nc17-lbl">Right Now · ${curMonth.label}</div>
       <div class="nc17-cmd">
@@ -1115,6 +1132,7 @@
         <div class="nc17-cmd-trains">${instr.trains} trains</div>
         <div class="nc17-cmd-detail">
           Uses ${instr.energyUsed}E of your ${instr.currentE}E · ${leftNote}<br>
+          ~${trainsToday} trains left today (+${regenRem}E regen)<br>
           ${daysLeft()}d left in month<br>
           ~${fmt(instr.estGainPerTrain)} per train · happy ${MEM.happy != null ? fmt(MEM.happy) : 'est '+fmt(HAPPY_EST)}<br>
           ${(() => {
@@ -1182,68 +1200,98 @@
 
   // ── DAILY ENERGY TRACKER HTML ────────────────────────────────────────────────
   function energyTrackerHTML(settings) {
-    const regenE  = settings.baseRegen ?? 600;
-    const refillE = 150;
-    const xanE    = (settings.xanaxPerDay ?? 0) * 250;
-    const budgetE = regenE + refillE + xanE;
+    const budgetE    = computeDailyEnergy(settings);
+    const spentToday = MEM.spentToday ?? 0;
 
-    // Proportional bar for each energy source
-    const bBar = (val, color) => {
-      const pct = Math.round(val / budgetE * 100);
-      return `<div style="flex:1;height:6px;background:#1e2130;border-radius:3px;overflow:hidden;">
-        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px;"></div>
-      </div>`;
-    };
+    // Time until TCT midnight reset (UTC)
+    const nowD     = new Date();
+    const minsLeft = Math.round(
+      (new Date(Date.UTC(nowD.getUTCFullYear(), nowD.getUTCMonth(), nowD.getUTCDate() + 1)) - nowD) / 60000
+    );
+    const resetStr = `${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m`;
 
-    const sources = [
-      { label: 'Regen',  val: regenE,  color: '#60aaff' },
-      { label: 'Refill', val: refillE, color: '#40e880' },
-      ...(xanE > 0 ? [{ label: 'Xanax', val: xanE, color: '#ffcc40' }] : []),
-    ];
+    const log    = loadElog();
+    const last7  = log.slice(-7);
+    const avgSpent = last7.length >= 2
+      ? Math.round(last7.reduce((s, e) => s + (e.spentE ?? 0), 0) / last7.length)
+      : null;
 
-    const budgetRows = sources.map(r => `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
-        <span style="font-size:11px;color:#8090b8;width:38px;">${r.label}</span>
-        ${bBar(r.val, r.color)}
-        <span style="font-size:11px;font-family:'Courier New',monospace;color:#c0cce8;width:38px;text-align:right;">${r.val}E</span>
-      </div>`).join('');
+    // ── Today vs avg comparison bar ──────────────────────────────────────────
+    let todayBarHTML;
+    if (avgSpent != null && avgSpent > 0) {
+      const pct        = Math.min(150, Math.round(spentToday / avgSpent * 100));
+      const delta      = spentToday - avgSpent;
+      const barColor   = pct >= 100 ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff7060';
+      const deltaColor = delta >= 0  ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff7060';
+      const deltaStr   = delta >= 0  ? `+${delta}E ahead of avg` : `${delta}E behind avg`;
+      const barW       = Math.min(100, pct);
 
-    const log   = loadElog();
-    const last7 = log.slice(-7);
+      // Efficiency streak — consecutive completed days at ≥90% of budget
+      let streak = 0;
+      for (let i = last7.length - 1; i >= 0; i--) {
+        if (((last7[i].spentE ?? 0) / Math.max(1, last7[i].budgetE)) >= 0.9) streak++;
+        else break;
+      }
+      const streakTag = streak >= 2
+        ? `<span style="color:#40e880;font-family:'Courier New',monospace;font-size:10px;font-weight:700;">${streak}d streak</span>`
+        : '';
 
-    let avgSection = '';
-    if (last7.length >= 2) {
-      const avgSpent = Math.round(last7.reduce((s, e) => s + (e.spentE ?? 0), 0) / last7.length);
-      const avgPct   = Math.round(avgSpent / budgetE * 100);
-      const avgColor = avgPct >= 90 ? '#40d870' : avgPct >= 70 ? '#ffd060' : '#ff8080';
-      avgSection = `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #2a2d40;">
-        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px;">
-          <span style="color:#8090b8;">7-day avg spent</span>
-          <span style="color:${avgColor};font-family:'Courier New',monospace;font-weight:700;">${avgSpent}E <span style="font-size:10px;font-weight:400;">(${avgPct}%)</span></span>
-        </div>
+      todayBarHTML = `
+        <div style="margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+            <span style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:${barColor};">${spentToday}E</span>
+            <div style="text-align:right;">${streakTag}<span style="font-size:11px;color:#606880;font-family:'Courier New',monospace;display:block;">vs ${avgSpent}E avg</span></div>
+          </div>
+          <div style="height:16px;background:#1e2130;border-radius:8px;overflow:hidden;margin-bottom:7px;">
+            <div style="width:${barW}%;height:100%;background:${barColor};border-radius:8px;transition:width 0.4s;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;font-family:'Courier New',monospace;">
+            <span style="color:${deltaColor};font-weight:700;">${deltaStr}</span>
+            <span style="color:#606880;">${pct}% of avg</span>
+          </div>
+        </div>`;
+    } else {
+      todayBarHTML = `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:#c0cce8;margin-bottom:6px;">${spentToday}E</div>
+          <div style="font-size:10px;color:#606880;font-family:'Courier New',monospace;">Avg builds after 2+ days of tracking</div>
+        </div>`;
+    }
+
+    // ── Compact 7-day history ─────────────────────────────────────────────────
+    let historyHTML = '';
+    if (last7.length > 0) {
+      const maxSpent = Math.max(...last7.map(e => e.spentE ?? 0), 1);
+      historyHTML = `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d40;">
+        <div style="font-size:9px;letter-spacing:1.5px;color:#505878;font-family:'Courier New',monospace;margin-bottom:8px;text-transform:uppercase;">7-Day History</div>
         ${last7.map(e => {
-          const pct = Math.round((e.spentE ?? 0) / Math.max(1, e.budgetE) * 100);
-          const c   = pct >= 90 ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff8080';
-          return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
-            <span style="font-size:9px;color:#606880;font-family:'Courier New',monospace;width:38px;">${e.d.slice(5)}</span>
+          const pct    = Math.round((e.spentE ?? 0) / Math.max(1, e.budgetE) * 100);
+          const relPct = Math.round((e.spentE ?? 0) / maxSpent * 100);
+          const c      = pct >= 90 ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff8080';
+          return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+            <span style="font-size:9px;color:#505878;font-family:'Courier New',monospace;width:32px;">${e.d.slice(5)}</span>
             <div style="flex:1;height:5px;background:#1e2130;border-radius:3px;overflow:hidden;">
-              <div style="width:${Math.min(100,pct)}%;height:100%;background:${c};border-radius:3px;"></div>
+              <div style="width:${Math.min(100, relPct)}%;height:100%;background:${c};border-radius:3px;"></div>
             </div>
-            <span style="font-size:9px;color:${c};font-family:'Courier New',monospace;width:32px;text-align:right;">${e.spentE ?? 0}E</span>
+            <span style="font-size:9px;color:${c};font-family:'Courier New',monospace;width:36px;text-align:right;">${e.spentE ?? 0}E</span>
           </div>`;
         }).join('')}
       </div>`;
     }
 
+    const regenE = settings.baseRegen ?? 600;
+    const xanE   = (settings.xanaxPerDay ?? 0) * 250;
+    const budgetParts = [`${regenE} regen`, '150 refill'];
+    if (xanE > 0) budgetParts.push(`${xanE} xanax`);
+
     return `<div class="nc17-sec">
-      <div class="nc17-lbl">Daily Energy · ${budgetE}E / day</div>
-      ${budgetRows}
-      <div style="display:flex;justify-content:space-between;font-size:11px;font-family:'Courier New',monospace;color:#606880;margin-top:2px;">
-        <span>Total budget</span>
-        <span style="color:#a0b0d0;">${budgetE}E / day</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span class="nc17-lbl" style="margin:0;">Energy Today</span>
+        <span style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Reset in ${resetStr}</span>
       </div>
-      ${avgSection}
-      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;margin-top:8px;">Resets midnight TCT (torn time · UTC)</div>
+      ${todayBarHTML}
+      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Budget: ${budgetE}E/day · ${budgetParts.join(' + ')}</div>
+      ${historyHTML}
     </div>`;
   }
 
