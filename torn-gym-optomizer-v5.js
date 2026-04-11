@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.4.0
+// @version      5.6.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -23,12 +23,13 @@
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); }        catch {} },
   };
-  const KEYS = { ROT: 'nc17_rot', SET: 'nc17_set', COL: 'nc17_col', SNAP: 'nc17_snap' };
+  const KEYS = { ROT: 'nc17_rot', SET: 'nc17_set', COL: 'nc17_col', SNAP: 'nc17_snap', XBONUS: 'nc17_xbonus' };
 
   const MEM = {
     view: 'main', collapsed: false,
     stats: null, energy: null, happy: null, settings: null, schedule: null, snap: null,
     fetchError: null, fetchStarted: null,
+    extraBonus: null, extraBonusSource: null, // null until fetch completes; source = 'api'|'cache'|'manual'
   };
 
   const DEFAULTS = {
@@ -39,8 +40,8 @@
     dailyEnergy:  1000,
     // STR/SPD ratio targets as % of total stats (DEX = 0 since ignored)
     ratioTargets: { def: 40, str: 28, spd: 28, dex: 4 },
-    // Combined multiplier from education, merits, and other stat perks (e.g. 1.35 = +35%)
-    perksEst:     1.35,
+    // Manual fallback used only when the education/properties API fetch fails
+    extraBonusPct: 4,
   };
 
   const GYMS = {
@@ -104,11 +105,16 @@
 
   // ── MULTI-MONTH PLANNER ───────────────────────────────────────────────────────
   //
-  // Gain model (standard Torn wiki formula):
-  //   gain_per_train = gymDots * (0.00019106 * stat + 0.00226263 * happy + 0.55) * ePerTrain / 150 * perks * buff
-  //   At NC17 stat ranges (~300M), happy ~3500, perks ~1.04, 14% faction buff:
-  //   Isoyama 50E DEF train: ~160-170K per train
-  //   Frontline 25E STR/SPD train: ~80-85K per train
+  // Gain model (matched to spreadsheet formula):
+  //   statScaled = stat < 50M ? stat : (stat-50M)/(8.77635*log10(stat))+50M
+  //   happyFactor = round(1 + 0.07 * round(ln(1 + happy/250), 4), 4)
+  //   inner = statScaled * happyFactor + 8*happy^1.05 + C1*(1-(happy/99999)^2) + C2
+  //   gain_per_train = (1/200000) * dots * ePerTrain * (1+buffPct/100) * inner
+  //
+  //   DEF (Isoyama's):   C1=2100, C2=-600
+  //   STR (Frontline):   C1=1600, C2=1700
+  //   SPD (Frontline):   C1=1600, C2=2000
+  //   DEX (Elites/George's): C1=1800, C2=1500
   //
   // Planning logic (in priority order):
   //
@@ -132,18 +138,49 @@
   //    the peak stats cannot unlock (e.g. STR growing faster than DEF in a month
   //    where only STR is peak and Isoyama's would close).
 
+  // Torn API identifiers for auto-detected training bonuses.
+  // Verify SPORTS_SCIENCE_ID by calling: api.torn.com/torn/?selections=education&key=...
+  // and finding the Sports Science course entry.
+  // Verify POOL_UPGRADE_KEY by calling: api.torn.com/user/?selections=properties&key=...
+  // and inspecting the upgrades object on a property that has the pool training upgrade.
+  const SPORTS_SCIENCE_ID = 10;   // ← confirm this ID from your API response
+  const POOL_UPGRADE_KEY  = 'pool'; // ← confirm this key from your API response
+
   const HAPPY_EST = 5000;
-  const PERKS_EST = 1.35;
+
+  // Per-stat constants [C1, C2] for the gain formula inner term.
+  const GAIN_CONSTS = {
+    def: [2100,  -600],
+    str: [1600,  1700],
+    spd: [1600,  2000],
+    dex: [1800,  1500],
+  };
 
   function gainPerTrain(stat, statVal, buffPct, gymKey) {
     const dots = GYMS[gymKey]?.[stat] || 0;
     if (!dots) return 0;
-    const buff      = 1 + buffPct / 100;
     const ePerTrain = GYM_ENERGY[gymKey];
     // Use real happiness from API when available; fall back to estimate only if not yet fetched
     const happy = MEM.happy ?? HAPPY_EST;
-    const perks = MEM.settings?.perksEst ?? PERKS_EST;
-    return (dots * ((0.00019106 * statVal) + (0.00226263 * happy) + 0.55)) * perks / 150 * ePerTrain * buff;
+
+    // Diminishing-return cap on stat value above 50M (mirrors spreadsheet IF clause)
+    const statScaled = statVal < 50_000_000
+      ? statVal
+      : (statVal - 50_000_000) / (8.77635 * Math.log10(statVal)) + 50_000_000;
+
+    // Happy factor: mirrors ROUND(1+0.07*ROUND(LN(1+happy/250),4),4) in spreadsheet
+    const lnTerm     = Math.round(Math.log(1 + happy / 250) * 10000) / 10000;
+    const happyFactor = Math.round((1 + 0.07 * lnTerm) * 10000) / 10000;
+
+    const [C1, C2] = GAIN_CONSTS[stat] ?? GAIN_CONSTS.str;
+    const inner = statScaled * happyFactor
+      + 8 * Math.pow(happy, 1.05)
+      + C1 * (1 - Math.pow(happy / 99999, 2))
+      + C2;
+
+    // extraBonus: pool + sports science fetched from API; falls back to manual setting while pending
+    const extraBonus = MEM.extraBonus ?? (MEM.settings?.extraBonusPct ?? 0);
+    return (1 / 200000) * dots * ePerTrain * (1 + (buffPct + extraBonus) / 100) * inner;
   }
 
   function projGain(stat, statVal, buffPct, gymKey, energy) {
@@ -767,7 +804,13 @@
         <div class="nc17-cmd-detail">
           Uses ${instr.energyUsed}E of your ${instr.currentE}E · ${leftNote}<br>
           ${daysLeft()}d left in month<br>
-          ~${fmt(instr.estGainPerTrain)} per train · happy ${MEM.happy != null ? fmt(MEM.happy) : 'est '+fmt(HAPPY_EST)}
+          ~${fmt(instr.estGainPerTrain)} per train · happy ${MEM.happy != null ? fmt(MEM.happy) : 'est '+fmt(HAPPY_EST)}<br>
+          ${(() => {
+            const b = MEM.extraBonus;
+            if (b === null) return '<span style="color:#6070a0">bonus: fetching…</span>';
+            const src = MEM.extraBonusSource === 'manual' ? 'manual' : MEM.extraBonusSource === 'cache' ? 'cached' : 'api';
+            return `<span style="color:#80d0a0">+${b}% pool/edu bonus</span> <span style="color:#505878">(${src})</span>`;
+          })()}
         </div>
         ${other && !settings.ignoredStats?.[other] ? `
         <div class="nc17-cmd-div"></div>
@@ -977,6 +1020,12 @@
             <input class="nc17-inp" data-set="safetyM" value="${settings.safetyM}" type="number" min="1" max="200">
             <span class="nc17-inp-unit">M</span>
           </div>
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl">Bonus fallback</span>
+            <input class="nc17-inp" data-set="extraBonusPct" value="${settings.extraBonusPct ?? 4}" type="number" min="0" max="20" step="0.5">
+            <span class="nc17-inp-unit">% if API fails</span>
+          </div>
+          <div style="font-size:10px;color:#6070a0;margin-top:4px;font-family:'Courier New',monospace;">Pool+edu bonus auto-detected via API. This % is only used if the fetch fails. Clear cached value by reloading after midnight.</div>
         </div>
         <div class="nc17-set-grp">
           <div class="nc17-set-lbl">Stat Ratio Targets (%)</div>
@@ -987,15 +1036,6 @@
             <input class="nc17-inp" data-set="ratioTargets.${s}" value="${settings.ratioTargets?.[s] ?? DEFAULTS.ratioTargets[s]}" type="number" min="0" max="100" step="0.5">
             <span class="nc17-inp-unit">%</span>
           </div>`).join('')}
-        </div>
-        <div class="nc17-set-grp">
-          <div class="nc17-set-lbl">Combat Perks Multiplier</div>
-          <div style="font-size:10px;color:#6070a0;margin-bottom:8px;font-family:'Courier New',monospace;">Combined stat bonus from education, merits &amp; other perks. Check your Torn profile for the total % and enter it here (e.g. 1.35 = +35%).</div>
-          <div class="nc17-inp-row">
-            <span class="nc17-inp-lbl">Perks ×</span>
-            <input class="nc17-inp" data-set="perksEst" value="${settings.perksEst ?? PERKS_EST}" type="number" min="1.0" max="3.0" step="0.01">
-            <span class="nc17-inp-unit">× multiplier</span>
-          </div>
         </div>
       </div>
       <div class="nc17-sec">
@@ -1109,6 +1149,52 @@
     return null;
   }
 
+  // ── EXTRA TRAINING BONUS (pool + sports science) ─────────────────────────────
+  async function fetchExtraBonus() {
+    const TTL = 24 * 60 * 60 * 1000;
+
+    // Use 24h cache — these values change at most when an education finishes or property is sold
+    try {
+      const cached = JSON.parse(Store.get(KEYS.XBONUS));
+      if (cached && (Date.now() - cached.ts) < TTL) {
+        MEM.extraBonus       = cached.pct;
+        MEM.extraBonusSource = 'cache';
+        return;
+      }
+    } catch {}
+
+    let pct = null;
+    try {
+      const r = await fetch(`https://api.torn.com/user/?selections=education,properties&key=${API_KEY}`);
+      const d = await r.json();
+      if (!d.error) {
+        let bonus = 0;
+
+        // Sports Science education: +2% if course is in the completed list
+        const completed = d.education_completed ?? [];
+        if (completed.includes(SPORTS_SCIENCE_ID)) bonus += 2;
+
+        // Swimming pool training upgrade: +2% if any owned/rented property carries the upgrade
+        for (const prop of Object.values(d.properties ?? {})) {
+          if ((prop.upgrades ?? {})[POOL_UPGRADE_KEY]) { bonus += 2; break; }
+        }
+
+        pct = bonus;
+        Store.set(KEYS.XBONUS, JSON.stringify({ ts: Date.now(), pct }));
+      }
+    } catch {}
+
+    if (pct !== null) {
+      MEM.extraBonus       = pct;
+      MEM.extraBonusSource = 'api';
+    } else {
+      // API failed — use manual fallback from settings
+      MEM.extraBonus       = MEM.settings?.extraBonusPct ?? 0;
+      MEM.extraBonusSource = 'manual';
+    }
+    render();
+  }
+
   // ── BOOT ─────────────────────────────────────────────────────────────────────
   async function init() {
     if (!TEST_MODE && !location.pathname.startsWith('/gym.php')) return;
@@ -1117,6 +1203,9 @@
     MEM.schedule  = loadSchedule();
     MEM.collapsed = Store.get(KEYS.COL) === '1';
     render();
+
+    // Kick off bonus fetch in parallel — it renders independently when done
+    fetchExtraBonus();
 
     // Fetch battlestats + bars (for real happiness and energy values)
     try {
