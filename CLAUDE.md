@@ -49,6 +49,19 @@ Key rules:
 - `@match` must be scoped to the exact Torn page(s) the script runs on — never use `https://www.torn.com/*` unless truly needed
 - `@version` follows semver; bump the minor for new features, major for rewrites
 - `API_KEY` should use the `###PDA-APIKEY###` placeholder so the script works with Torn PDA's auto-injection
+- `@updateURL` and `@downloadURL` must point to the raw file on the `main` branch (GitHub raw URL)
+
+### Version bump rules (required for PDA update detection)
+
+PDA detects updates by fetching `@updateURL` and comparing the remote `@version` against the installed version. **Every PR that changes script behavior MUST include a `@version` bump in the same commit.** Do not defer version bumps to a follow-up commit.
+
+| Change type | Bump | Example |
+|-------------|------|---------|
+| Bug fix / minor tweak | patch | `5.8.0 → 5.8.1` |
+| New feature / UI change | minor | `5.8.1 → 5.9.0` |
+| Full rewrite / breaking change | major | `5.9.0 → 6.0.0` |
+
+**Rule:** If `torn-gym-optomizer-v5.js` (or any userscript) is modified in a commit, `@version` must change in that same commit. No exceptions. This is what makes PDA's "Check for update" work.
 
 ---
 
