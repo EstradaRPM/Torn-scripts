@@ -63,6 +63,8 @@ PDA detects updates by fetching `@updateURL` and comparing the remote `@version`
 
 **Rule:** If `torn-gym-optomizer-v5.js` (or any userscript) is modified in a commit, `@version` must change in that same commit. No exceptions. This is what makes PDA's "Check for update" work.
 
+**Also update `SCRIPT_VERSION`:** Every userscript defines `const SCRIPT_VERSION = 'x.y.z'` near the top of the IIFE. This constant is what the UI footer displays. It must always match `@version` exactly — change both in the same edit.
+
 ---
 
 ## JavaScript Style
