@@ -320,8 +320,9 @@
     }
 
     // ── Phase 2: final pass — build months[] with optimal splits ──────────────
-    let simStats = { ...startStats };
-    const months  = [];
+    let simStats    = { ...startStats };
+    let prevSimStats = null;  // tracks prior month's entry stats for "growing" check
+    const months    = [];
 
     for (let mi = 0; mi < schedule.length; mi++) {
       const info = monthBasics(mi);
@@ -435,6 +436,76 @@
         }
       }
 
+      // Step 5.5: corrective training — for each ratio-deficient non-peak stat that
+      // is growing vs the prior month and has a future peak month in the schedule,
+      // try diverting 10% of energy to it. Accept when the forward-score improvement
+      // exceeds 1.5× the opportunity cost (gain lost on the top peak stat).
+      const correctiveTraining = {};
+      {
+        const curRatiosCorr = ratioOf(simStats);
+        const remaining     = schedule.slice(mi + 1);
+        let   scoreBase     = scoreHorizon(projStats, remaining, settings);
+
+        for (const ns of nonPeakStats) {
+          // Condition 1: ratio deficit ≥ 2.5 percentage points below target
+          const deficit = (ratio[ns] || 0) - (curRatiosCorr[ns] || 0);
+          if (deficit < 2.5) continue;
+
+          // Condition 2: stat grew vs prior month (requires prior data)
+          if (prevSimStats === null) continue;
+          if ((simStats[ns] || 0) <= (prevSimStats[ns] || 0)) continue;
+
+          // Condition 3: a future non-past month exists where ns is a peak stat
+          const hasFuturePeak = remaining.some(r => {
+            const [fy, fm] = r.month.split('-').map(Number);
+            if (fy < now.getFullYear() || (fy === now.getFullYear() && fm - 1 < now.getMonth())) return false;
+            const fb   = r.buffs || {};
+            const fmax = Math.max(...active.map(s => fb[s] || 0));
+            return (fb[ns] || 0) === fmax;
+          });
+          if (!hasFuturePeak) continue;
+
+          // Pick top peak stat by current split allocation (updated across loop iterations)
+          const topPeak = [...peakStats].sort((a,b) => (splits[b]||0) - (splits[a]||0))[0];
+          if (!topPeak || (splits[topPeak] || 0) <= 0) continue;
+
+          // Corrective energy: 10% of totalE clamped to ns's gym train-size
+          const gkNs       = GYM_FOR[ns];
+          const correctiveE = Math.floor(0.1 * totalE / GYM_ENERGY[gkNs]) * GYM_ENERGY[gkNs];
+          if (correctiveE <= 0) continue;
+
+          // Opportunity cost: peak-stat gain lost by diverting correctiveE away
+          const gkPeak   = GYM_FOR[topPeak];
+          const peakLost = projGain(topPeak, simStats[topPeak] || 1e6, buffs[topPeak] || 0, gkPeak, correctiveE);
+
+          // Corrective gain for ns with the diverted energy
+          const correctiveGain = projGain(ns, projStats[ns] || 1e6, buffs[ns] || 0, gkNs, correctiveE);
+
+          // Simulate the adjusted end-of-month stats and score the forward horizon
+          const projWith = { ...projStats };
+          projWith[ns]      = (projWith[ns]      || 0) + correctiveGain;
+          projWith[topPeak] = Math.max(0, (projWith[topPeak] || 0) - peakLost);
+
+          const scoreWith = scoreHorizon(projWith, remaining, settings);
+          if (scoreWith > scoreBase + 1.5 * peakLost) {
+            // Accept: commit the corrective adjustment to projStats and splits
+            projStats[ns]      = projWith[ns];
+            projStats[topPeak] = projWith[topPeak];
+            splits[topPeak]    = Math.max(0, (splits[topPeak] || 0) - correctiveE);
+            splits[ns]         = (splits[ns]  || 0) + correctiveE;
+            scoreBase = scoreWith; // raise bar for any subsequent stats
+            const trains = Math.floor(correctiveE / GYM_ENERGY[gkNs]);
+            correctiveTraining[ns] = {
+              energy: correctiveE, trains, gym: gkNs,
+              reason: `${LABEL[ns]} ${(curRatiosCorr[ns]||0).toFixed(1)}% vs ${(ratio[ns]||0).toFixed(1)}% target — ${trains} corrective trains at ${GYM_NAME[gkNs]}`,
+            };
+          }
+        }
+      }
+
+      // Projected end-of-month stat ratios (after all training including corrective)
+      const projRatios = ratioOf(projStats);
+
       // Step 6: headroom feasibility for next month's targets
       const feasibility = {};
       if (nextRot) {
@@ -468,9 +539,10 @@
         month: rot.month, label: rot.label||rot.month, buffs, days, totalE,
         peakStats, topTwo, splits, weights, forcedTraining, forcedReasons,
         projStats, breaches, feasibility, isCurrent, GYM_FOR, maxBuff,
-        alphaUsed, scoreDelta,
+        alphaUsed, scoreDelta, correctiveTraining, projRatios,
       });
-      simStats = projStats;
+      prevSimStats = simStats;
+      simStats     = projStats;
     }
 
     return months;
@@ -998,6 +1070,13 @@
         </div>` : ''}
         <div class="nc17-cmd-div"></div>
         <div class="nc17-cmd-detail">${buffStr}</div>
+        ${Object.keys(curMonth.correctiveTraining||{}).length ? `
+        <div class="nc17-cmd-div"></div>
+        <div class="nc17-cmd-detail" style="color:#ffd870;">${
+          Object.entries(curMonth.correctiveTraining).map(([s, c]) =>
+            `↗ ${LABEL[s]} corrective: ${c.trains} trains at ${GYM_NAME[c.gym]}`
+          ).join('<br>')
+        }</div>` : ''}
       </div>
     </div>`;
   }
@@ -1083,7 +1162,7 @@
     return `<div class="nc17-sec">
       <div class="nc17-lbl">Multi-Month Plan</div>
       ${plan.map((m, mi) => {
-        const { splits, GYM_FOR: GF, peakStats, forcedTraining, forcedReasons, breaches, buffs, weights, feasibility } = m;
+        const { splits, GYM_FOR: GF, peakStats, forcedTraining, forcedReasons, breaches, buffs, weights, feasibility, correctiveTraining } = m;
 
         // Peak stat rows — sorted by weight (highest first = what optimizer prioritizes)
         const sortedPeak = [...peakStats].sort((a,b) => (weights[b]||0) - (weights[a]||0));
@@ -1117,6 +1196,19 @@
           </div>`;
         }).join('');
 
+        // Corrective rows — amber, ratio-deficit catch-up training
+        const corrStats = Object.keys(correctiveTraining||{}).filter(s => correctiveTraining[s]);
+        const correctiveRows = corrStats.map(s => {
+          const c  = correctiveTraining[s];
+          const gk = c.gym;
+          return `<div class="nc17-plan-row" style="background:#1a1500;border-radius:3px;margin-top:2px;">
+            <span style="color:#ffd870;font-weight:700;">${LABEL[s]}</span>
+            <span style="color:#c8a040;font-size:11px;font-family:'Courier New',monospace;">corrective · ${GYM_NAME[gk]}</span>
+            <span style="color:#ffd060;font-family:'Courier New',monospace;font-weight:700;">${c.trains} trains</span>
+          </div>
+          <div style="font-size:10px;color:#aa8030;padding:2px 4px 4px;font-family:'Courier New',monospace;">↳ ${c.reason}</div>`;
+        }).join('');
+
         // Feasibility rows — how much of next month's target this month's plan enables
         const feasRows = Object.entries(feasibility||{}).map(([ns, f]) => {
           const color = f.pct >= 80 ? '#40d870' : f.pct >= 50 ? '#ffd060' : '#ff8080';
@@ -1129,6 +1221,7 @@
           <div class="nc17-plan-hdr">${m.label}${m.isCurrent?' ← now':''} · ${m.days}d · peak +${m.maxBuff}%</div>
           ${peakRows}
           ${forcedRows}
+          ${correctiveRows}
           ${feasRows}
           ${forcedReasons.length ? `<div class="nc17-plan-breach" style="color:#aa8030;margin-top:5px;">↳ ${forcedReasons.join(' | ')}</div>` : ''}
           ${breaches.length ? `<div class="nc17-plan-breach" style="margin-top:5px;">⚠ ${breaches.map(b=>`${LABEL[b.stat]} → ${b.gym}: ${b.room === 0 ? '≈0M' : fmt(b.room)} left`).join(', ')}</div>` : ''}
