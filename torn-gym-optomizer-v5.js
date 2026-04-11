@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.8.0
+// @version      5.9.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.8.0';
+  const SCRIPT_VERSION = '5.9.0';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -24,13 +24,15 @@
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); }        catch {} },
   };
-  const KEYS = { ROT: 'nc17_rot', SET: 'nc17_set', COL: 'nc17_col', SNAP: 'nc17_snap', XBONUS: 'nc17_xbonus' };
+  const KEYS = { ROT: 'nc17_rot', SET: 'nc17_set', COL: 'nc17_col', SNAP: 'nc17_snap', XBONUS: 'nc17_xbonus', ELOG: 'nc17_elog', ETST: 'nc17_etstate' };
 
   const MEM = {
     view: 'main', collapsed: false,
     stats: null, energy: null, happy: null, settings: null, schedule: null, snap: null,
     fetchError: null, fetchStarted: null,
     extraBonus: null, extraBonusSource: null, // null until fetch completes; source = 'api'|'cache'|'manual'
+    // Daily energy tracking (TCT-aligned)
+    lastTctDate: null, dayStartE: null, prevE: null,
   };
 
   const DEFAULTS = {
@@ -718,14 +720,16 @@
     return String(Math.round(n));
   }
 
+  // TCT (Torn City Time) = UTC. All daily resets happen at midnight UTC (≈ 8 pm EDT / 7 pm EST).
   function todayKey() {
     const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   }
 
   function daysLeft() {
     const n = new Date();
-    return new Date(n.getFullYear(), n.getMonth()+1, 0).getDate() - n.getDate();
+    const daysInMonth = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, 0)).getUTCDate();
+    return daysInMonth - n.getUTCDate();
   }
 
   // ── SNAPSHOT ─────────────────────────────────────────────────────────────────
@@ -738,6 +742,62 @@
       return snap;
     }
     return ex;
+  }
+
+  // ── DAILY ENERGY LOG ─────────────────────────────────────────────────────────
+  // Stores up to 14 days of: { d, budgetE, startE, endE, spentE }
+  // spentE = estimated E used for training = startE + budgetE - endE (clamped)
+  function loadElog() {
+    try { return JSON.parse(Store.get(KEYS.ELOG)) || []; } catch { return []; }
+  }
+  function saveElog(log) { Store.set(KEYS.ELOG, JSON.stringify(log.slice(-14))); }
+
+  // Persist tracking state across page reloads so day-rollover detection works
+  // even if the browser was closed before TCT midnight.
+  function initEtrackState() {
+    try {
+      const s = JSON.parse(Store.get(KEYS.ETST));
+      if (s && s.d) {
+        MEM.lastTctDate = s.d;
+        MEM.dayStartE   = s.startE ?? null;
+        MEM.prevE       = s.prevE  ?? null;
+      }
+    } catch {}
+  }
+
+  // Called after every energy reading (init + 5-min interval).
+  function updateEnergyTracking(currentE, settings) {
+    if (currentE == null) return;
+    const today = todayKey();
+
+    if (MEM.lastTctDate === null) {
+      // First reading ever — initialise without recording a partial day
+      MEM.lastTctDate = today;
+      MEM.dayStartE   = currentE;
+      MEM.prevE       = currentE;
+      Store.set(KEYS.ETST, JSON.stringify({ d: today, startE: currentE, prevE: currentE }));
+      return;
+    }
+
+    if (today !== MEM.lastTctDate) {
+      // TCT day rolled over — record the completed day
+      const budgetE = computeDailyEnergy(settings);
+      const startE  = MEM.dayStartE ?? 0;
+      const endE    = MEM.prevE ?? currentE;
+      // Energy used for training = what you had + what you earned - what's left
+      const spentE  = Math.max(0, Math.min(startE + budgetE - endE, startE + budgetE));
+      const log     = loadElog();
+      const idx     = log.findIndex(e => e.d === MEM.lastTctDate);
+      const entry   = { d: MEM.lastTctDate, budgetE, startE, endE, spentE };
+      if (idx >= 0) log[idx] = entry; else log.push(entry);
+      saveElog(log);
+
+      MEM.lastTctDate = today;
+      MEM.dayStartE   = currentE;
+    }
+
+    MEM.prevE = currentE;
+    Store.set(KEYS.ETST, JSON.stringify({ d: MEM.lastTctDate, startE: MEM.dayStartE, prevE: MEM.prevE }));
   }
 
   // ── API ──────────────────────────────────────────────────────────────────────
@@ -1023,7 +1083,7 @@
     } else if (view === 'plan') {
       body = planViewHTML(plan, settings);
     } else {
-      body = instrHTML(instr, curMonth, settings) + progressHTML(instr, stats) + gymStatusHTML(open, hd, settings) + statsHTML(stats);
+      body = instrHTML(instr, curMonth, settings) + progressHTML(instr, stats) + energyTrackerHTML(settings) + gymStatusHTML(open, hd, settings) + statsHTML(stats);
     }
 
     return hdr + `<div id="nc17-body">${body}</div>` + ftr;
@@ -1116,7 +1176,74 @@
           </div>
         </div>`;
       }).join('')}
-      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Targets = planned trains × est. gain/train · Resets midnight</div>
+      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Targets = planned trains × est. gain/train · Resets midnight TCT</div>
+    </div>`;
+  }
+
+  // ── DAILY ENERGY TRACKER HTML ────────────────────────────────────────────────
+  function energyTrackerHTML(settings) {
+    const regenE  = settings.baseRegen ?? 600;
+    const refillE = 150;
+    const xanE    = (settings.xanaxPerDay ?? 0) * 250;
+    const budgetE = regenE + refillE + xanE;
+
+    // Proportional bar for each energy source
+    const bBar = (val, color) => {
+      const pct = Math.round(val / budgetE * 100);
+      return `<div style="flex:1;height:6px;background:#1e2130;border-radius:3px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px;"></div>
+      </div>`;
+    };
+
+    const sources = [
+      { label: 'Regen',  val: regenE,  color: '#60aaff' },
+      { label: 'Refill', val: refillE, color: '#40e880' },
+      ...(xanE > 0 ? [{ label: 'Xanax', val: xanE, color: '#ffcc40' }] : []),
+    ];
+
+    const budgetRows = sources.map(r => `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+        <span style="font-size:11px;color:#8090b8;width:38px;">${r.label}</span>
+        ${bBar(r.val, r.color)}
+        <span style="font-size:11px;font-family:'Courier New',monospace;color:#c0cce8;width:38px;text-align:right;">${r.val}E</span>
+      </div>`).join('');
+
+    const log   = loadElog();
+    const last7 = log.slice(-7);
+
+    let avgSection = '';
+    if (last7.length >= 2) {
+      const avgSpent = Math.round(last7.reduce((s, e) => s + (e.spentE ?? 0), 0) / last7.length);
+      const avgPct   = Math.round(avgSpent / budgetE * 100);
+      const avgColor = avgPct >= 90 ? '#40d870' : avgPct >= 70 ? '#ffd060' : '#ff8080';
+      avgSection = `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #2a2d40;">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px;">
+          <span style="color:#8090b8;">7-day avg spent</span>
+          <span style="color:${avgColor};font-family:'Courier New',monospace;font-weight:700;">${avgSpent}E <span style="font-size:10px;font-weight:400;">(${avgPct}%)</span></span>
+        </div>
+        ${last7.map(e => {
+          const pct = Math.round((e.spentE ?? 0) / Math.max(1, e.budgetE) * 100);
+          const c   = pct >= 90 ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff8080';
+          return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+            <span style="font-size:9px;color:#606880;font-family:'Courier New',monospace;width:38px;">${e.d.slice(5)}</span>
+            <div style="flex:1;height:5px;background:#1e2130;border-radius:3px;overflow:hidden;">
+              <div style="width:${Math.min(100,pct)}%;height:100%;background:${c};border-radius:3px;"></div>
+            </div>
+            <span style="font-size:9px;color:${c};font-family:'Courier New',monospace;width:32px;text-align:right;">${e.spentE ?? 0}E</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    return `<div class="nc17-sec">
+      <div class="nc17-lbl">Daily Energy · ${budgetE}E / day</div>
+      ${budgetRows}
+      <div style="display:flex;justify-content:space-between;font-size:11px;font-family:'Courier New',monospace;color:#606880;margin-top:2px;">
+        <span>Total budget</span>
+        <span style="color:#a0b0d0;">${budgetE}E / day</span>
+      </div>
+      ${avgSection}
+      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;margin-top:8px;">Resets midnight TCT (torn time · UTC)</div>
     </div>`;
   }
 
@@ -1484,6 +1611,7 @@
     MEM.settings  = loadSettings();
     MEM.schedule  = loadSchedule();
     MEM.collapsed = Store.get(KEYS.COL) === '1';
+    initEtrackState(); // restore day-tracking state from last session
     render();
 
     // Kick off bonus fetch in parallel — it renders independently when done
@@ -1500,6 +1628,7 @@
         const domE = readEnergyFromDOM();
         MEM.energy = domE ?? d.energy?.current ?? null;
         MEM.snap   = updateSnap(MEM.stats);
+        updateEnergyTracking(MEM.energy, MEM.settings);
       } else {
         MEM.fetchError = `API error ${d.error.code}: ${d.error.error}`;
       }
@@ -1521,6 +1650,7 @@
             MEM.happy  = d.happy?.current ?? MEM.happy;
             const domE = readEnergyFromDOM();
             MEM.energy = domE ?? d.energy?.current ?? MEM.energy;
+            updateEnergyTracking(MEM.energy, MEM.settings);
           }
         } catch {}
         render();
