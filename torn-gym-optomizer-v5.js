@@ -14,6 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
+  const SCRIPT_VERSION = '5.8.0';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -998,7 +999,7 @@
     </div>`;
 
     const ftr = `<div id="nc17-ftr">
-      <span>NC17 v5.7.0${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
+      <span>NC17 v${SCRIPT_VERSION}${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
       <span>${col ? '▼ expand' : '▲ collapse'}</span>
     </div>`;
 
