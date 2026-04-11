@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.4.0
+// @version      5.5.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -104,11 +104,15 @@
 
   // ── MULTI-MONTH PLANNER ───────────────────────────────────────────────────────
   //
-  // Gain model (standard Torn wiki formula):
-  //   gain_per_train = gymDots * (0.00019106 * stat + 0.00226263 * happy + 0.55) * ePerTrain / 150 * perks * buff
-  //   At NC17 stat ranges (~300M), happy ~3500, perks ~1.04, 14% faction buff:
-  //   Isoyama 50E DEF train: ~160-170K per train
-  //   Frontline 25E STR/SPD train: ~80-85K per train
+  // Gain model (matched to spreadsheet formula):
+  //   statScaled = stat < 50M ? stat : (stat-50M)/(8.77635*log10(stat))+50M
+  //   happyFactor = round(1 + 0.07 * round(ln(1 + happy/250), 4), 4)
+  //   inner = statScaled * happyFactor + 8*happy^1.05 + C1*(1-(happy/99999)^2) + C2
+  //   gain_per_train = (1/200000) * dots * ePerTrain * (1+buffPct/100) * perks * inner
+  //
+  //   DEF constants  (Isoyama's):  C1=2100, C2=-600
+  //   STR/SPD constants (Frontline): C1=1600, C2=1700
+  //   DEX constants (unconfirmed — using STR/SPD values as default)
   //
   // Planning logic (in priority order):
   //
@@ -135,15 +139,39 @@
   const HAPPY_EST = 5000;
   const PERKS_EST = 1.35;
 
+  // Stat-specific constants for the gain formula.
+  // DEX is unconfirmed — using STR/SPD values as a default; update if the real formula differs.
+  const GAIN_CONSTS = {
+    def: [2100, -600],
+    str: [1600,  1700],
+    spd: [1600,  1700],
+    dex: [1600,  1700],
+  };
+
   function gainPerTrain(stat, statVal, buffPct, gymKey) {
     const dots = GYMS[gymKey]?.[stat] || 0;
     if (!dots) return 0;
-    const buff      = 1 + buffPct / 100;
     const ePerTrain = GYM_ENERGY[gymKey];
     // Use real happiness from API when available; fall back to estimate only if not yet fetched
     const happy = MEM.happy ?? HAPPY_EST;
     const perks = MEM.settings?.perksEst ?? PERKS_EST;
-    return (dots * ((0.00019106 * statVal) + (0.00226263 * happy) + 0.55)) * perks / 150 * ePerTrain * buff;
+
+    // Diminishing-return cap on stat value above 50M (mirrors spreadsheet IF clause)
+    const statScaled = statVal < 50_000_000
+      ? statVal
+      : (statVal - 50_000_000) / (8.77635 * Math.log10(statVal)) + 50_000_000;
+
+    // Happy factor: mirrors ROUND(1+0.07*ROUND(LN(1+happy/250),4),4) in spreadsheet
+    const lnTerm     = Math.round(Math.log(1 + happy / 250) * 10000) / 10000;
+    const happyFactor = Math.round((1 + 0.07 * lnTerm) * 10000) / 10000;
+
+    const [C1, C2] = GAIN_CONSTS[stat] ?? GAIN_CONSTS.str;
+    const inner = statScaled * happyFactor
+      + 8 * Math.pow(happy, 1.05)
+      + C1 * (1 - Math.pow(happy / 99999, 2))
+      + C2;
+
+    return (1 / 200000) * dots * ePerTrain * (1 + buffPct / 100) * perks * inner;
   }
 
   function projGain(stat, statVal, buffPct, gymKey, energy) {
