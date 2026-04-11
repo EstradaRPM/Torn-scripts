@@ -39,8 +39,6 @@
     dailyEnergy:  1000,
     // STR/SPD ratio targets as % of total stats (DEX = 0 since ignored)
     ratioTargets: { def: 40, str: 28, spd: 28, dex: 4 },
-    // Combined multiplier from education, merits, and other stat perks (e.g. 1.35 = +35%)
-    perksEst:     1.35,
   };
 
   const GYMS = {
@@ -108,11 +106,12 @@
   //   statScaled = stat < 50M ? stat : (stat-50M)/(8.77635*log10(stat))+50M
   //   happyFactor = round(1 + 0.07 * round(ln(1 + happy/250), 4), 4)
   //   inner = statScaled * happyFactor + 8*happy^1.05 + C1*(1-(happy/99999)^2) + C2
-  //   gain_per_train = (1/200000) * dots * ePerTrain * (1+buffPct/100) * perks * inner
+  //   gain_per_train = (1/200000) * dots * ePerTrain * (1+buffPct/100) * inner
   //
-  //   DEF constants  (Isoyama's):  C1=2100, C2=-600
-  //   STR/SPD constants (Frontline): C1=1600, C2=1700
-  //   DEX constants (unconfirmed — using STR/SPD values as default)
+  //   DEF (Isoyama's):   C1=2100, C2=-600
+  //   STR (Frontline):   C1=1600, C2=1700
+  //   SPD (Frontline):   C1=1600, C2=2000
+  //   DEX (Elites/George's): C1=1800, C2=1500
   //
   // Planning logic (in priority order):
   //
@@ -137,15 +136,13 @@
   //    where only STR is peak and Isoyama's would close).
 
   const HAPPY_EST = 5000;
-  const PERKS_EST = 1.35;
 
-  // Stat-specific constants for the gain formula.
-  // DEX is unconfirmed — using STR/SPD values as a default; update if the real formula differs.
+  // Per-stat constants [C1, C2] for the gain formula inner term.
   const GAIN_CONSTS = {
-    def: [2100, -600],
+    def: [2100,  -600],
     str: [1600,  1700],
-    spd: [1600,  1700],
-    dex: [1600,  1700],
+    spd: [1600,  2000],
+    dex: [1800,  1500],
   };
 
   function gainPerTrain(stat, statVal, buffPct, gymKey) {
@@ -154,7 +151,6 @@
     const ePerTrain = GYM_ENERGY[gymKey];
     // Use real happiness from API when available; fall back to estimate only if not yet fetched
     const happy = MEM.happy ?? HAPPY_EST;
-    const perks = MEM.settings?.perksEst ?? PERKS_EST;
 
     // Diminishing-return cap on stat value above 50M (mirrors spreadsheet IF clause)
     const statScaled = statVal < 50_000_000
@@ -171,7 +167,7 @@
       + C1 * (1 - Math.pow(happy / 99999, 2))
       + C2;
 
-    return (1 / 200000) * dots * ePerTrain * (1 + buffPct / 100) * perks * inner;
+    return (1 / 200000) * dots * ePerTrain * (1 + buffPct / 100) * inner;
   }
 
   function projGain(stat, statVal, buffPct, gymKey, energy) {
@@ -1015,15 +1011,6 @@
             <input class="nc17-inp" data-set="ratioTargets.${s}" value="${settings.ratioTargets?.[s] ?? DEFAULTS.ratioTargets[s]}" type="number" min="0" max="100" step="0.5">
             <span class="nc17-inp-unit">%</span>
           </div>`).join('')}
-        </div>
-        <div class="nc17-set-grp">
-          <div class="nc17-set-lbl">Combat Perks Multiplier</div>
-          <div style="font-size:10px;color:#6070a0;margin-bottom:8px;font-family:'Courier New',monospace;">Combined stat bonus from education, merits &amp; other perks. Check your Torn profile for the total % and enter it here (e.g. 1.35 = +35%).</div>
-          <div class="nc17-inp-row">
-            <span class="nc17-inp-lbl">Perks ×</span>
-            <input class="nc17-inp" data-set="perksEst" value="${settings.perksEst ?? PERKS_EST}" type="number" min="1.0" max="3.0" step="0.01">
-            <span class="nc17-inp-unit">× multiplier</span>
-          </div>
         </div>
       </div>
       <div class="nc17-sec">
