@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.6.0
+// @version      5.7.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -37,7 +37,8 @@
     secondaryGym: 'frontline',
     ignoredStats: { def: false, str: false, spd: false, dex: true },
     safetyM:      15,
-    dailyEnergy:  1000,
+    baseRegen:    600,
+    xanaxPerDay:  0,
     // STR/SPD ratio targets as % of total stats (DEX = 0 since ignored)
     ratioTargets: { def: 40, str: 28, spd: 28, dex: 4 },
     // Manual fallback used only when the education/properties API fetch fails
@@ -148,6 +149,11 @@
 
   const HAPPY_EST = 5000;
 
+  // Daily energy = base natural regen + fixed 150E daily points refill + xanax × 250E each
+  function computeDailyEnergy(s) {
+    return Math.round((s.baseRegen ?? 600) + 150 + (s.xanaxPerDay ?? 0) * 250);
+  }
+
   // Per-stat constants [C1, C2] for the gain formula inner term.
   const GAIN_CONSTS = {
     def: [2100,  -600],
@@ -198,7 +204,7 @@
   function planHorizon(startStats, schedule, settings) {
     const ignored   = settings.ignoredStats || {};
     const safetyPts = (settings.safetyM || 15) * 1e6;
-    const dailyE    = settings.dailyEnergy || 1000;
+    const dailyE    = computeDailyEnergy(settings);
     const ratio     = settings.ratioTargets || HANKS;
     const active    = STATS.filter(s => !ignored[s]);
 
@@ -434,7 +440,7 @@
 
     // Daily target gains for progress display
     const dailyTargetGains = {};
-    const dailyE = settings.dailyEnergy || 1000;
+    const dailyE = computeDailyEnergy(settings);
     for (const stat of [primary, secondary]) {
       if (!stat || (settings.ignoredStats||{})[stat]) continue;
       const gk = GYM_FOR[stat];
@@ -747,7 +753,7 @@
     </div>`;
 
     const ftr = `<div id="nc17-ftr">
-      <span>NC17 v5.3.0${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
+      <span>NC17 v5.7.0${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
       <span>${col ? '▼ expand' : '▲ collapse'}</span>
     </div>`;
 
@@ -1012,8 +1018,17 @@
         <div class="nc17-set-grp">
           <div class="nc17-set-lbl">Training Params</div>
           <div class="nc17-inp-row">
-            <span class="nc17-inp-lbl">Daily Energy</span>
-            <input class="nc17-inp" data-set="dailyEnergy" value="${settings.dailyEnergy}" type="number" min="100" max="5000" step="50">
+            <span class="nc17-inp-lbl">Base Regen</span>
+            <input class="nc17-inp" data-set="baseRegen" value="${settings.baseRegen ?? 600}" type="number" min="0" max="2000" step="10">
+            <span class="nc17-inp-unit">E/day</span>
+          </div>
+          <div class="nc17-inp-row">
+            <span class="nc17-inp-lbl">Xanax / day</span>
+            <input class="nc17-inp" data-set="xanaxPerDay" value="${settings.xanaxPerDay ?? 0}" type="number" min="0" max="20" step="0.1">
+            <span class="nc17-inp-unit">× 250E</span>
+          </div>
+          <div style="font-size:10px;color:#6070a0;margin-bottom:12px;font-family:'Courier New',monospace;">
+            +150E pts refill (fixed) · Budget: <span style="color:#a0d0ff;font-weight:700;">${computeDailyEnergy(settings)}E/day</span>
           </div>
           <div class="nc17-inp-row">
             <span class="nc17-inp-lbl">Safety Buffer</span>
