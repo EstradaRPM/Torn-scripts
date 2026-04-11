@@ -410,6 +410,113 @@
     return months;
   }
 
+  // Returns a scalar quality score for a given schedule+settings combination.
+  // Higher is better. Used to compare candidate plans without rendering.
+  //
+  // Score = Σ (gain × (1 + buffPct/100)) for all peak stats across all months
+  //       − Σ headroom shortfalls × 5.0          (per stat per month)
+  //       − Σ George's-fallback opportunity cost × 2.0  (preferred gym was capable but closed)
+  //       − Σ end-of-horizon ratio deficit (pp) × totalStats × 0.01
+  function scoreHorizon(simStats, schedule, settings) {
+    const ignored   = settings.ignoredStats || {};
+    const safetyPts = (settings.safetyM || 15) * 1e6;
+    const dailyE    = computeDailyEnergy(settings);
+    const ratio     = settings.ratioTargets || HANKS;
+    const active    = STATS.filter(s => !ignored[s]);
+    const pg        = settings.primaryGym;
+    const sg        = settings.secondaryGym;
+
+    // Isoyama's and Frontline have headroom-gated access; all others are always open.
+    const gymIsOpen = (gymKey, open) => {
+      if (gymKey === 'isoyamas') return open.iso;
+      if (gymKey === 'frontline') return open.fl;
+      return true;
+    };
+
+    let cur = { ...simStats };
+    const now = new Date();
+    let score = 0;
+
+    for (let mi = 0; mi < schedule.length; mi++) {
+      const rot = schedule[mi];
+      const [ry, rm] = rot.month.split('-').map(Number);
+      // Skip months before current
+      if (ry < now.getFullYear() || (ry === now.getFullYear() && rm - 1 < now.getMonth())) continue;
+
+      const buffs       = rot.buffs || { def: 0, str: 0, spd: 0, dex: 0 };
+      const daysInMonth = new Date(ry, rm, 0).getDate();
+      const isCurrent   = (ry === now.getFullYear() && rm - 1 === now.getMonth());
+      const days        = isCurrent ? (daysInMonth - now.getDate() + 1) : daysInMonth;
+      const totalE      = dailyE * days;
+
+      // Peak stats = those tied for highest buff this month
+      const maxBuff   = Math.max(...active.map(s => buffs[s] || 0));
+      const peakStats = active.filter(s => (buffs[s] || 0) === maxBuff);
+      const ePerStat  = peakStats.length ? Math.floor(totalE / peakStats.length) : 0;
+
+      const open      = gymOpen(cur);
+      const projStats = { ...cur };
+
+      for (const s of peakStats) {
+        const buffPct  = buffs[s] || 0;
+        const pgTrains = GYMS[pg]?.[s] != null;
+        const sgTrains = GYMS[sg]?.[s] != null;
+
+        // Resolve gym: primary → secondary → George's
+        let gymKey = 'georges';
+        let georgesFallback = false;
+        if (pgTrains && gymIsOpen(pg, open)) {
+          gymKey = pg;
+        } else if (sgTrains && gymIsOpen(sg, open)) {
+          gymKey = sg;
+        } else {
+          gymKey = 'georges';
+          // Fallback: preferred gym can train this stat but is currently closed
+          if (pgTrains || sgTrains) georgesFallback = true;
+        }
+
+        const trains = Math.floor(ePerStat / GYM_ENERGY[gymKey]);
+        const gain   = gainPerTrain(s, cur[s] || 1e6, buffPct, gymKey) * trains;
+
+        // Buff-weighted gain contribution
+        score += gain * (1 + buffPct / 100);
+
+        // George's fallback penalty: opportunity cost of the closed preferred gym × 2.0
+        if (georgesFallback) {
+          const preferredGym = pgTrains ? pg : sg;
+          const prefTrains   = Math.floor(ePerStat / GYM_ENERGY[preferredGym]);
+          const lostGain     = Math.max(0,
+            gainPerTrain(s, cur[s] || 1e6, buffPct, preferredGym) * prefTrains - gain
+          );
+          score -= lostGain * 2.0;
+        }
+
+        projStats[s] = (projStats[s] || 0) + gain;
+      }
+
+      // Headroom violation penalty: any stat below safetyPts at month-end
+      const hd = headrooms(projStats);
+      for (const s of active) {
+        const shortfall = Math.max(0, safetyPts - hd[s]);
+        if (shortfall > 0) score -= shortfall * 5.0;
+      }
+
+      cur = projStats;
+    }
+
+    // End-of-horizon ratio drift penalty
+    const totalStats = active.reduce((sum, s) => sum + (cur[s] || 0), 0);
+    if (totalStats > 0) {
+      const finalRatios = ratioOf(cur);
+      for (const s of active) {
+        const deficit = Math.max(0, (ratio[s] || 0) - finalRatios[s]);
+        if (deficit > 0) score -= deficit * totalStats * 0.01;
+      }
+    }
+
+    return score;
+  }
+
   // ── REAL-TIME INSTRUCTION ────────────────────────────────────────────────────
   function buildInstruction(currentE, snap, stats, currentMonth, settings) {
     if (!currentMonth) return null;
