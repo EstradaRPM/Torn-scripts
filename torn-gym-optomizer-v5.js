@@ -215,28 +215,118 @@
       dex: 'georges',
     };
 
-    let simStats = { ...startStats };
     const now = new Date();
-    const months = [];
 
-    for (let mi = 0; mi < schedule.length; mi++) {
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Basic per-month facts derived purely from schedule position and date.
+    // Returns null for months that fall before the current month.
+    function monthBasics(mi) {
       const rot = schedule[mi];
       const [ry, rm] = rot.month.split('-').map(Number);
-      // Skip months before current
-      if (ry < now.getFullYear() || (ry === now.getFullYear() && rm - 1 < now.getMonth())) continue;
-
-      const buffs = rot.buffs || { def:0, str:0, spd:0, dex:0 };
+      if (ry < now.getFullYear() || (ry === now.getFullYear() && rm - 1 < now.getMonth())) return null;
+      const buffs       = rot.buffs || { def:0, str:0, spd:0, dex:0 };
       const daysInMonth = new Date(ry, rm, 0).getDate();
-      const isCurrent = (ry === now.getFullYear() && rm - 1 === now.getMonth());
-      const days = isCurrent
-        ? (new Date(ry, rm, 0).getDate() - now.getDate() + 1)
-        : daysInMonth;
-      const totalE = dailyE * days;
-
-      // Step 1: identify peak-buff stats this month
-      const maxBuff = Math.max(...active.map(s => buffs[s] || 0));
-      const peakStats = active.filter(s => (buffs[s] || 0) === maxBuff);
+      const isCurrent   = (ry === now.getFullYear() && rm - 1 === now.getMonth());
+      const days        = isCurrent ? (daysInMonth - now.getDate() + 1) : daysInMonth;
+      const totalE      = dailyE * days;
+      const maxBuff     = Math.max(...active.map(s => buffs[s] || 0));
+      const peakStats   = active.filter(s => (buffs[s] || 0) === maxBuff);
       const nonPeakStats = active.filter(s => !peakStats.includes(s));
+      return { rot, ry, rm, buffs, isCurrent, days, totalE, maxBuff, peakStats, nonPeakStats };
+    }
+
+    // For 2-peak months: α is the fraction of totalE assigned to peakStats[0].
+    // The remainder (after train-multiple clamping of A) flows to peakStats[1].
+    // For other peak counts: falls back to equal energy per stat.
+    function splitsFromAlpha(α, peakStats, totalE) {
+      const sp = { def:0, str:0, spd:0, dex:0 };
+      if (peakStats.length === 2) {
+        const [A, B] = peakStats;
+        const eA = GYM_ENERGY[GYM_FOR[A]];
+        const eB = GYM_ENERGY[GYM_FOR[B]];
+        sp[A] = Math.floor(α * totalE / eA) * eA;
+        sp[B] = Math.floor((totalE - sp[A]) / eB) * eB;
+      } else {
+        const n = Math.max(1, peakStats.length);
+        for (const s of peakStats) {
+          const e = GYM_ENERGY[GYM_FOR[s]];
+          sp[s] = Math.floor(totalE / n / e) * e;
+        }
+      }
+      return sp;
+    }
+
+    // Project end-of-month stats for peak stats only (no forced training).
+    function projectPeak(base, splits, peakStats, buffs) {
+      const proj = { ...base };
+      for (const s of peakStats) {
+        if (!splits[s]) continue;
+        proj[s] = (proj[s] || 0) + projGain(s, base[s] || 1e6, buffs[s] || 0, GYM_FOR[s], splits[s]);
+      }
+      return proj;
+    }
+
+    // Buff-weighted gain contribution for one month's peak stats.
+    function localScore(base, splits, peakStats, buffs) {
+      let sc = 0;
+      for (const s of peakStats) {
+        const buffPct = buffs[s] || 0;
+        sc += projGain(s, base[s] || 1e6, buffPct, GYM_FOR[s], splits[s] || 0) * (1 + buffPct / 100);
+      }
+      return sc;
+    }
+
+    // ── Phase 1: coordinate descent over α values (2-peak months only) ───────
+    //
+    // For each 2-peak month we search α ∈ {0.0, 0.1, …, 1.0} that maximises
+    //   localScore(month mi) + scoreHorizon(projStats, schedule[mi+1..], settings)
+    // while holding every other month's α fixed. We sweep in order and repeat
+    // until no α changes or 12 outer iterations complete.
+    const ALPHAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+    const alphas = new Array(schedule.length).fill(0.5); // initial: equal split
+
+    for (let iter = 0; iter < 12; iter++) {
+      let changed = false;
+      let cur = { ...startStats };
+
+      for (let mi = 0; mi < schedule.length; mi++) {
+        const info = monthBasics(mi);
+        if (!info) continue;
+        const { peakStats, buffs, totalE } = info;
+
+        if (peakStats.length !== 2) {
+          // No α dimension; advance cur with equal-split approximation and continue.
+          cur = projectPeak(cur, splitsFromAlpha(0.5, peakStats, totalE), peakStats, buffs);
+          continue;
+        }
+
+        let bestAlpha = alphas[mi];
+        let bestScore = -Infinity;
+
+        for (const α of ALPHAS) {
+          const sp  = splitsFromAlpha(α, peakStats, totalE);
+          const proj = projectPeak(cur, sp, peakStats, buffs);
+          const sc   = localScore(cur, sp, peakStats, buffs)
+                     + scoreHorizon(proj, schedule.slice(mi + 1), settings);
+          if (sc > bestScore) { bestScore = sc; bestAlpha = α; }
+        }
+
+        if (bestAlpha !== alphas[mi]) { alphas[mi] = bestAlpha; changed = true; }
+        cur = projectPeak(cur, splitsFromAlpha(bestAlpha, peakStats, totalE), peakStats, buffs);
+      }
+
+      if (!changed) break;
+    }
+
+    // ── Phase 2: final pass — build months[] with optimal splits ──────────────
+    let simStats = { ...startStats };
+    const months  = [];
+
+    for (let mi = 0; mi < schedule.length; mi++) {
+      const info = monthBasics(mi);
+      if (!info) continue;
+      const { rot, ry, rm, buffs, isCurrent, days, totalE, maxBuff, peakStats, nonPeakStats } = info;
 
       // Step 2: look ahead — what does next month need?
       const nextRot = schedule.find((r, i) => {
@@ -244,92 +334,76 @@
         const [ny, nm] = r.month.split('-').map(Number);
         return ny > ry || nm > rm;
       });
-
-      // Identify next month's peak stats and what headroom they need
-      const nextHeadroomNeeded = {}; // stat → how much headroom needed for next month
+      const nextHeadroomNeeded = {};
       if (nextRot) {
-        const nextBuffs = nextRot.buffs || {};
-        const nextMaxBuff = Math.max(...active.map(s => nextBuffs[s] || 0));
+        const nextBuffs    = nextRot.buffs || {};
+        const nextMaxBuff  = Math.max(...active.map(s => nextBuffs[s] || 0));
         const nextPeakStats = active.filter(s => (nextBuffs[s]||0) === nextMaxBuff);
-        const nextDays = (() => { const [ny,nm] = nextRot.month.split('-').map(Number); return new Date(ny,nm,0).getDate(); })();
-        const nextTotalE = dailyE * nextDays;
-
+        const [ny, nm]     = nextRot.month.split('-').map(Number);
+        const nextTotalE   = dailyE * new Date(ny, nm, 0).getDate();
         for (const ns of nextPeakStats) {
-          const gk = GYM_FOR[ns];
+          const gk    = GYM_FOR[ns];
           const trains = Math.floor(nextTotalE / GYM_ENERGY[gk] / nextPeakStats.length);
           const growth = gainPerTrain(ns, simStats[ns]||1e6, nextBuffs[ns]||0, gk) * trains;
-          // This stat needs `growth + safetyPts` of headroom going into next month
           nextHeadroomNeeded[ns] = growth + safetyPts;
         }
       }
 
-      // Step 3: compute base weights for peak stats
-      // Base = equal share
-      // + ratio deficit bonus (stats behind target get more)
-      // + headroom unlock bonus (stats that create headroom for next month's targets get more)
+      // Step 3: weights (same heuristic as before; still drives topTwo and output field)
       const curRatios = ratioOf(simStats);
-      const hd = headrooms(simStats);
-
-      const weights = {};
+      const hd        = headrooms(simStats);
+      const weights   = {};
       for (const s of peakStats) {
-        weights[s] = 1.0; // base equal share
-
-        // Ratio deficit: how far below target
-        const deficit = Math.max(0, (ratio[s]||0) - curRatios[s]);
-        weights[s] += deficit * 0.3;
-
-        // Headroom unlock: does training this stat grow headroom for a next-month target?
-        // Training DEF grows SPD/STR headroom by gain/1.25 (Isoyama's ceiling rises)
-        // Training STR/SPD grows DEF headroom by gain/1.25 (Frontline ceiling lowers)
+        weights[s] = 1.0;
+        weights[s] += Math.max(0, (ratio[s]||0) - curRatios[s]) * 0.3;
         for (const [ns, needed] of Object.entries(nextHeadroomNeeded)) {
-          const currentHd = hd[ns] || 0;
-          const gap = Math.max(0, needed - currentHd);
+          const gap = Math.max(0, needed - (hd[ns] || 0));
           if (gap <= 0) continue;
-
-          // Does training `s` help `ns`?
           let unlockRate = 0;
-          if (ns === 'spd' || ns === 'str') {
-            // ns needs Isoyama's headroom = DEF/1.25 - ns
-            // Training DEF (s==='def') increases this by gain/1.25
-            if (s === 'def') unlockRate = 1 / 1.25;
-          }
-          if (ns === 'def') {
-            // ns needs Frontline headroom = (STR+SPD)/1.25 - DEF - DEX
-            // Training STR or SPD (s==='str'/'spd') increases this by gain/1.25
-            if (s === 'str' || s === 'spd') unlockRate = 1 / 1.25;
-          }
-
+          if ((ns === 'spd' || ns === 'str') && s === 'def') unlockRate = 1 / 1.25;
+          if (ns === 'def' && (s === 'str' || s === 'spd'))  unlockRate = 1 / 1.25;
           if (unlockRate > 0) {
-            // Bonus proportional to gap vs available gain this month
-            const gk = GYM_FOR[s];
-            const maxGainThisMonth = projGain(s, simStats[s]||1e6, buffs[s]||0, gk, totalE);
-            const unlockableGap = Math.min(gap, maxGainThisMonth * unlockRate);
-            const unlockFraction = gap > 0 ? unlockableGap / gap : 0;
-            weights[s] += unlockFraction * 2.0; // strong bonus for unlocking next month
+            const maxGain    = projGain(s, simStats[s]||1e6, buffs[s]||0, GYM_FOR[s], totalE);
+            const unlockFrac = gap > 0 ? Math.min(gap, maxGain * unlockRate) / gap : 0;
+            weights[s]      += unlockFrac * 2.0;
           }
         }
       }
 
-      // Normalize weights and compute splits
-      const totalWeight = Object.values(weights).reduce((a,b)=>a+b,0);
-      const splits = { def:0, str:0, spd:0, dex:0 };
-      peakStats.forEach(s => { splits[s] = Math.round((weights[s]/totalWeight) * totalE); });
-
-      // Clamp splits to valid train multiples and fix rounding
-      for (const s of peakStats) {
-        const ePerTrain = GYM_ENERGY[GYM_FOR[s]];
-        splits[s] = Math.floor(splits[s] / ePerTrain) * ePerTrain;
+      // Greedy splits (weight-based; same logic as the original planHorizon).
+      // Used as the baseline for scoreDelta and as the split for non-2-peak months.
+      const greedySplits = { def:0, str:0, spd:0, dex:0 };
+      {
+        const tw = Object.values(weights).reduce((a,b)=>a+b,0) || 1;
+        peakStats.forEach(s => { greedySplits[s] = Math.round((weights[s]/tw) * totalE); });
+        for (const s of peakStats) {
+          const e = GYM_ENERGY[GYM_FOR[s]];
+          greedySplits[s] = Math.floor(greedySplits[s] / e) * e;
+        }
+        const gsRem = totalE - peakStats.reduce((a,s)=>a+greedySplits[s],0);
+        if (gsRem > 0 && peakStats.length) {
+          const top = [...peakStats].sort((a,b)=>weights[b]-weights[a])[0];
+          const e   = GYM_ENERGY[GYM_FOR[top]];
+          greedySplits[top] += Math.floor(gsRem / e) * e;
+        }
       }
-      const splitSum = peakStats.reduce((a,s)=>a+splits[s],0);
-      const rem = totalE - splitSum;
-      if (rem > 0 && peakStats.length) {
-        // Give remainder to highest-weight stat (as extra trains if possible)
-        const topPeak = [...peakStats].sort((a,b)=>weights[b]-weights[a])[0];
-        const ePerTrain = GYM_ENERGY[GYM_FOR[topPeak]];
-        splits[topPeak] += Math.floor(rem / ePerTrain) * ePerTrain;
+
+      // Final splits: α-derived for 2-peak months, greedy for all others.
+      const splits = peakStats.length === 2
+        ? splitsFromAlpha(alphas[mi], peakStats, totalE)
+        : { ...greedySplits };
+
+      // New fields: α that won the search, and score improvement vs greedy.
+      let alphaUsed  = null;
+      let scoreDelta = 0;
+      if (peakStats.length === 2) {
+        alphaUsed  = alphas[mi];
+        const rest = schedule.slice(mi + 1);
+        scoreDelta = scoreHorizon(projectPeak(simStats, splits,        peakStats, buffs), rest, settings)
+                   - scoreHorizon(projectPeak(simStats, greedySplits,  peakStats, buffs), rest, settings);
       }
 
-      // Step 4: project end-of-month stats with this split
+      // Step 4: project end-of-month stats with final splits
       const projStats = { ...simStats };
       for (const s of active) {
         if (!splits[s]) continue;
@@ -339,37 +413,29 @@
       // Step 5: forced minimum for non-peak stats only if headroom gap can't be
       // covered by peak stat training
       const forcedTraining = {};
-      const forcedReasons = [];
+      const forcedReasons  = [];
       for (const ns of nonPeakStats) {
         const hd2 = headrooms(projStats);
         if (hd2[ns] >= safetyPts) continue;
-        // How much do we need to train ns to get its headroom to safetyPts?
-        const gk = GYM_FOR[ns];
+        const gk       = GYM_FOR[ns];
         const ePerTrain = GYM_ENERGY[gk];
-        const gap = safetyPts - hd2[ns];
-        // Each ns train grows ns-headroom — for def: headroom grows by -1 (DEF threatens Frontline)
-        // Actually for non-peak breach: train the stat that RELIEVES the constraint
-        // If ns=def is threatening Frontline, we need more STR or SPD (which are peak anyway)
-        // If ns=str/spd threatening Isoyama's, we need more DEF
-        // This case only fires if DEF is non-peak and Isoyama's is threatened
-        const gainPT = gainPerTrain(ns, projStats[ns]||1e6, buffs[ns]||0, gk);
+        const gap      = safetyPts - hd2[ns];
+        const gainPT   = gainPerTrain(ns, projStats[ns]||1e6, buffs[ns]||0, gk);
         if (gainPT > 0) {
           const trainsNeeded = Math.ceil(gap / (gainPT / 1.25));
           const energyNeeded = trainsNeeded * ePerTrain;
           if (energyNeeded > 0) {
             forcedTraining[ns] = energyNeeded;
             forcedReasons.push(`${LABEL[ns]}: ${trainsNeeded} trains (${GYM_NAME[gk]}) to maintain gym access`);
-            // Deduct from top peak stat
             const topPeak = [...peakStats].sort((a,b)=>splits[b]-splits[a])[0];
             if (topPeak) splits[topPeak] = Math.max(0, splits[topPeak] - energyNeeded);
             splits[ns] = (splits[ns]||0) + energyNeeded;
-            // Update projection
             projStats[ns] = (projStats[ns]||0) + projGain(ns, simStats[ns]||1e6, buffs[ns]||0, gk, energyNeeded);
           }
         }
       }
 
-      // Step 6: compute headroom feasibility for next month's targets
+      // Step 6: headroom feasibility for next month's targets
       const feasibility = {};
       if (nextRot) {
         const projHd = headrooms(projStats);
@@ -385,15 +451,14 @@
       }
 
       // Step 7: breach check
-      const projH = headrooms(projStats);
+      const projH    = headrooms(projStats);
       const breaches = [];
       for (const s of active) {
-        if (projH[s] < safetyPts) {
+        if (projH[s] < safetyPts)
           breaches.push({ stat: s, room: projH[s], gym: s==='def'?'Frontline':"Isoyama's" });
-        }
       }
 
-      // topTwo for Now instruction: highest-weighted peak stats
+      // topTwo: highest-weighted peak stats (for Now instruction display)
       const topTwo = [...peakStats]
         .sort((a,b) => (weights[b]||0) - (weights[a]||0))
         .slice(0, 2)
@@ -403,6 +468,7 @@
         month: rot.month, label: rot.label||rot.month, buffs, days, totalE,
         peakStats, topTwo, splits, weights, forcedTraining, forcedReasons,
         projStats, breaches, feasibility, isCurrent, GYM_FOR, maxBuff,
+        alphaUsed, scoreDelta,
       });
       simStats = projStats;
     }
