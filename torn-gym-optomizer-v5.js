@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.10.0
+// @version      5.10.1
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.10.0';
+  const SCRIPT_VERSION = '5.10.1';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -219,6 +219,9 @@
     };
 
     const now = new Date();
+    // Use UTC so "current month / days remaining" aligns with TCT (= UTC).
+    // Local-time getDate/getMonth gives the wrong day for UTC- users after TCT midnight.
+    const nowY = now.getUTCFullYear(), nowM = now.getUTCMonth(), nowD = now.getUTCDate();
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -227,11 +230,11 @@
     function monthBasics(mi) {
       const rot = schedule[mi];
       const [ry, rm] = rot.month.split('-').map(Number);
-      if (ry < now.getFullYear() || (ry === now.getFullYear() && rm - 1 < now.getMonth())) return null;
+      if (ry < nowY || (ry === nowY && rm - 1 < nowM)) return null;
       const buffs       = rot.buffs || { def:0, str:0, spd:0, dex:0 };
       const daysInMonth = new Date(ry, rm, 0).getDate();
-      const isCurrent   = (ry === now.getFullYear() && rm - 1 === now.getMonth());
-      const days        = isCurrent ? (daysInMonth - now.getDate() + 1) : daysInMonth;
+      const isCurrent   = (ry === nowY && rm - 1 === nowM);
+      const days        = isCurrent ? (daysInMonth - nowD + 1) : daysInMonth;
       const totalE      = dailyE * days;
       const maxBuff     = Math.max(...active.map(s => buffs[s] || 0));
       const peakStats   = active.filter(s => (buffs[s] || 0) === maxBuff);
@@ -576,18 +579,19 @@
 
     let cur = { ...simStats };
     const now = new Date();
+    const nowY = now.getUTCFullYear(), nowM = now.getUTCMonth(), nowD = now.getUTCDate();
     let score = 0;
 
     for (let mi = 0; mi < schedule.length; mi++) {
       const rot = schedule[mi];
       const [ry, rm] = rot.month.split('-').map(Number);
       // Skip months before current
-      if (ry < now.getFullYear() || (ry === now.getFullYear() && rm - 1 < now.getMonth())) continue;
+      if (ry < nowY || (ry === nowY && rm - 1 < nowM)) continue;
 
       const buffs       = rot.buffs || { def: 0, str: 0, spd: 0, dex: 0 };
       const daysInMonth = new Date(ry, rm, 0).getDate();
-      const isCurrent   = (ry === now.getFullYear() && rm - 1 === now.getMonth());
-      const days        = isCurrent ? (daysInMonth - now.getDate() + 1) : daysInMonth;
+      const isCurrent   = (ry === nowY && rm - 1 === nowM);
+      const days        = isCurrent ? (daysInMonth - nowD + 1) : daysInMonth;
       const totalE      = dailyE * days;
 
       // Peak stats = those tied for highest buff this month
@@ -786,8 +790,12 @@
       const budgetE = computeDailyEnergy(settings);
       const startE  = MEM.dayStartE ?? 0;
       const endE    = MEM.prevE ?? currentE;
-      // Energy used for training = what you had + what you earned - what's left
-      const spentE  = Math.max(0, Math.min(startE + budgetE - endE, startE + budgetE));
+      // Energy used for training — prefer directly observed drops (spentToday) when the
+      // script was active during the day.  Fall back to the budget-based estimate only
+      // when spentToday=0, i.e. the script was not running at all that day.
+      const spentE  = MEM.spentToday > 0
+        ? MEM.spentToday
+        : Math.max(0, Math.min(startE + budgetE - endE, startE + budgetE));
       const log     = loadElog();
       const idx     = log.findIndex(e => e.d === MEM.lastTctDate);
       const entry   = { d: MEM.lastTctDate, budgetE, startE, endE, spentE };
@@ -1606,6 +1614,42 @@
     return null;
   }
 
+  // ── REAL-TIME ENERGY OBSERVER ────────────────────────────────────────────────
+  // The 5-minute API poll misses xan sessions that start and finish within a single
+  // interval (prevE and currentE both land at the natural max, net delta = 0).
+  // A MutationObserver on Torn's live energy bar DOM fires on every UI update —
+  // typically within a second of a train — so no in-window event can slip through.
+  // Returns true when an observer was successfully attached.
+  function setupEnergyObserver() {
+    // Walk from the value element up to a stable container to observe
+    const valueSelectors = [
+      '[class*="energy"] [class*="current"]',
+      '[class*="energy-bar"] [class*="value"]',
+      '[data-type="Energy"] [class*="current"]',
+      'ul.status-icons li[class*="energy"] span',
+    ];
+    let container = null;
+    for (const sel of valueSelectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        container = el.closest('[data-type]') ?? el.closest('li') ?? el.parentElement;
+        break;
+      }
+    }
+    if (!container) return false;
+
+    const obs = new MutationObserver(() => {
+      const e = readEnergyFromDOM();
+      if (e != null && e !== MEM.energy) {
+        MEM.energy = e;
+        if (MEM.settings) updateEnergyTracking(e, MEM.settings);
+        render();
+      }
+    });
+    obs.observe(container, { childList: true, subtree: true, characterData: true });
+    return true;
+  }
+
   // ── EXTRA TRAINING BONUS (pool + sports science) ─────────────────────────────
   async function fetchExtraBonus() {
     const TTL = 24 * 60 * 60 * 1000;
@@ -1674,7 +1718,8 @@
         MEM.happy  = d.happy?.current ?? null;
         // Prefer DOM energy (real-time) but fall back to bars energy if DOM scrape fails
         const domE = readEnergyFromDOM();
-        MEM.energy = domE ?? d.energy?.current ?? null;
+        MEM.energy    = domE ?? d.energy?.current ?? null;
+        MEM.energyMax = d.energy?.maximum ?? MEM.energyMax ?? null;
         MEM.snap   = updateSnap(MEM.stats);
         updateEnergyTracking(MEM.energy, MEM.settings);
       } else {
@@ -1688,6 +1733,14 @@
     if (MEM.stats) {
       render();
 
+      // Attach real-time observer on Torn's energy bar DOM so xan pops + training
+      // that complete within a single 5-min API interval are still captured.
+      // Torn's UI may not be fully rendered yet — retry a few times if not found.
+      if (!setupEnergyObserver()) {
+        setTimeout(setupEnergyObserver, 2000);
+        setTimeout(setupEnergyObserver, 5000);
+      }
+
       // Refresh every 5 minutes
       setInterval(async () => {
         try {
@@ -1697,7 +1750,8 @@
             MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
             MEM.happy  = d.happy?.current ?? MEM.happy;
             const domE = readEnergyFromDOM();
-            MEM.energy = domE ?? d.energy?.current ?? MEM.energy;
+            MEM.energy    = domE ?? d.energy?.current ?? MEM.energy;
+            MEM.energyMax = d.energy?.maximum ?? MEM.energyMax ?? null;
             updateEnergyTracking(MEM.energy, MEM.settings);
           }
         } catch {}
