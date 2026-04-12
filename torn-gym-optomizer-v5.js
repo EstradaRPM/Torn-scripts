@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.12.0
+// @version      5.12.2
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.12.0';
+  const SCRIPT_VERSION = '5.12.2';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -1732,36 +1732,51 @@
   // ── REAL-TIME ENERGY OBSERVER ────────────────────────────────────────────────
   // The 5-minute API poll misses xan sessions that start and finish within a single
   // interval (prevE and currentE both land at the natural max, net delta = 0).
-  // A MutationObserver on Torn's live energy bar DOM fires on every UI update —
-  // typically within a second of a train — so no in-window event can slip through.
-  // Returns true when an observer was successfully attached.
+  //
+  // Root cause of orphaning: Torn re-renders the energy bar component on every
+  // training click, replacing the container element that the observer was attached
+  // to.  The observer survives on the old (detached) node and stops firing.
+  //
+  // Fix: walk UP past the energy bar component boundary to a stable page-level
+  // ancestor (nav / header / body) that React won't wholesale replace.  A 10ms
+  // trailing debounce coalesces rapid mutation bursts without losing events.
+  let _energyObs = null;
+  let _obsContainer = null;
+
   function setupEnergyObserver() {
-    // Walk from the value element up to a stable container to observe
+    if (_energyObs) { _energyObs.disconnect(); _energyObs = null; }
+
+    // Find any energy value element as an anchor, then walk up to a stable
+    // ancestor.  Falls through to document.body so this always succeeds.
     const valueSelectors = [
       '[class*="energy"] [class*="current"]',
       '[class*="energy-bar"] [class*="value"]',
       '[data-type="Energy"] [class*="current"]',
       'ul.status-icons li[class*="energy"] span',
     ];
-    let container = null;
+    let anchor = null;
     for (const sel of valueSelectors) {
-      const el = document.querySelector(sel);
-      if (el) {
-        container = el.closest('[data-type]') ?? el.closest('li') ?? el.parentElement;
-        break;
-      }
+      anchor = document.querySelector(sel);
+      if (anchor) break;
     }
-    if (!container) return false;
+    const container = anchor
+      ? (anchor.closest('nav') ?? anchor.closest('header') ?? anchor.closest('[class*="status"]') ?? document.body)
+      : document.body;
 
-    const obs = new MutationObserver(() => {
-      const e = readEnergyFromDOM();
-      if (e != null && e !== MEM.energy) {
-        MEM.energy = e;
-        if (MEM.settings) updateEnergyTracking(e, MEM.settings);
-        render();
-      }
+    let debounce = null;
+    _energyObs = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const e = readEnergyFromDOM();
+        if (e != null && e !== MEM.energy) {
+          MEM.energy = e;
+          if (MEM.settings) updateEnergyTracking(e, MEM.settings);
+          render();
+        }
+      }, 10);
     });
-    obs.observe(container, { childList: true, subtree: true, characterData: true });
+    _energyObs.observe(container, { childList: true, subtree: true, characterData: true });
+    _obsContainer = container;
     return true;
   }
 
@@ -1850,11 +1865,25 @@
 
       // Attach real-time observer on Torn's energy bar DOM so xan pops + training
       // that complete within a single 5-min API interval are still captured.
-      // Torn's UI may not be fully rendered yet — retry a few times if not found.
-      if (!setupEnergyObserver()) {
-        setTimeout(setupEnergyObserver, 2000);
-        setTimeout(setupEnergyObserver, 5000);
-      }
+      // Observer now targets a stable high-level ancestor (nav/header/body) so it
+      // cannot be orphaned by Torn re-rendering the energy bar component.
+      setupEnergyObserver();
+
+      // 5-second DOM-only heartbeat — last-resort fallback in case the observer
+      // itself fails (e.g. JS error, or energy bar not found at all in readEnergyFromDOM).
+      // No API call; just a DOM read.  Re-attaches the observer if its container
+      // was somehow removed from the document.
+      setInterval(() => {
+        if (!_obsContainer || !document.contains(_obsContainer)) {
+          setupEnergyObserver();
+        }
+        const e = readEnergyFromDOM();
+        if (e != null && e !== MEM.energy) {
+          MEM.energy = e;
+          if (MEM.settings) updateEnergyTracking(e, MEM.settings);
+          render();
+        }
+      }, 5 * 1000);
 
       // Refresh every 5 minutes
       setInterval(async () => {
