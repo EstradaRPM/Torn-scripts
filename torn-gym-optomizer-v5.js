@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.12.2
+// @version      5.13.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,11 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.12.2';
-
-  // Set to true to display the panel on any torn.com page (for use while not on gym.php).
-  // Set to false to restrict to gym.php only.
-  const TEST_MODE = true;
+  const SCRIPT_VERSION = '5.13.0';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -46,6 +42,8 @@
     ratioTargets: { def: 40, str: 28, spd: 28, dex: 4 },
     // Manual fallback used only when the education/properties API fetch fails
     extraBonusPct: 4,
+    // When true, panel shows on all torn.com pages (not just gym.php)
+    testMode: false,
   };
 
   const GYMS = {
@@ -1162,7 +1160,7 @@
     </div>`;
 
     const ftr = `<div id="nc17-ftr">
-      <span>NC17 v${SCRIPT_VERSION}${TEST_MODE ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
+      <span>NC17 v${SCRIPT_VERSION}${settings.testMode ? ' · TEST' : ''}${energy != null ? ' · '+energy+'E' : ''}</span>
       <span>${col ? '▼ expand' : '▲ collapse'}</span>
     </div>`;
 
@@ -1560,6 +1558,16 @@
     return `
       <div class="nc17-sec">
         <div class="nc17-set-grp">
+          <div class="nc17-set-lbl">Test Mode</div>
+          <div class="nc17-radios">
+            <div class="nc17-radio ${settings.testMode ? 'on' : ''}" data-set="testMode"
+              style="color:${settings.testMode ? '#ffcc40cc' : '#505878'};border-color:${settings.testMode ? '#ffcc4055' : '#303050'}">
+              Show on all pages ${settings.testMode ? '✓' : '✗'}
+            </div>
+          </div>
+          <div style="font-size:10px;color:#6070a0;margin-top:4px;font-family:'Courier New',monospace;">When off, panel only appears on gym.php (takes effect on next page load)</div>
+        </div>
+        <div class="nc17-set-grp">
           <div class="nc17-set-lbl">Active Stats</div>
           <div class="nc17-radios">${STATS.map(s=>{
             const off=settings.ignoredStats?.[s];
@@ -1646,6 +1654,8 @@
           const s = key.split('.')[1];
           if (!MEM.settings.ignoredStats) MEM.settings.ignoredStats = {};
           MEM.settings.ignoredStats[s] = !MEM.settings.ignoredStats[s];
+        } else if (key === 'testMode') {
+          MEM.settings.testMode = !MEM.settings.testMode;
         } else {
           MEM.settings[key] = el.dataset.val;
         }
@@ -1828,9 +1838,9 @@
 
   // ── BOOT ─────────────────────────────────────────────────────────────────────
   async function init() {
-    if (!TEST_MODE && !location.pathname.startsWith('/gym.php')) return;
+    MEM.settings = loadSettings();
+    if (!MEM.settings.testMode && !location.pathname.startsWith('/gym.php')) return;
     await new Promise(r => setTimeout(r, 800));
-    MEM.settings  = loadSettings();
     MEM.schedule  = loadSchedule();
     MEM.collapsed = Store.get(KEYS.COL) === '1';
     initEtrackState(); // restore day-tracking state from last session
