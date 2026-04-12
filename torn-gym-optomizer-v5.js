@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.11.0
+// @version      5.12.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.11.0';
+  const SCRIPT_VERSION = '5.12.0';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -410,11 +410,18 @@
                    - scoreHorizon(projectPeak(simStats, greedySplits,  peakStats, buffs), rest, settings);
       }
 
-      // Step 4: project end-of-month stats with final splits
+      // Step 4: project end-of-month stats with final splits.
+      // Resolve actual gym: fall back to George's if the preferred gym is closed
+      // entering this month (same fallback scoreHorizon uses).
       const projStats = { ...simStats };
+      const openNow = gymOpen(simStats);
+      const actualGymFor = {};
       for (const s of active) {
+        let gym = GYM_FOR[s];
+        if ((gym === 'isoyamas' && !openNow.iso) || (gym === 'frontline' && !openNow.fl)) gym = 'georges';
+        actualGymFor[s] = gym;
         if (!splits[s]) continue;
-        projStats[s] = (projStats[s]||0) + projGain(s, simStats[s]||1e6, buffs[s]||0, GYM_FOR[s], splits[s]);
+        projStats[s] = (projStats[s]||0) + projGain(s, simStats[s]||1e6, buffs[s]||0, gym, splits[s]);
       }
 
       // Step 5: forced minimum for non-peak stats only if headroom gap can't be
@@ -424,7 +431,7 @@
       for (const ns of nonPeakStats) {
         const hd2 = headrooms(projStats);
         if (hd2[ns] >= safetyPts) continue;
-        const gk       = GYM_FOR[ns];
+        const gk       = actualGymFor[ns] || GYM_FOR[ns];
         const ePerTrain = GYM_ENERGY[gk];
         const gap      = safetyPts - hd2[ns];
         const gainPT   = gainPerTrain(ns, projStats[ns]||1e6, buffs[ns]||0, gk);
@@ -438,6 +445,40 @@
             if (topPeak) splits[topPeak] = Math.max(0, splits[topPeak] - energyNeeded);
             splits[ns] = (splits[ns]||0) + energyNeeded;
             projStats[ns] = (projStats[ns]||0) + projGain(ns, simStats[ns]||1e6, buffs[ns]||0, gk, energyNeeded);
+          }
+        }
+      }
+
+      // Step 5b: maintain Isoyama's headroom for peak STR/SPD.
+      // The Isoyama ceiling is DEF/1.25; peak str/spd chew into it as they grow.
+      // If projected end-of-month headroom for any Isoyama-gated peak stat falls
+      // below the safety margin, force DEF training to lift the ceiling.
+      // Math: each unit of DEF gain raises DEF/1.25 by 1/1.25 → each DEF train
+      // adds gainPerTrain_def/1.25 of headroom for both str and spd.
+      // Gym: use actualGymFor['def'] (respects closure) — per the crossover formula
+      // Isoyama's at 10% (8.80/E) beats George's at 14% (8.32/E) when Isoyama's is open.
+      if (!peakStats.includes('def') && !ignored['def']) {
+        const hd5 = headrooms(projStats);
+        const isoGated = peakStats.filter(s => s === 'str' || s === 'spd');
+        if (isoGated.length > 0) {
+          const worstStat = isoGated.reduce((a,b) => (hd5[a]||0) <= (hd5[b]||0) ? a : b);
+          const shortfall  = safetyPts - (hd5[worstStat] || 0);
+          if (shortfall > 0) {
+            const gkDef     = actualGymFor['def'] || GYM_FOR['def'];
+            const gainPTDef = gainPerTrain('def', projStats['def']||1e6, buffs['def']||0, gkDef);
+            if (gainPTDef > 0) {
+              const trainsNeeded = Math.ceil(shortfall / (gainPTDef / 1.25));
+              const energyNeeded = trainsNeeded * GYM_ENERGY[gkDef];
+              if (energyNeeded > 0) {
+                forcedTraining['def'] = (forcedTraining['def']||0) + energyNeeded;
+                forcedReasons.push(`${LABEL['def']}: ${trainsNeeded} trains (${GYM_NAME[gkDef]}) to buffer Isoyama's for ${LABEL[worstStat]}`);
+                const topPeak = [...peakStats].sort((a,b) => (splits[b]||0) - (splits[a]||0))[0];
+                if (topPeak) splits[topPeak] = Math.max(0, (splits[topPeak]||0) - energyNeeded);
+                splits['def'] = (splits['def']||0) + energyNeeded;
+                projStats['def'] = (projStats['def']||0) + projGain('def', simStats['def']||1e6, buffs['def']||0, gkDef, energyNeeded);
+                actualGymFor['def'] = gkDef;
+              }
+            }
           }
         }
       }
@@ -544,7 +585,7 @@
       months.push({
         month: rot.month, label: rot.label||rot.month, buffs, days, totalE,
         peakStats, topTwo, splits, weights, forcedTraining, forcedReasons,
-        projStats, breaches, feasibility, isCurrent, GYM_FOR, maxBuff,
+        projStats, breaches, feasibility, isCurrent, GYM_FOR, actualGymFor, maxBuff,
         alphaUsed, scoreDelta, correctiveTraining, projRatios,
       });
       prevSimStats = simStats;
@@ -1403,33 +1444,36 @@
         STR/SPD room: DEF ÷ 1.25 − stat &nbsp;·&nbsp; DEF room: (STR+SPD) ÷ 1.25 − DEF
       </div>
       ${plan.map((m, mi) => {
-        const { splits, GYM_FOR: GF, peakStats, forcedTraining, breaches,
-                buffs, feasibility, correctiveTraining, isCurrent } = m;
+        const { splits, GYM_FOR: GF, actualGymFor: AGF = {}, peakStats, forcedTraining,
+                breaches, buffs, feasibility, correctiveTraining, isCurrent } = m;
 
-        // Stats entering this month
-        const enterStats = mi === 0
-          ? (currentStats || fallback)
-          : (plan[mi-1]?.projStats || currentStats || fallback);
-        const entOpen = gymOpen(enterStats);
-
-        // Peak rows sorted highest allocation first (= optimizer priority order)
+        // Peak rows sorted highest allocation first (= optimizer priority order).
+        // Use actualGymFor: if the preferred gym was closed, George's is shown instead.
         const sortedPeak = [...peakStats].sort((a,b) => (splits[b]||0) - (splits[a]||0));
         const peakRows = sortedPeak.map(s => {
-          const gk = GF[s];
-          const n  = Math.floor((splits[s]||0) / GYM_ENERGY[gk]);
+          const gk       = AGF[s] || GF[s];
+          const isFallback = gk === 'georges' && GF[s] !== 'georges';
+          const n        = Math.floor((splits[s]||0) / GYM_ENERGY[gk]);
+          const gymLabel = isFallback
+            ? `George's (${GYM_NAME[GF[s]]} closed)`
+            : GYM_NAME[gk];
+          const gymColor = isFallback ? '#ff9060' : '#8090b8';
           return `<div style="display:flex;align-items:center;gap:6px;padding:7px 2px;border-bottom:1px solid #1e2130;">
             <span style="color:${COLOR[s]};font-weight:700;width:74px;font-size:13px;">${LABEL[s]}</span>
-            <span style="color:#8090b8;font-size:11px;flex:1;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}%</span>
+            <span style="color:${gymColor};font-size:11px;flex:1;font-family:'Courier New',monospace;">${gymLabel} +${buffs[s]||0}%</span>
             <span style="color:#c0cce8;font-weight:700;font-family:'Courier New',monospace;">${n} trains</span>
           </div>`;
         }).join('');
 
-        // Forced + corrective extras as a single compact line
+        // Forced + corrective extras as a single compact line.
+        // For forced DEF from Step 5b, label clarifies it's an Isoyama buffer.
         const extras = [];
         Object.entries(forcedTraining||{}).forEach(([s, e]) => {
           if ((e||0) > 0) {
-            const n = Math.ceil(e / GYM_ENERGY[GF[s]]);
-            extras.push(`+${n} ${LABEL[s]} (gym access min)`);
+            const gk = AGF[s] || GF[s];
+            const n  = Math.ceil(e / GYM_ENERGY[gk]);
+            const isIsoBuf = (s === 'def') && peakStats.some(p => p === 'str' || p === 'spd');
+            extras.push(`+${n} ${LABEL[s]} @ ${GYM_NAME[gk]} (${isIsoBuf ? "Iso buffer" : "gym access min"})`);
           }
         });
         Object.entries(correctiveTraining||{}).forEach(([s, c]) => {
@@ -1439,12 +1483,10 @@
           ? `<div style="font-size:10px;color:#a08040;font-family:'Courier New',monospace;padding:5px 2px 2px;">↳ ${extras.join('  ·  ')}</div>`
           : '';
 
-        // Gym closed warnings for entering this month
-        const gymWarnings = [];
-        if (sortedPeak.some(s => GF[s] === 'isoyamas') && !entOpen.iso)
-          gymWarnings.push("Isoyama's closed entering this month — falling back to George's");
-        if (sortedPeak.some(s => GF[s] === 'frontline') && !entOpen.fl)
-          gymWarnings.push("Frontline closed entering this month — falling back to George's");
+        // Gym closed warnings: derived from actualGymFor vs preferred gym
+        const gymWarnings = sortedPeak
+          .filter(s => (AGF[s] || GF[s]) === 'georges' && GF[s] !== 'georges')
+          .map(s => `${GYM_NAME[GF[s]]} closed — ${LABEL[s]} falling back to George's`);
         const gymWarnHTML = gymWarnings.map(w =>
           `<div style="font-size:10px;color:#ff8080;font-family:'Courier New',monospace;margin-bottom:4px;">⚠ ${w}</div>`
         ).join('');
