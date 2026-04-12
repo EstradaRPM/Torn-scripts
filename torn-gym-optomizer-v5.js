@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.10.2
+// @version      5.11.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.10.2';
+  const SCRIPT_VERSION = '5.11.0';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -189,7 +189,7 @@
 
     // extraBonus: pool + sports science fetched from API; falls back to manual setting while pending
     const extraBonus = MEM.extraBonus ?? (MEM.settings?.extraBonusPct ?? 0);
-    return (1 / 200000) * dots * ePerTrain * (1 + (buffPct + extraBonus) / 100) * inner;
+    return (1 / 200000) * dots * ePerTrain * (1 + buffPct / 100) * (1 + extraBonus / 100) * inner;
   }
 
   function projGain(stat, statVal, buffPct, gymKey, energy) {
@@ -1143,7 +1143,7 @@
     } else if (view === 'setup') {
       body = setupHTML(settings, schedule);
     } else if (view === 'plan') {
-      body = planViewHTML(plan, settings);
+      body = planViewHTML(plan, settings, stats);
     } else {
       body = instrHTML(instr, curMonth, settings) + progressHTML(instr, stats) + energyTrackerHTML(settings) + gymStatusHTML(open, hd, settings) + statsHTML(stats);
     }
@@ -1391,75 +1391,97 @@
     </div>`;
   }
 
-  function planViewHTML(plan, settings) {
+  function planViewHTML(plan, settings, currentStats) {
     if (!plan.length) return `<div class="nc17-sec"><div class="nc17-warn">No rotation data. Add buff schedule in Setup.</div></div>`;
+
+    const fallback = { def:0, str:0, spd:0, dex:0 };
 
     return `<div class="nc17-sec">
       <div class="nc17-lbl">Multi-Month Plan</div>
+      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;line-height:1.6;margin-bottom:14px;">
+        Gym room = how much a stat can grow before its special gym closes.<br>
+        STR/SPD room: DEF ÷ 1.25 − stat &nbsp;·&nbsp; DEF room: (STR+SPD) ÷ 1.25 − DEF
+      </div>
       ${plan.map((m, mi) => {
-        const { splits, GYM_FOR: GF, peakStats, forcedTraining, forcedReasons, breaches, buffs, weights, feasibility, correctiveTraining } = m;
+        const { splits, GYM_FOR: GF, peakStats, forcedTraining, breaches,
+                buffs, feasibility, correctiveTraining, isCurrent } = m;
 
-        // Peak stat rows — sorted by weight (highest first = what optimizer prioritizes)
-        const sortedPeak = [...peakStats].sort((a,b) => (weights[b]||0) - (weights[a]||0));
-        const prevFeasibility = mi > 0 ? (plan[mi-1].feasibility||{}) : {};
-        const peakRows = sortedPeak.map((s, i) => {
-          const e = splits[s]||0;
+        // Stats entering this month
+        const enterStats = mi === 0
+          ? (currentStats || fallback)
+          : (plan[mi-1]?.projStats || currentStats || fallback);
+        const entOpen = gymOpen(enterStats);
+
+        // Peak rows sorted highest allocation first (= optimizer priority order)
+        const sortedPeak = [...peakStats].sort((a,b) => (splits[b]||0) - (splits[a]||0));
+        const peakRows = sortedPeak.map(s => {
           const gk = GF[s];
-          const trains = Math.floor(e / GYM_ENERGY[gk]);
-          const isTop = i === 0;
-          const prevFeas = prevFeasibility[s];
-          const feasNote = prevFeas && !prevFeas.ok
-            ? ` <span style="color:#ff8080;font-size:10px;font-weight:400;">(~${prevFeas.pct}% achievable)</span>`
-            : '';
-          return `<div class="nc17-plan-row">
-            <span style="color:${COLOR[s]};font-weight:700;">${LABEL[s]}</span>
-            <span style="color:#7080a8;font-size:11px;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}%${isTop ? ' ★' : ''}</span>
-            <span style="color:#c0cce8;font-family:'Courier New',monospace;font-weight:700;">${trains} trains${feasNote}</span>
+          const n  = Math.floor((splits[s]||0) / GYM_ENERGY[gk]);
+          return `<div style="display:flex;align-items:center;gap:6px;padding:7px 2px;border-bottom:1px solid #1e2130;">
+            <span style="color:${COLOR[s]};font-weight:700;width:74px;font-size:13px;">${LABEL[s]}</span>
+            <span style="color:#8090b8;font-size:11px;flex:1;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}%</span>
+            <span style="color:#c0cce8;font-weight:700;font-family:'Courier New',monospace;">${n} trains</span>
           </div>`;
         }).join('');
 
-        // Forced rows
-        const forcedStats = Object.keys(forcedTraining||{}).filter(s => (forcedTraining[s]||0) > 0);
-        const forcedRows = forcedStats.map(s => {
-          const e = forcedTraining[s]||0;
-          const gk = GF[s];
-          const trains = Math.ceil(e / GYM_ENERGY[gk]);
-          return `<div class="nc17-plan-row" style="opacity:0.8;">
-            <span style="color:${COLOR[s]}99">${LABEL[s]}</span>
-            <span style="color:#6a5020;font-size:11px;font-family:'Courier New',monospace;">${GYM_NAME[gk]} +${buffs[s]||0}% ⚠ min</span>
-            <span style="color:#aa8030;font-family:'Courier New',monospace;">${trains} trains</span>
-          </div>`;
-        }).join('');
+        // Forced + corrective extras as a single compact line
+        const extras = [];
+        Object.entries(forcedTraining||{}).forEach(([s, e]) => {
+          if ((e||0) > 0) {
+            const n = Math.ceil(e / GYM_ENERGY[GF[s]]);
+            extras.push(`+${n} ${LABEL[s]} (gym access min)`);
+          }
+        });
+        Object.entries(correctiveTraining||{}).forEach(([s, c]) => {
+          if ((c?.trains||0) > 0) extras.push(`+${c.trains} ${LABEL[s]} (ratio balance)`);
+        });
+        const extrasHTML = extras.length
+          ? `<div style="font-size:10px;color:#a08040;font-family:'Courier New',monospace;padding:5px 2px 2px;">↳ ${extras.join('  ·  ')}</div>`
+          : '';
 
-        // Corrective rows — amber, ratio-deficit catch-up training
-        const corrStats = Object.keys(correctiveTraining||{}).filter(s => correctiveTraining[s]);
-        const correctiveRows = corrStats.map(s => {
-          const c  = correctiveTraining[s];
-          const gk = c.gym;
-          return `<div class="nc17-plan-row" style="background:#1a1500;border-radius:3px;margin-top:2px;">
-            <span style="color:#ffd870;font-weight:700;">${LABEL[s]}</span>
-            <span style="color:#c8a040;font-size:11px;font-family:'Courier New',monospace;">corrective · ${GYM_NAME[gk]}</span>
-            <span style="color:#ffd060;font-family:'Courier New',monospace;font-weight:700;">${c.trains} trains</span>
-          </div>
-          <div style="font-size:10px;color:#aa8030;padding:2px 4px 4px;font-family:'Courier New',monospace;">↳ ${c.reason}</div>`;
-        }).join('');
+        // Gym closed warnings for entering this month
+        const gymWarnings = [];
+        if (sortedPeak.some(s => GF[s] === 'isoyamas') && !entOpen.iso)
+          gymWarnings.push("Isoyama's closed entering this month — falling back to George's");
+        if (sortedPeak.some(s => GF[s] === 'frontline') && !entOpen.fl)
+          gymWarnings.push("Frontline closed entering this month — falling back to George's");
+        const gymWarnHTML = gymWarnings.map(w =>
+          `<div style="font-size:10px;color:#ff8080;font-family:'Courier New',monospace;margin-bottom:4px;">⚠ ${w}</div>`
+        ).join('');
 
-        // Feasibility rows — how much of next month's target this month's plan enables
-        const feasRows = Object.entries(feasibility||{}).map(([ns, f]) => {
-          const color = f.pct >= 80 ? '#40d870' : f.pct >= 50 ? '#ffd060' : '#ff8080';
-          return `<div style="font-size:11px;font-family:'Courier New',monospace;color:${color};margin-top:5px;">
-            → ${LABEL[ns]} headroom for next month: ${f.pct}%${f.ok ? ' ✓' : ` (${fmt(f.available)} of ${fmt(f.needed)} needed)`}
+        // Gym room available for next month's peak training
+        const feasEntries = Object.entries(feasibility||{});
+        let nextMonthHTML = '';
+        if (feasEntries.length) {
+          const rows = feasEntries.map(([ns, f]) => {
+            const color = f.ok ? '#40d870' : f.pct >= 60 ? '#ffd060' : '#ff8080';
+            const icon  = f.ok ? '✓' : '⚠';
+            const detail = f.ok
+              ? `${fmt(f.available)} room  (need ${fmt(f.needed)})`
+              : `${fmt(f.available)} room — need ${fmt(f.needed)}`;
+            return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;font-family:'Courier New',monospace;padding:3px 0;">
+              <span style="color:#a0b0c8;">${LABEL[ns]}</span>
+              <span style="color:${color};font-weight:700;">${icon} ${detail}</span>
+            </div>`;
+          }).join('');
+          nextMonthHTML = `<div style="margin-top:9px;padding-top:7px;border-top:1px solid #252840;">
+            <div style="font-size:9px;letter-spacing:1.5px;color:#505878;font-family:'Courier New',monospace;margin-bottom:5px;text-transform:uppercase;">Gym room for next month</div>
+            ${rows}
           </div>`;
-        }).join('');
+        }
+
+        // Breach warnings (end-of-month)
+        const breachHTML = breaches.length
+          ? `<div style="font-size:10px;color:#ff8080;font-family:'Courier New',monospace;margin-top:6px;">⚠ ${breaches.map(b=>`${LABEL[b.stat]}: ${b.room===0?'≈0':fmt(b.room)} headroom at month-end`).join(' · ')}</div>`
+          : '';
 
         return `<div class="nc17-plan-month">
-          <div class="nc17-plan-hdr">${m.label}${m.isCurrent?' ← now':''} · ${m.days}d · peak +${m.maxBuff}%</div>
+          <div class="nc17-plan-hdr">${m.label}${isCurrent?' ← now':''} · ${m.days}d · peak +${m.maxBuff}%</div>
+          ${gymWarnHTML}
           ${peakRows}
-          ${forcedRows}
-          ${correctiveRows}
-          ${feasRows}
-          ${forcedReasons.length ? `<div class="nc17-plan-breach" style="color:#aa8030;margin-top:5px;">↳ ${forcedReasons.join(' | ')}</div>` : ''}
-          ${breaches.length ? `<div class="nc17-plan-breach" style="margin-top:5px;">⚠ ${breaches.map(b=>`${LABEL[b.stat]} → ${b.gym}: ${b.room === 0 ? '≈0M' : fmt(b.room)} left`).join(', ')}</div>` : ''}
+          ${extrasHTML}
+          ${nextMonthHTML}
+          ${breachHTML}
         </div>`;
       }).join('')}
     </div>`;
