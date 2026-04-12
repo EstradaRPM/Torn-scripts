@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.12.0
+// @version      5.12.1
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.12.0';
+  const SCRIPT_VERSION = '5.12.1';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -1735,6 +1735,13 @@
   // A MutationObserver on Torn's live energy bar DOM fires on every UI update —
   // typically within a second of a train — so no in-window event can slip through.
   // Returns true when an observer was successfully attached.
+  //
+  // Torn rebuilds the energy bar container element when you train (SPA re-render),
+  // which orphans the observer on the old node.  We track the container reference
+  // so the 15-second heartbeat can detect and resurrect it.
+  let _energyObs = null;
+  let _obsContainer = null;
+
   function setupEnergyObserver() {
     // Walk from the value element up to a stable container to observe
     const valueSelectors = [
@@ -1753,7 +1760,10 @@
     }
     if (!container) return false;
 
-    const obs = new MutationObserver(() => {
+    // Disconnect the previous (possibly orphaned) observer before attaching a new one
+    if (_energyObs) { _energyObs.disconnect(); _energyObs = null; }
+
+    _energyObs = new MutationObserver(() => {
       const e = readEnergyFromDOM();
       if (e != null && e !== MEM.energy) {
         MEM.energy = e;
@@ -1761,7 +1771,8 @@
         render();
       }
     });
-    obs.observe(container, { childList: true, subtree: true, characterData: true });
+    _energyObs.observe(container, { childList: true, subtree: true, characterData: true });
+    _obsContainer = container;
     return true;
   }
 
@@ -1855,6 +1866,26 @@
         setTimeout(setupEnergyObserver, 2000);
         setTimeout(setupEnergyObserver, 5000);
       }
+
+      // 15-second DOM-only heartbeat — no API call, just a DOM read.
+      // Serves two purposes:
+      //   1. Resurrects the MutationObserver if Torn replaced the energy bar
+      //      container element (which orphans the observer on the old node).
+      //   2. Acts as a backstop for the "train→xan→train" blind spot: if the
+      //      observer is orphaned, this poll fires while energy is above the
+      //      natural cap (e.g. 290E after a xan at 40E) and triggers detection
+      //      before the training cycle ends and energy returns to prevE.
+      setInterval(() => {
+        if (!_obsContainer || !document.contains(_obsContainer)) {
+          setupEnergyObserver();
+        }
+        const e = readEnergyFromDOM();
+        if (e != null && e !== MEM.energy) {
+          MEM.energy = e;
+          if (MEM.settings) updateEnergyTracking(e, MEM.settings);
+          render();
+        }
+      }, 15 * 1000);
 
       // Refresh every 5 minutes
       setInterval(async () => {
