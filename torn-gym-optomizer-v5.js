@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.10.1
+// @version      5.10.2
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.10.1';
+  const SCRIPT_VERSION = '5.10.2';
 
   // Set to true to display the panel on any torn.com page (for use while not on gym.php).
   // Set to false to restrict to gym.php only.
@@ -32,7 +32,7 @@
     fetchError: null, fetchStarted: null,
     extraBonus: null, extraBonusSource: null, // null until fetch completes; source = 'api'|'cache'|'manual'
     // Daily energy tracking (TCT-aligned)
-    lastTctDate: null, dayStartE: null, prevE: null, spentToday: 0,
+    lastTctDate: null, dayStartE: null, prevE: null, spentToday: 0, xanToday: 0,
   };
 
   const DEFAULTS = {
@@ -766,11 +766,29 @@
         MEM.dayStartE   = s.startE     ?? null;
         MEM.prevE       = s.prevE      ?? null;
         MEM.spentToday  = s.spentToday ?? 0;
+        MEM.xanToday    = s.xanToday   ?? 0;
       }
     } catch {}
   }
 
-  // Called after every energy reading (init + 5-min interval).
+  // Called after every energy reading (init + 5-min interval + MutationObserver).
+  //
+  // Tracking strategy:
+  //   • Energy can only DROP via training.  Every observed drop is accumulated as spend.
+  //   • Energy can rise via regen, the one-per-day 150E point-refill, or xanax (250E each).
+  //   • Regen is slow (~0.4E/min) and the refill is capped at 150E, so a jump of ≥200E
+  //     — or any reading above the natural energy cap — can only be explained by xanax.
+  //   • When xanax is detected between two readings we apply energy conservation to
+  //     recover the training spend that occurred WITHIN that observation window:
+  //       hiddenSpend = prevE + N×250 − currentE
+  //     where N = minimum number of pops that explains the net change.
+  //   • This handles rapid spend→xan→spend cycles even when an intermediate step is
+  //     never directly observed (e.g. energy returns to the same value after a full
+  //     train-xan-train cycle — a case the drop-only approach misses entirely).
+  //   • The one remaining blind spot: if a full train→xan→train cycle completes between
+  //     two readings AND energy ends at exactly prevE, there is no signal to reconstruct
+  //     from.  The MutationObserver mitigates this by firing on each DOM update, so the
+  //     only way to miss it is if Torn batches every update in the cycle into one frame.
   function updateEnergyTracking(currentE, settings) {
     if (currentE == null) return;
     const today = todayKey();
@@ -781,7 +799,8 @@
       MEM.dayStartE   = currentE;
       MEM.prevE       = currentE;
       MEM.spentToday  = 0;
-      Store.set(KEYS.ETST, JSON.stringify({ d: today, startE: currentE, prevE: currentE, spentToday: 0 }));
+      MEM.xanToday    = 0;
+      Store.set(KEYS.ETST, JSON.stringify({ d: today, startE: currentE, prevE: currentE, spentToday: 0, xanToday: 0 }));
       return;
     }
 
@@ -790,9 +809,8 @@
       const budgetE = computeDailyEnergy(settings);
       const startE  = MEM.dayStartE ?? 0;
       const endE    = MEM.prevE ?? currentE;
-      // Energy used for training — prefer directly observed drops (spentToday) when the
-      // script was active during the day.  Fall back to the budget-based estimate only
-      // when spentToday=0, i.e. the script was not running at all that day.
+      // Prefer directly-observed spend (spentToday) when the script was active.
+      // Fall back to the budget-based estimate only when spentToday=0 (script was off).
       const spentE  = MEM.spentToday > 0
         ? MEM.spentToday
         : Math.max(0, Math.min(startE + budgetE - endE, startE + budgetE));
@@ -805,16 +823,43 @@
       MEM.lastTctDate = today;
       MEM.dayStartE   = currentE;
       MEM.spentToday  = 0;
+      MEM.xanToday    = 0;
     }
 
-    // Track energy drops between readings as training spend (regen only goes up, so any
-    // net drop means the player trained — accumulate it into today's running total)
-    if (MEM.prevE != null && currentE < MEM.prevE) {
-      MEM.spentToday = (MEM.spentToday ?? 0) + (MEM.prevE - currentE);
+    // ── Analyse the delta since the last reading ────────────────────────────────
+    if (MEM.prevE != null) {
+      const delta = currentE - MEM.prevE;
+      const maxE  = MEM.energyMax ?? 150;
+
+      if (delta < 0) {
+        // Energy dropped — the only cause is training; accumulate as spend.
+        MEM.spentToday = (MEM.spentToday ?? 0) + (-delta);
+
+      } else if (currentE > maxE || delta >= 200) {
+        // Energy is above the natural cap, or jumped by ≥200E between readings.
+        // Natural regen can't push energy above max; the daily 150E point-refill
+        // can't produce a jump ≥200E.  This is one or more xanax pops.
+        //
+        // Minimum pops N needed to explain the net change (player may have trained
+        // before and/or after popping, so we use the larger of the raw delta and
+        // the amount above max to avoid underestimating N):
+        const N = Math.max(1, Math.ceil(Math.max(delta, currentE - maxE) / 250));
+        // Hidden training spend recovered via conservation:
+        //   prevE − X_before + N×250 − X_after = currentE
+        //   X_before + X_after  = prevE + N×250 − currentE
+        const hiddenSpend = Math.max(0, MEM.prevE + N * 250 - currentE);
+        MEM.spentToday = (MEM.spentToday ?? 0) + hiddenSpend;
+        MEM.xanToday   = (MEM.xanToday   ?? 0) + N;
+      }
+      // Small positive delta within max (≤200E): natural regen or the one-per-day
+      // point-refill — no training spend to record.
     }
 
     MEM.prevE = currentE;
-    Store.set(KEYS.ETST, JSON.stringify({ d: MEM.lastTctDate, startE: MEM.dayStartE, prevE: MEM.prevE, spentToday: MEM.spentToday ?? 0 }));
+    Store.set(KEYS.ETST, JSON.stringify({
+      d: MEM.lastTctDate, startE: MEM.dayStartE,
+      prevE: MEM.prevE, spentToday: MEM.spentToday ?? 0, xanToday: MEM.xanToday ?? 0,
+    }));
   }
 
   // ── API ──────────────────────────────────────────────────────────────────────
@@ -1287,10 +1332,16 @@
       </div>`;
     }
 
-    const regenE = settings.baseRegen ?? 600;
-    const xanE   = (settings.xanaxPerDay ?? 0) * 250;
+    const regenE    = settings.baseRegen ?? 600;
+    const xanE      = (settings.xanaxPerDay ?? 0) * 250;
     const budgetParts = [`${regenE} regen`, '150 refill'];
     if (xanE > 0) budgetParts.push(`${xanE} xanax`);
+
+    // Show detected xanax count if any were observed today
+    const xanDetected = MEM.xanToday ?? 0;
+    const xanTag = xanDetected > 0
+      ? `<span style="font-size:10px;color:#a0c8ff;font-family:'Courier New',monospace;margin-left:8px;">· ${xanDetected}x xan detected</span>`
+      : '';
 
     return `<div class="nc17-sec">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -1298,7 +1349,7 @@
         <span style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Reset in ${resetStr}</span>
       </div>
       ${todayBarHTML}
-      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Budget: ${budgetE}E/day · ${budgetParts.join(' + ')}</div>
+      <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Budget: ${budgetE}E/day · ${budgetParts.join(' + ')}${xanTag}</div>
       ${historyHTML}
     </div>`;
   }
