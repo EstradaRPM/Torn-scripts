@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.13.0
+// @version      5.13.1
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.13.0';
+  const SCRIPT_VERSION = '5.13.1';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -1748,8 +1748,11 @@
   // to.  The observer survives on the old (detached) node and stops firing.
   //
   // Fix: walk UP past the energy bar component boundary to a stable page-level
-  // ancestor (nav / header / body) that React won't wholesale replace.  A 10ms
-  // trailing debounce coalesces rapid mutation bursts without losing events.
+  // ancestor (nav / header / body) that React won't wholesale replace.
+  // IMPORTANT: energy *tracking* fires immediately on every distinct value so
+  // rapid train→xan→train sequences (each XHR response is a separate DOM
+  // update) are each recorded individually.  Only the *render* is debounced
+  // (50 ms) to avoid visual flicker; tracking is never debounced.
   let _energyObs = null;
   let _obsContainer = null;
 
@@ -1773,17 +1776,18 @@
       ? (anchor.closest('nav') ?? anchor.closest('header') ?? anchor.closest('[class*="status"]') ?? document.body)
       : document.body;
 
-    let debounce = null;
+    let renderDebounce = null;
     _energyObs = new MutationObserver(() => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        const e = readEnergyFromDOM();
-        if (e != null && e !== MEM.energy) {
-          MEM.energy = e;
-          if (MEM.settings) updateEnergyTracking(e, MEM.settings);
-          render();
-        }
-      }, 10);
+      const e = readEnergyFromDOM();
+      if (e != null && e !== MEM.energy) {
+        MEM.energy = e;
+        // Track immediately — never defer, so each intermediate energy value
+        // (train drop, xan spike, post-xan train drop) is recorded separately.
+        if (MEM.settings) updateEnergyTracking(e, MEM.settings);
+        // Debounce only the visual render to avoid flicker on rapid changes.
+        clearTimeout(renderDebounce);
+        renderDebounce = setTimeout(render, 50);
+      }
     });
     _energyObs.observe(container, { childList: true, subtree: true, characterData: true });
     _obsContainer = container;
