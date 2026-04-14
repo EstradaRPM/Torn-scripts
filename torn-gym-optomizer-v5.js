@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.13.1
+// @version      5.13.2
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.13.1';
+  const SCRIPT_VERSION = '5.13.2';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -863,6 +863,15 @@
       MEM.dayStartE   = currentE;
       MEM.spentToday  = 0;
       MEM.xanToday    = 0;
+      // prevE was from yesterday — reset it now and bail.  Any delta spanning
+      // midnight is noise; the *next* call will produce the first clean delta
+      // of the new day with a correct baseline.
+      MEM.prevE = currentE;
+      Store.set(KEYS.ETST, JSON.stringify({
+        d: today, startE: currentE,
+        prevE: currentE, spentToday: 0, xanToday: 0,
+      }));
+      return;
     }
 
     // ── Analyse the delta since the last reading ────────────────────────────────
@@ -874,10 +883,13 @@
         // Energy dropped — the only cause is training; accumulate as spend.
         MEM.spentToday = (MEM.spentToday ?? 0) + (-delta);
 
-      } else if (currentE > maxE || delta >= 200) {
-        // Energy is above the natural cap, or jumped by ≥200E between readings.
-        // Natural regen can't push energy above max; the daily 150E point-refill
-        // can't produce a jump ≥200E.  This is one or more xanax pops.
+      } else if (delta >= 200 || (MEM.energyMax !== null && currentE > maxE)) {
+        // Energy jumped by ≥200E (always xanax — natural regen is ~0.4E/min and
+        // the once-daily 150E point-refill can't produce a ≥200E net jump), OR
+        // energy is above the confirmed natural cap (requires xanax since regen
+        // never exceeds max).  We only use the cap-breach check once energyMax
+        // has been confirmed by the API; before that, the 150 default would
+        // false-positive for players whose real max is higher than 150.
         //
         // Minimum pops N needed to explain the net change (player may have trained
         // before and/or after popping, so we use the larger of the raw delta and
@@ -1874,48 +1886,49 @@
     }
     render();
 
-    if (MEM.stats) {
-      render();
+    // Always start the observer and polling loops — tracking must work even if
+    // the initial battlestats fetch failed (bad key, Torn API down, etc.).
+    // The observer and heartbeat only need the DOM; the 5-min loop self-heals
+    // MEM.stats whenever the API becomes available again.
 
-      // Attach real-time observer on Torn's energy bar DOM so xan pops + training
-      // that complete within a single 5-min API interval are still captured.
-      // Observer now targets a stable high-level ancestor (nav/header/body) so it
-      // cannot be orphaned by Torn re-rendering the energy bar component.
-      setupEnergyObserver();
+    // Attach real-time observer on Torn's energy bar DOM so xan pops + training
+    // that complete within a single 5-min API interval are still captured.
+    // Observer now targets a stable high-level ancestor (nav/header/body) so it
+    // cannot be orphaned by Torn re-rendering the energy bar component.
+    setupEnergyObserver();
 
-      // 5-second DOM-only heartbeat — last-resort fallback in case the observer
-      // itself fails (e.g. JS error, or energy bar not found at all in readEnergyFromDOM).
-      // No API call; just a DOM read.  Re-attaches the observer if its container
-      // was somehow removed from the document.
-      setInterval(() => {
-        if (!_obsContainer || !document.contains(_obsContainer)) {
-          setupEnergyObserver();
-        }
-        const e = readEnergyFromDOM();
-        if (e != null && e !== MEM.energy) {
-          MEM.energy = e;
-          if (MEM.settings) updateEnergyTracking(e, MEM.settings);
-          render();
-        }
-      }, 5 * 1000);
-
-      // Refresh every 5 minutes
-      setInterval(async () => {
-        try {
-          const r = await fetch(`https://api.torn.com/user/?selections=battlestats,bars&key=${API_KEY}`);
-          const d = await r.json();
-          if (!d.error) {
-            MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
-            MEM.happy  = d.happy?.current ?? MEM.happy;
-            const domE = readEnergyFromDOM();
-            MEM.energy    = domE ?? d.energy?.current ?? MEM.energy;
-            MEM.energyMax = d.energy?.maximum ?? MEM.energyMax ?? null;
-            updateEnergyTracking(MEM.energy, MEM.settings);
-          }
-        } catch {}
+    // 5-second DOM-only heartbeat — last-resort fallback in case the observer
+    // itself fails (e.g. JS error, or energy bar not found at all in readEnergyFromDOM).
+    // No API call; just a DOM read.  Re-attaches the observer if its container
+    // was somehow removed from the document.
+    setInterval(() => {
+      if (!_obsContainer || !document.contains(_obsContainer)) {
+        setupEnergyObserver();
+      }
+      const e = readEnergyFromDOM();
+      if (e != null && e !== MEM.energy) {
+        MEM.energy = e;
+        if (MEM.settings) updateEnergyTracking(e, MEM.settings);
         render();
-      }, 5 * 60 * 1000);
-    }
+      }
+    }, 5 * 1000);
+
+    // Refresh every 5 minutes
+    setInterval(async () => {
+      try {
+        const r = await fetch(`https://api.torn.com/user/?selections=battlestats,bars&key=${API_KEY}`);
+        const d = await r.json();
+        if (!d.error) {
+          MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
+          MEM.happy  = d.happy?.current ?? MEM.happy;
+          const domE = readEnergyFromDOM();
+          MEM.energy    = domE ?? d.energy?.current ?? MEM.energy;
+          MEM.energyMax = d.energy?.maximum ?? MEM.energyMax ?? null;
+          updateEnergyTracking(MEM.energy, MEM.settings);
+        }
+      } catch {}
+      render();
+    }, 5 * 60 * 1000);
   }
 
   init();
