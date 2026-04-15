@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.13.2
+// @version      5.13.3
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.13.2';
+  const SCRIPT_VERSION = '5.13.3';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -1730,12 +1730,18 @@
   // No API call, no access level required.
   function readEnergyFromDOM() {
     try {
-      // Torn's energy bar — try multiple selectors across game versions
+      // CSS selector pass — Torn uses hashed React class names so we match
+      // substrings.  These cover known patterns across Torn UI versions but
+      // may not match every build; the text-based fallback below is the
+      // reliable path when none of these fire.
       const selectors = [
         '[class*="energy"] [class*="current"]',
         '[class*="energy-bar"] [class*="value"]',
+        '[class*="energyBar"] [class*="value"]',
+        '[class*="energy"][class*="current"]',
         'ul.status-icons li[class*="energy"] span',
         '[data-type="Energy"] [class*="current"]',
+        '[data-type="energy"] [class*="current"]',
       ];
       for (const sel of selectors) {
         const el = document.querySelector(sel);
@@ -1744,9 +1750,27 @@
           if (!isNaN(val) && val >= 0) return val;
         }
       }
-      // Fallback: scan all text for energy pattern like "142 / 150"
-      const energyText = document.body.innerText.match(/Energy[^\d]*(\d+)\s*\/\s*(\d+)/i);
-      if (energyText) return parseInt(energyText[1], 10);
+      // Text-window fallback — works regardless of React class-name hashing.
+      // Strategy: locate the word "Energy" in the text of progressively wider
+      // DOM scopes, then read the "N / M" fraction within ±50 chars of it.
+      // We check after the label first (most layouts), then before it.
+      const scopes = ['nav', 'header', '[class*="header"]', '[class*="status"]', 'body'];
+      for (const scope of scopes) {
+        const el = document.querySelector(scope);
+        if (!el) continue;
+        const t  = el.textContent;
+        const idx = t.search(/energy/i);
+        if (idx === -1) continue;
+        const after  = t.slice(idx, idx + 50);
+        const before = t.slice(Math.max(0, idx - 30), idx);
+        const m = after.match(/(\d+)\s*\/\s*(\d+)/) ?? before.match(/(\d+)\s*\/\s*(\d+)/);
+        if (m) {
+          const val = parseInt(m[1], 10);
+          // Sanity check: energy should be 0–2000; reject other bar values
+          // that accidentally match (nerve, life, etc. are typically ≤250)
+          if (!isNaN(val) && val >= 0 && val <= 2000) return val;
+        }
+      }
     } catch {}
     return null;
   }
@@ -1913,18 +1937,33 @@
       }
     }, 5 * 1000);
 
-    // Refresh every 5 minutes
+    // Energy/bars refresh every 60 seconds — short enough to catch a xanax
+    // pop + full training cycle before the net delta collapses back to zero.
+    // Only fetches the bars selection to stay well within API rate limits
+    // (1 call/min vs Torn's 100/min ceiling).
     setInterval(async () => {
       try {
-        const r = await fetch(`https://api.torn.com/user/?selections=battlestats,bars&key=${API_KEY}`);
+        const r = await fetch(`https://api.torn.com/user/?selections=bars&key=${API_KEY}`);
         const d = await r.json();
         if (!d.error) {
-          MEM.stats  = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
-          MEM.happy  = d.happy?.current ?? MEM.happy;
-          const domE = readEnergyFromDOM();
+          MEM.happy     = d.happy?.current ?? MEM.happy;
+          const domE    = readEnergyFromDOM();
           MEM.energy    = domE ?? d.energy?.current ?? MEM.energy;
           MEM.energyMax = d.energy?.maximum ?? MEM.energyMax ?? null;
           updateEnergyTracking(MEM.energy, MEM.settings);
+        }
+      } catch {}
+      render();
+    }, 60 * 1000);
+
+    // Battlestats refresh every 5 minutes — stats change slowly so there is
+    // no need to poll them as frequently as bars.
+    setInterval(async () => {
+      try {
+        const r = await fetch(`https://api.torn.com/user/?selections=battlestats&key=${API_KEY}`);
+        const d = await r.json();
+        if (!d.error) {
+          MEM.stats = { def: d.defense, str: d.strength, spd: d.speed, dex: d.dexterity };
         }
       } catch {}
       render();
