@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.13.3
+// @version      5.14.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.13.3';
+  const SCRIPT_VERSION = '5.14.0';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -848,11 +848,16 @@
       const budgetE = computeDailyEnergy(settings);
       const startE  = MEM.dayStartE ?? 0;
       const endE    = MEM.prevE ?? currentE;
-      // Prefer directly-observed spend (spentToday) when the script was active.
-      // Fall back to the budget-based estimate only when spentToday=0 (script was off).
-      const spentE  = MEM.spentToday > 0
-        ? MEM.spentToday
-        : Math.max(0, Math.min(startE + budgetE - endE, startE + budgetE));
+      // Cap spend at what can be earned in one day — this prevents stacked energy
+      // from an RW (or any multi-day absence) from inflating the daily tracker.
+      // Budget is base regen + refill + any xanax actually detected today.
+      const maxDailySpend = budgetE + (MEM.xanToday ?? 0) * 250;
+      const spentE  = Math.min(
+        MEM.spentToday > 0
+          ? MEM.spentToday
+          : Math.max(0, startE + budgetE - endE),
+        maxDailySpend,
+      );
       const log     = loadElog();
       const idx     = log.findIndex(e => e.d === MEM.lastTctDate);
       const entry   = { d: MEM.lastTctDate, budgetE, startE, endE, spentE };
@@ -880,8 +885,10 @@
       const maxE  = MEM.energyMax ?? 150;
 
       if (delta < 0) {
-        // Energy dropped — the only cause is training; accumulate as spend.
-        MEM.spentToday = (MEM.spentToday ?? 0) + (-delta);
+        // Energy dropped — training spend. Cap at daily budget so stacked energy
+        // from an RW absence never inflates the "spent today" counter.
+        const maxSpend = computeDailyEnergy(settings) + (MEM.xanToday ?? 0) * 250;
+        MEM.spentToday = Math.min((MEM.spentToday ?? 0) + (-delta), maxSpend);
 
       } else if (delta >= 200 || (MEM.energyMax !== null && currentE > maxE)) {
         // Energy jumped by ≥200E (always xanax — natural regen is ~0.4E/min and
@@ -899,8 +906,9 @@
         //   prevE − X_before + N×250 − X_after = currentE
         //   X_before + X_after  = prevE + N×250 − currentE
         const hiddenSpend = Math.max(0, MEM.prevE + N * 250 - currentE);
-        MEM.spentToday = (MEM.spentToday ?? 0) + hiddenSpend;
         MEM.xanToday   = (MEM.xanToday   ?? 0) + N;
+        const maxSpendXan = computeDailyEnergy(settings) + MEM.xanToday * 250;
+        MEM.spentToday = Math.min((MEM.spentToday ?? 0) + hiddenSpend, maxSpendXan);
       }
       // Small positive delta within max (≤200E): natural regen or the one-per-day
       // point-refill — no training spend to record.
@@ -1306,6 +1314,11 @@
   function energyTrackerHTML(settings) {
     const budgetE    = computeDailyEnergy(settings);
     const spentToday = MEM.spentToday ?? 0;
+    // Detect when today started with stacked energy (e.g. from an RW absence).
+    // dayStartE being well above the daily budget means the player is clearing a
+    // backlog rather than training their normal daily allocation.
+    const dayStartE   = MEM.dayStartE ?? 0;
+    const isBacklogDay = dayStartE > budgetE * 1.5;
 
     // Time until TCT midnight reset (UTC)
     const nowD     = new Date();
@@ -1320,9 +1333,18 @@
       ? Math.round(last7.reduce((s, e) => s + (e.spentE ?? 0), 0) / last7.length)
       : null;
 
+    // Backlog banner: shown instead of the avg comparison when today started with
+    // stacked energy (e.g. gym skipped during RW). spentToday is capped at the
+    // daily budget in this case so the number is accurate, not the raw stack burn.
+    const backlogBanner = isBacklogDay
+      ? `<div style="font-size:10px;color:#a08840;font-family:'Courier New',monospace;margin-bottom:8px;padding:5px 8px;background:#1e1a0a;border:1px solid #504010;border-radius:4px;">
+           ⚡ Energy backlog — started at ${dayStartE}E. Tracker capped at daily budget.
+         </div>`
+      : '';
+
     // ── Today vs avg comparison bar ──────────────────────────────────────────
     let todayBarHTML;
-    if (avgSpent != null && avgSpent > 0) {
+    if (avgSpent != null && avgSpent > 0 && !isBacklogDay) {
       const pct        = Math.min(150, Math.round(spentToday / avgSpent * 100));
       const delta      = spentToday - avgSpent;
       const barColor   = pct >= 100 ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff7060';
@@ -1355,10 +1377,12 @@
           </div>
         </div>`;
     } else {
+      // Backlog day or no avg yet — show just the number
+      const numColor = isBacklogDay ? '#a08840' : '#c0cce8';
       todayBarHTML = `
         <div style="margin-bottom:14px;">
-          <div style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:#c0cce8;margin-bottom:6px;">${spentToday}E</div>
-          <div style="font-size:10px;color:#606880;font-family:'Courier New',monospace;">Avg builds after 2+ days of tracking</div>
+          <div style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:${numColor};margin-bottom:6px;">${spentToday}E</div>
+          ${!isBacklogDay ? `<div style="font-size:10px;color:#606880;font-family:'Courier New',monospace;">Avg builds after 2+ days of tracking</div>` : ''}
         </div>`;
     }
 
@@ -1399,6 +1423,7 @@
         <span class="nc17-lbl" style="margin:0;">Energy Today</span>
         <span style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Reset in ${resetStr}</span>
       </div>
+      ${backlogBanner}
       ${todayBarHTML}
       <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Budget: ${budgetE}E/day · ${budgetParts.join(' + ')}${xanTag}</div>
       ${historyHTML}
@@ -1768,7 +1793,7 @@
           const val = parseInt(m[1], 10);
           // Sanity check: energy should be 0–2000; reject other bar values
           // that accidentally match (nerve, life, etc. are typically ≤250)
-          if (!isNaN(val) && val >= 0 && val <= 2000) return val;
+          if (!isNaN(val) && val >= 0 && val <= 5000) return val;
         }
       }
     } catch {}
