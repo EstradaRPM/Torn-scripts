@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.14.1
+// @version      5.15.0
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.14.1';
+  const SCRIPT_VERSION = '5.15.0';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -28,7 +28,7 @@
     fetchError: null, fetchStarted: null,
     extraBonus: null, extraBonusSource: null, // null until fetch completes; source = 'api'|'cache'|'manual'
     // Daily energy tracking (TCT-aligned)
-    lastTctDate: null, dayStartE: null, prevE: null, spentToday: 0, xanToday: 0,
+    lastTctDate: null, dayStartE: null, prevE: null, spentToday: 0, xanToday: 0, correctionE: 0,
   };
 
   const DEFAULTS = {
@@ -802,12 +802,24 @@
       const s = JSON.parse(Store.get(KEYS.ETST));
       if (s && s.d) {
         MEM.lastTctDate = s.d;
-        MEM.dayStartE   = s.startE     ?? null;
-        MEM.prevE       = s.prevE      ?? null;
-        MEM.spentToday  = s.spentToday ?? 0;
-        MEM.xanToday    = s.xanToday   ?? 0;
+        MEM.dayStartE   = s.startE      ?? null;
+        MEM.prevE       = s.prevE       ?? null;
+        MEM.spentToday  = s.spentToday  ?? 0;
+        MEM.xanToday    = s.xanToday    ?? 0;
+        MEM.correctionE = s.correctionE ?? 0;
       }
     } catch {}
+  }
+
+  function persistEtrackState() {
+    Store.set(KEYS.ETST, JSON.stringify({
+      d:           MEM.lastTctDate,
+      startE:      MEM.dayStartE,
+      prevE:       MEM.prevE,
+      spentToday:  MEM.spentToday  ?? 0,
+      xanToday:    MEM.xanToday    ?? 0,
+      correctionE: MEM.correctionE ?? 0,
+    }));
   }
 
   // Called after every energy reading (init + 5-min interval + MutationObserver).
@@ -839,7 +851,8 @@
       MEM.prevE       = currentE;
       MEM.spentToday  = 0;
       MEM.xanToday    = 0;
-      Store.set(KEYS.ETST, JSON.stringify({ d: today, startE: currentE, prevE: currentE, spentToday: 0, xanToday: 0 }));
+      MEM.correctionE = 0;
+      persistEtrackState();
       return;
     }
 
@@ -848,16 +861,13 @@
       const budgetE = computeDailyEnergy(settings);
       const startE  = MEM.dayStartE ?? 0;
       const endE    = MEM.prevE ?? currentE;
-      // Cap spend at what can be earned in one day — this prevents stacked energy
-      // from an RW (or any multi-day absence) from inflating the daily tracker.
-      // Budget is base regen + refill + any xanax actually detected today.
+      // Cap auto-tracked spend at what can be earned in one day, then add any
+      // manual correction on top (correction accounts for missed xan/refill/natural E).
       const maxDailySpend = budgetE + (MEM.xanToday ?? 0) * 250;
-      const spentE  = Math.min(
-        MEM.spentToday > 0
-          ? MEM.spentToday
-          : Math.max(0, startE + budgetE - endE),
-        maxDailySpend,
-      );
+      const rawTracked = MEM.spentToday > 0
+        ? MEM.spentToday
+        : Math.max(0, startE + budgetE - endE);
+      const spentE = Math.max(0, Math.min(rawTracked, maxDailySpend) + (MEM.correctionE ?? 0));
       const log     = loadElog();
       const idx     = log.findIndex(e => e.d === MEM.lastTctDate);
       const entry   = { d: MEM.lastTctDate, budgetE, startE, endE, spentE };
@@ -868,14 +878,12 @@
       MEM.dayStartE   = currentE;
       MEM.spentToday  = 0;
       MEM.xanToday    = 0;
+      MEM.correctionE = 0;
       // prevE was from yesterday — reset it now and bail.  Any delta spanning
       // midnight is noise; the *next* call will produce the first clean delta
       // of the new day with a correct baseline.
       MEM.prevE = currentE;
-      Store.set(KEYS.ETST, JSON.stringify({
-        d: today, startE: currentE,
-        prevE: currentE, spentToday: 0, xanToday: 0,
-      }));
+      persistEtrackState();
       return;
     }
 
@@ -915,10 +923,7 @@
     }
 
     MEM.prevE = currentE;
-    Store.set(KEYS.ETST, JSON.stringify({
-      d: MEM.lastTctDate, startE: MEM.dayStartE,
-      prevE: MEM.prevE, spentToday: MEM.spentToday ?? 0, xanToday: MEM.xanToday ?? 0,
-    }));
+    persistEtrackState();
   }
 
   // ── API ──────────────────────────────────────────────────────────────────────
@@ -1314,6 +1319,10 @@
   function energyTrackerHTML(settings) {
     const budgetE    = computeDailyEnergy(settings);
     const spentToday = MEM.spentToday ?? 0;
+    const correctionE = MEM.correctionE ?? 0;
+    // effectiveSpent = auto-tracked spend + any manual corrections applied today
+    const effectiveSpent = spentToday + correctionE;
+
     // Detect when today started with stacked energy (e.g. from an RW absence).
     // dayStartE being well above the daily budget means the player is clearing a
     // backlog rather than training their normal daily allocation.
@@ -1345,8 +1354,8 @@
     // ── Today vs avg comparison bar ──────────────────────────────────────────
     let todayBarHTML;
     if (avgSpent != null && avgSpent > 0 && !isBacklogDay) {
-      const pct        = Math.min(150, Math.round(spentToday / avgSpent * 100));
-      const delta      = spentToday - avgSpent;
+      const pct        = Math.min(150, Math.round(effectiveSpent / avgSpent * 100));
+      const delta      = effectiveSpent - avgSpent;
       const barColor   = pct >= 100 ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff7060';
       const deltaColor = delta >= 0  ? '#40d870' : pct >= 70 ? '#ffd060' : '#ff7060';
       const deltaStr   = delta >= 0  ? `+${delta}E ahead of avg` : `${delta}E behind avg`;
@@ -1365,7 +1374,7 @@
       todayBarHTML = `
         <div style="margin-bottom:14px;">
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-            <span style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:${barColor};">${spentToday}E</span>
+            <span style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:${barColor};">${effectiveSpent}E</span>
             <div style="text-align:right;">${streakTag}<span style="font-size:11px;color:#606880;font-family:'Courier New',monospace;display:block;">vs ${avgSpent}E avg</span></div>
           </div>
           <div style="height:16px;background:#1e2130;border-radius:8px;overflow:hidden;margin-bottom:7px;">
@@ -1381,7 +1390,7 @@
       const numColor = isBacklogDay ? '#a08840' : '#c0cce8';
       todayBarHTML = `
         <div style="margin-bottom:14px;">
-          <div style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:${numColor};margin-bottom:6px;">${spentToday}E</div>
+          <div style="font-size:22px;font-weight:700;font-family:'Courier New',monospace;color:${numColor};margin-bottom:6px;">${effectiveSpent}E</div>
           ${!isBacklogDay ? `<div style="font-size:10px;color:#606880;font-family:'Courier New',monospace;">Avg builds after 2+ days of tracking</div>` : ''}
         </div>`;
     }
@@ -1418,6 +1427,32 @@
       ? `<span style="font-size:10px;color:#a0c8ff;font-family:'Courier New',monospace;margin-left:8px;">· ${xanDetected}x xan detected</span>`
       : '';
 
+    // ── Correction indicator ──────────────────────────────────────────────────
+    const corrTag = correctionE !== 0
+      ? `<div style="font-size:10px;color:#c0a030;font-family:'Courier New',monospace;margin-top:4px;">
+           ↳ correction applied: ${correctionE > 0 ? '+' : ''}${correctionE}E (tracked ${spentToday}E raw)
+         </div>`
+      : '';
+
+    // ── Correction + reset controls ───────────────────────────────────────────
+    const controlsHTML = `
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d40;">
+        <div style="font-size:9px;letter-spacing:1.5px;color:#505878;font-family:'Courier New',monospace;margin-bottom:7px;text-transform:uppercase;">Correct Today's E</div>
+        <div style="display:flex;gap:5px;margin-bottom:6px;">
+          <button id="nc17-e-xan" class="nc17-btn" style="flex:1;padding:5px 4px;font-size:10px;">+Xan (+250E)</button>
+          <button id="nc17-e-refill" class="nc17-btn" style="flex:1;padding:5px 4px;font-size:10px;">+Refill (+150E)</button>
+        </div>
+        <div style="display:flex;gap:5px;margin-bottom:10px;">
+          <input id="nc17-e-corr-inp" class="nc17-inp" type="number" placeholder="±E" style="flex:1;padding:5px 7px;font-size:11px;">
+          <button id="nc17-e-corr-add" class="nc17-btn" style="padding:5px 10px;font-size:10px;">Apply</button>
+        </div>
+        <div style="font-size:9px;letter-spacing:1.5px;color:#505878;font-family:'Courier New',monospace;margin-bottom:7px;text-transform:uppercase;">Reset</div>
+        <div style="display:flex;gap:5px;">
+          <button id="nc17-e-reset-day" class="nc17-btn" style="flex:1;padding:5px 4px;font-size:10px;">Reset Today</button>
+          <button id="nc17-e-reset-avg" class="nc17-btn" style="flex:1;padding:5px 4px;font-size:10px;">Reset Avg</button>
+        </div>
+      </div>`;
+
     return `<div class="nc17-sec">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <span class="nc17-lbl" style="margin:0;">Energy Today</span>
@@ -1426,7 +1461,9 @@
       ${backlogBanner}
       ${todayBarHTML}
       <div style="font-size:10px;color:#505878;font-family:'Courier New',monospace;">Budget: ${budgetE}E/day · ${budgetParts.join(' + ')}${xanTag}</div>
+      ${corrTag}
       ${historyHTML}
+      ${controlsHTML}
     </div>`;
   }
 
@@ -1699,6 +1736,46 @@
         saveSettings(MEM.settings);
         render();
       });
+    });
+
+    // ── Energy correction buttons ─────────────────────────────────────────────
+    const applyCorr = (delta) => {
+      MEM.correctionE = (MEM.correctionE ?? 0) + delta;
+      persistEtrackState();
+      render();
+    };
+
+    const xanBtn = panel.querySelector('#nc17-e-xan');
+    if (xanBtn) xanBtn.addEventListener('click', e => { e.stopPropagation(); applyCorr(250); });
+
+    const refillBtn = panel.querySelector('#nc17-e-refill');
+    if (refillBtn) refillBtn.addEventListener('click', e => { e.stopPropagation(); applyCorr(150); });
+
+    const corrAddBtn = panel.querySelector('#nc17-e-corr-add');
+    if (corrAddBtn) corrAddBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const inp = panel.querySelector('#nc17-e-corr-inp');
+      const val = inp ? parseInt(inp.value, 10) : NaN;
+      if (!isNaN(val) && val !== 0) { applyCorr(val); if (inp) inp.value = ''; }
+    });
+
+    const resetDayBtn = panel.querySelector('#nc17-e-reset-day');
+    if (resetDayBtn) resetDayBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      MEM.spentToday  = 0;
+      MEM.xanToday    = 0;
+      MEM.correctionE = 0;
+      MEM.dayStartE   = MEM.energy ?? MEM.prevE ?? 0;
+      MEM.prevE       = MEM.dayStartE;
+      persistEtrackState();
+      render();
+    });
+
+    const resetAvgBtn = panel.querySelector('#nc17-e-reset-avg');
+    if (resetAvgBtn) resetAvgBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      saveElog([]);
+      render();
     });
 
     const saveBtn = panel.querySelector('#nc17-save');
