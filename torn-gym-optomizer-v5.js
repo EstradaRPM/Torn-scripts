@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Gym Optimizer — NC17
 // @namespace    NC17-GymOptimizer-v5
-// @version      5.14.0
+// @version      5.14.1
 // @description  Multi-month gym planning with real-time energy tracking and daily progress
 // @author       Built for NC17 [1171127]
 // @match        https://www.torn.com/*
@@ -14,7 +14,7 @@
   'use strict';
 
   const API_KEY = '###PDA-APIKEY###';
-  const SCRIPT_VERSION = '5.14.0';
+  const SCRIPT_VERSION = '5.14.1';
 
   const Store = {
     get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
@@ -890,7 +890,7 @@
         const maxSpend = computeDailyEnergy(settings) + (MEM.xanToday ?? 0) * 250;
         MEM.spentToday = Math.min((MEM.spentToday ?? 0) + (-delta), maxSpend);
 
-      } else if (delta >= 200 || (MEM.energyMax !== null && currentE > maxE)) {
+      } else if (delta >= 200 || (delta > 0 && MEM.energyMax !== null && currentE > maxE)) {
         // Energy jumped by ≥200E (always xanax — natural regen is ~0.4E/min and
         // the once-daily 150E point-refill can't produce a ≥200E net jump), OR
         // energy is above the confirmed natural cap (requires xanax since regen
@@ -1793,7 +1793,7 @@
           const val = parseInt(m[1], 10);
           // Sanity check: energy should be 0–2000; reject other bar values
           // that accidentally match (nerve, life, etc. are typically ≤250)
-          if (!isNaN(val) && val >= 0 && val <= 5000) return val;
+          if (!isNaN(val) && val >= 0 && val <= 2000) return val;
         }
       }
     } catch {}
