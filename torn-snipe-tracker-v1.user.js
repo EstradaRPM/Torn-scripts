@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.12.0
+// @version      1.13.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.12.0';
+  const SCRIPT_VERSION = '1.13.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -501,19 +501,19 @@
         <div class="st-summary">
           <div class="st-summary-item">
             <span class="st-summary-label">Total Invested</span>
-            <span class="st-summary-value">$2,614,000</span>
+            <span class="st-summary-value" id="st-sum-invested">—</span>
           </div>
           <div class="st-summary-item">
             <span class="st-summary-label">Total Profit</span>
-            <span class="st-summary-value">$305,000</span>
+            <span class="st-summary-value" id="st-sum-profit">—</span>
           </div>
           <div class="st-summary-item">
             <span class="st-summary-label">Avg ROI</span>
-            <span class="st-summary-value">13.5%</span>
+            <span class="st-summary-value" id="st-sum-roi">—</span>
           </div>
           <div class="st-summary-item">
             <span class="st-summary-label">Trades</span>
-            <span class="st-summary-value">2</span>
+            <span class="st-summary-value" id="st-sum-trades">0</span>
           </div>
         </div>
 
@@ -741,6 +741,7 @@
     Store.set(KEYS.trades, MEM.trades);
     hideBuyForm();
     renderOpenTrades();
+    renderSummary();
   });
 
   // ─── Ledger helpers ────────────────────────────────────────────────────────
@@ -818,6 +819,7 @@
           Store.set(KEYS.trades, MEM.trades);
           renderOpenTrades();
           renderClosedTrades();
+          renderSummary();
         });
       });
     });
@@ -866,6 +868,24 @@
     }).join('');
   }
 
+  // ─── Summary render ───────────────────────────────────────────────────────
+
+  function renderSummary() {
+    const open   = MEM.trades.filter(t => t.sellPrice === null);
+    const closed = MEM.trades.filter(t => t.sellPrice !== null);
+
+    const invested = open.reduce((s, t) => s + t.buyPrice * t.qty, 0);
+    const profit   = closed.reduce((s, t) => s + (t.sellPrice - t.buyPrice) * t.qty, 0);
+    const avgRoi   = closed.length
+      ? closed.reduce((s, t) => s + ((t.sellPrice - t.buyPrice) / t.buyPrice) * 100, 0) / closed.length
+      : null;
+
+    panel.querySelector('#st-sum-invested').textContent = fmtMoney(invested);
+    panel.querySelector('#st-sum-profit').textContent   = fmtMoney(profit);
+    panel.querySelector('#st-sum-roi').textContent      = avgRoi !== null ? avgRoi.toFixed(1) + '%' : '—';
+    panel.querySelector('#st-sum-trades').textContent   = closed.length;
+  }
+
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
   panel.querySelectorAll('.st-tab').forEach(tab => {
@@ -874,7 +894,7 @@
       panel.querySelectorAll('.st-pane').forEach(p => p.classList.remove('st-active'));
       tab.classList.add('st-active');
       panel.querySelector(`#st-pane-${tab.dataset.tab}`).classList.add('st-active');
-      if (tab.dataset.tab === 'ledger') { renderOpenTrades(); renderClosedTrades(); }
+      if (tab.dataset.tab === 'ledger') { renderOpenTrades(); renderClosedTrades(); renderSummary(); }
     });
   });
 
