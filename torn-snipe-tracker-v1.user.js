@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.4.0
+// @version      1.5.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.4.0';
+  const SCRIPT_VERSION = '1.5.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -32,16 +32,17 @@
   };
 
   const SEED_WATCHLIST = [
-    { name: 'Xanax',    fairValue: 850000, threshold: 10 },
-    { name: 'Cannabis', fairValue: 95000,  threshold: 10 },
-    { name: 'Speed',    fairValue: 320000, threshold: 10 },
+    { itemId: 206, name: 'Xanax',    fairValue: 850000, threshold: 10 },
+    { itemId: 197, name: 'Cannabis', fairValue: 95000,  threshold: 10 },
+    { itemId: 198, name: 'Speed',    fairValue: 320000, threshold: 10 },
   ];
 
   const MEM = {
-    watchlist: Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-    settings:  Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10 },
-    collapsed: Store.get(KEYS.collapsed) ?? false,
-    position:  Store.get(KEYS.position)  ?? null,
+    watchlist:   Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
+    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10 },
+    collapsed:   Store.get(KEYS.collapsed) ?? false,
+    position:    Store.get(KEYS.position)  ?? null,
+    pollResults: {},   // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
   };
 
   // ─── Styles ───────────────────────────────────────────────────────────────
@@ -415,12 +416,12 @@
         <div id="st-add-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
           <div class="st-settings-row" style="margin-bottom:0">
             <div class="st-field">
-              <label>Item name</label>
-              <input id="st-add-name" class="st-input" type="text" placeholder="Xanax" style="width:130px">
+              <label>Item ID</label>
+              <input id="st-add-itemid" class="st-input" type="number" min="1" placeholder="206" style="width:80px">
             </div>
             <div class="st-field">
-              <label>Fair value ($)</label>
-              <input id="st-add-fairvalue" class="st-input" type="number" min="1" placeholder="850000">
+              <label>Item name</label>
+              <input id="st-add-name" class="st-input" type="text" placeholder="Xanax" style="width:120px">
             </div>
             <div class="st-field">
               <label>Threshold %</label>
@@ -544,6 +545,27 @@
   `;
   document.body.appendChild(panel);
 
+  // ─── API ──────────────────────────────────────────────────────────────────
+
+  function computeMedian(arr) {
+    if (!arr.length) return null;
+    const mid = Math.floor(arr.length / 2);
+    return arr.length % 2 !== 0 ? arr[mid] : Math.round((arr[mid - 1] + arr[mid]) / 2);
+  }
+
+  async function fetchItemPrice(item) {
+    const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${API_KEY}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    const prices = (d.bazaar ?? []).map(l => l.cost).sort((a, b) => a - b);
+    const sample  = prices.slice(0, 5);  // lowest 3-5 listings
+    MEM.pollResults[item.itemId] = {
+      fairValue:    computeMedian(sample),
+      lowestListed: prices[0] ?? null,
+      updatedAt:    Date.now(),
+    };
+  }
+
   // ─── Watchlist render ──────────────────────────────────────────────────────
 
   function renderWatchlist() {
@@ -555,7 +577,7 @@
     tbody.innerHTML = MEM.watchlist.map((item, i) => `
       <tr>
         <td>${item.name}</td>
-        <td>$${item.fairValue.toLocaleString()}</td>
+        <td>${item.fairValue != null ? '$' + item.fairValue.toLocaleString() : '—'}</td>
         <td>${item.threshold}%</td>
         <td>—</td>
         <td>—</td>
@@ -576,16 +598,16 @@
 
   const addItemBtn     = panel.querySelector('#st-add-item-btn');
   const addForm        = panel.querySelector('#st-add-form');
+  const addItemId      = panel.querySelector('#st-add-itemid');
   const addName        = panel.querySelector('#st-add-name');
-  const addFair        = panel.querySelector('#st-add-fairvalue');
   const addThresh      = panel.querySelector('#st-add-threshold');
   const addConfirmBtn  = panel.querySelector('#st-add-confirm-btn');
   const addCancelBtn   = panel.querySelector('#st-add-cancel-btn');
 
   function hideAddForm() {
     addForm.style.display = 'none';
-    addName.value = '';
-    addFair.value = '';
+    addItemId.value = '';
+    addName.value   = '';
   }
 
   addItemBtn.addEventListener('click', () => {
@@ -602,11 +624,11 @@
   addCancelBtn.addEventListener('click', hideAddForm);
 
   addConfirmBtn.addEventListener('click', () => {
+    const itemId    = parseInt(addItemId.value, 10);
     const name      = addName.value.trim();
-    const fairValue = parseInt(addFair.value, 10);
     const threshold = Math.min(100, Math.max(1, parseInt(addThresh.value, 10) || MEM.settings.threshold));
-    if (!name || !(fairValue > 0)) return;
-    MEM.watchlist.push({ name, fairValue, threshold });
+    if (!(itemId > 0) || !name) return;
+    MEM.watchlist.push({ itemId, name, threshold });
     Store.set(KEYS.watchlist, MEM.watchlist);
     renderWatchlist();
     hideAddForm();
