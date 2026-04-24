@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.6.0
+// @version      1.7.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.6.0';
+  const SCRIPT_VERSION = '1.7.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -410,7 +410,7 @@
         </table>
         <div class="st-scan-line">Last scan: &mdash;</div>
         <div class="st-btn-row">
-          <button class="st-btn" disabled>Scan Now</button>
+          <button id="st-scan-btn" class="st-btn">Scan Now</button>
           <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
         </div>
         <div id="st-add-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
@@ -810,6 +810,8 @@
   });
 
   // ─── Init ─────────────────────────────────────────────────────────────────
+
+  panel.querySelector('#st-scan-btn').addEventListener('click', runPoll);
 
   runPoll();
   startPollLoop();
