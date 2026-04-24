@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.5.1
+// @version      1.6.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.5.1';
+  const SCRIPT_VERSION = '1.6.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -573,6 +573,24 @@
     }
   }
 
+  // ─── Poll loop ────────────────────────────────────────────────────────────
+
+  let pollTimer = null;
+
+  async function runPoll() {
+    for (const item of MEM.watchlist) {
+      if (!(item.itemId > 0)) continue;
+      await fetchItemPrice(item);
+    }
+    const scanLine = panel.querySelector('.st-scan-line');
+    if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
+  }
+
+  function startPollLoop() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(runPoll, MEM.settings.interval * 1000);
+  }
+
   // ─── Watchlist render ──────────────────────────────────────────────────────
 
   function renderWatchlist() {
@@ -764,6 +782,7 @@
     MEM.settings.interval = Math.max(10, parseInt(inputInterval.value, 10) || 60);
     inputInterval.value = MEM.settings.interval;
     Store.set(KEYS.settings, MEM.settings);
+    startPollLoop();
   });
 
   inputThreshold.addEventListener('change', () => {
@@ -789,5 +808,10 @@
     panel.style.bottom = '18px';
     renderWatchlist();
   });
+
+  // ─── Init ─────────────────────────────────────────────────────────────────
+
+  runPoll();
+  startPollLoop();
 
 })();
