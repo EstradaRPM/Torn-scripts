@@ -1,0 +1,580 @@
+// ==UserScript==
+// @name         Torn Snipe Tracker
+// @namespace    estradarpm-snipe-tracker
+// @version      1.0.0
+// @description  Bazaar snipe detector and trade ledger for Torn City
+// @author       Built for EstradaRPM
+// @match        https://www.torn.com/bazaar.php*
+// @match        https://www.torn.com/page.php*
+// @grant        none
+// @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
+// @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const SCRIPT_VERSION = '1.0.0';
+  const API_KEY = '###PDA-APIKEY###';
+
+  // ─── Styles ───────────────────────────────────────────────────────────────
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #st-panel {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      z-index: 999999;
+      width: 520px;
+      max-width: calc(100vw - 24px);
+      background: #080e18;
+      border: 1px solid #1a2a3a;
+      border-radius: 8px;
+      box-shadow: 0 4px 32px rgba(0,0,0,0.7);
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 14px;
+      color: #c0d0c8;
+      user-select: none;
+    }
+
+    /* ── Header ── */
+    #st-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: #0c1622;
+      border-radius: 8px 8px 0 0;
+      cursor: grab;
+      border-bottom: 1px solid #1a2a3a;
+    }
+    #st-header:active { cursor: grabbing; }
+
+    #st-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: #00ff88;
+      text-transform: uppercase;
+    }
+
+    #st-collapse-btn {
+      background: none;
+      border: 1px solid #2a3a4a;
+      border-radius: 4px;
+      color: #c0d0c8;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 8px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #st-collapse-btn:hover {
+      border-color: #00ff88;
+      color: #00ff88;
+    }
+
+    /* ── Body ── */
+    #st-body {
+      padding: 0;
+    }
+    #st-panel.st-collapsed #st-body {
+      display: none;
+    }
+    #st-panel.st-collapsed {
+      border-radius: 8px;
+    }
+    #st-panel.st-collapsed #st-header {
+      border-bottom: none;
+      border-radius: 8px;
+    }
+
+    /* ── Tabs ── */
+    #st-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid #1a2a3a;
+      background: #0a1220;
+    }
+
+    .st-tab {
+      padding: 9px 22px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      color: #5a7a6a;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      text-transform: uppercase;
+    }
+    .st-tab:hover {
+      color: #c0d0c8;
+    }
+    .st-tab.st-active {
+      color: #00ff88;
+      border-bottom: 2px solid #00ff88;
+    }
+
+    /* ── Tab panes ── */
+    .st-pane {
+      display: none;
+      padding: 14px;
+    }
+    .st-pane.st-active {
+      display: block;
+    }
+
+    /* ── Tables ── */
+    .st-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .st-table th {
+      text-align: left;
+      color: #00ccff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      padding: 5px 8px;
+      border-bottom: 1px solid #1a2a3a;
+    }
+    .st-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #0f1e2e;
+      vertical-align: middle;
+    }
+    .st-table tr:last-child td {
+      border-bottom: none;
+    }
+    .st-table tr:hover td {
+      background: rgba(255,255,255,0.025);
+    }
+
+    /* ── Status badges ── */
+    .st-status-snipe {
+      color: #00ff88;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-shadow: 0 0 8px rgba(0,255,136,0.45);
+    }
+    .st-status-watch {
+      color: #3a5a4a;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Profit/ROI tints ── */
+    .st-profit {
+      color: #00ff88;
+    }
+    .st-roi {
+      color: #00ff88;
+    }
+
+    /* ── Section labels ── */
+    .st-section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #00ccff;
+      margin: 14px 0 8px 0;
+      padding-bottom: 4px;
+      border-bottom: 1px solid #1a2a3a;
+    }
+    .st-section-label:first-child {
+      margin-top: 0;
+    }
+
+    /* ── Scan line ── */
+    .st-scan-line {
+      font-size: 12px;
+      color: #3a5a4a;
+      margin-top: 10px;
+    }
+
+    /* ── Summary row ── */
+    .st-summary {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      background: #0a1220;
+      border: 1px solid #1a2a3a;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-top: 12px;
+      font-size: 12px;
+    }
+    .st-summary-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .st-summary-label {
+      color: #3a6a5a;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .st-summary-value {
+      color: #00ff88;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    /* ── Buttons ── */
+    .st-btn {
+      background: #0c1e2e;
+      border: 1px solid #2a3a4a;
+      border-radius: 5px;
+      color: #c0d0c8;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 6px 14px;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .st-btn:hover:not(:disabled) {
+      border-color: #00ff88;
+      color: #00ff88;
+    }
+    .st-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .st-btn-blue:hover:not(:disabled) {
+      border-color: #00ccff;
+      color: #00ccff;
+    }
+    .st-btn-danger:hover:not(:disabled) {
+      border-color: #ff4444;
+      color: #ff4444;
+    }
+
+    .st-btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* ── Settings ── */
+    .st-settings {
+      border-top: 1px solid #1a2a3a;
+      padding: 12px 14px 14px;
+      background: #070c14;
+      border-radius: 0 0 8px 8px;
+    }
+    .st-settings-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #3a5a6a;
+      margin-bottom: 10px;
+    }
+    .st-settings-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      margin-bottom: 10px;
+    }
+    .st-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .st-field label {
+      font-size: 11px;
+      color: #3a5a6a;
+      letter-spacing: 0.05em;
+    }
+    .st-input {
+      background: #0c1622;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #c0d0c8;
+      font-size: 13px;
+      padding: 5px 10px;
+      width: 110px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .st-input:focus {
+      border-color: #00ccff;
+    }
+
+    /* ── Mobile adjustments ── */
+    @media (max-width: 560px) {
+      #st-panel {
+        width: calc(100vw - 24px);
+        right: 12px;
+        bottom: 12px;
+      }
+      .st-table th,
+      .st-table td {
+        padding: 5px 5px;
+        font-size: 12px;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+
+  // ─── HTML ──────────────────────────────────────────────────────────────────
+
+  const panel = document.createElement('div');
+  panel.id = 'st-panel';
+  panel.innerHTML = `
+    <div id="st-header">
+      <span id="st-title">Snipe Tracker v${SCRIPT_VERSION}</span>
+      <button id="st-collapse-btn" title="Toggle panel">&minus;</button>
+    </div>
+
+    <div id="st-body">
+      <!-- Tabs -->
+      <div id="st-tabs">
+        <div class="st-tab st-active" data-tab="snipe">Snipe</div>
+        <div class="st-tab" data-tab="ledger">Ledger</div>
+      </div>
+
+      <!-- ── SNIPE pane ── -->
+      <div id="st-pane-snipe" class="st-pane st-active">
+        <table class="st-table">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Fair Value</th>
+              <th>Lowest</th>
+              <th>Gap %</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Xanax</td>
+              <td>$850,000</td>
+              <td>$612,000</td>
+              <td>28.0%</td>
+              <td><span class="st-status-snipe">SNIPE</span></td>
+            </tr>
+            <tr>
+              <td>Cannabis</td>
+              <td>$95,000</td>
+              <td>$91,500</td>
+              <td>3.7%</td>
+              <td><span class="st-status-watch">watch</span></td>
+            </tr>
+            <tr>
+              <td>Speed</td>
+              <td>$320,000</td>
+              <td>$278,000</td>
+              <td>13.1%</td>
+              <td><span class="st-status-snipe">SNIPE</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="st-scan-line">Last scan: &mdash;</div>
+        <div class="st-btn-row">
+          <button class="st-btn" disabled>Scan Now</button>
+          <button class="st-btn st-btn-blue" disabled>+ Add Item</button>
+        </div>
+      </div>
+
+      <!-- ── LEDGER pane ── -->
+      <div id="st-pane-ledger" class="st-pane">
+
+        <div class="st-section-label">Open Trades</div>
+        <table class="st-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Item</th>
+              <th>Qty</th>
+              <th>Buy Price</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2026-04-20</td>
+              <td>Xanax</td>
+              <td>2</td>
+              <td>$612,000</td>
+              <td>$1,224,000</td>
+            </tr>
+            <tr>
+              <td>2026-04-22</td>
+              <td>Speed</td>
+              <td>5</td>
+              <td>$278,000</td>
+              <td>$1,390,000</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="st-section-label">Closed Trades</div>
+        <table class="st-table">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Qty</th>
+              <th>Buy</th>
+              <th>Sell</th>
+              <th>Profit</th>
+              <th>ROI %</th>
+              <th>Held</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Cannabis</td>
+              <td>10</td>
+              <td>$88,000</td>
+              <td>$94,500</td>
+              <td class="st-profit">$65,000</td>
+              <td class="st-roi">7.4%</td>
+              <td>1d 4h</td>
+            </tr>
+            <tr>
+              <td>LSD</td>
+              <td>3</td>
+              <td>$410,000</td>
+              <td>$490,000</td>
+              <td class="st-profit">$240,000</td>
+              <td class="st-roi">19.5%</td>
+              <td>0d 18h</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="st-summary">
+          <div class="st-summary-item">
+            <span class="st-summary-label">Total Invested</span>
+            <span class="st-summary-value">$2,614,000</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Total Profit</span>
+            <span class="st-summary-value">$305,000</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Avg ROI</span>
+            <span class="st-summary-value">13.5%</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Trades</span>
+            <span class="st-summary-value">2</span>
+          </div>
+        </div>
+
+        <div class="st-btn-row">
+          <button class="st-btn st-btn-blue" disabled>Export CSV</button>
+        </div>
+      </div>
+
+      <!-- ── Settings ── -->
+      <div class="st-settings">
+        <div class="st-settings-title">Settings</div>
+        <div class="st-settings-row">
+          <div class="st-field">
+            <label for="st-input-interval">Scan interval (sec)</label>
+            <input id="st-input-interval" class="st-input" type="number" value="60" min="10" disabled>
+          </div>
+          <div class="st-field">
+            <label for="st-input-threshold">Default threshold %</label>
+            <input id="st-input-threshold" class="st-input" type="number" value="10" min="1" max="100" disabled>
+          </div>
+        </div>
+        <button class="st-btn st-btn-danger" disabled>Clear All Data</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(panel);
+
+  // ─── Tab switching ─────────────────────────────────────────────────────────
+
+  panel.querySelectorAll('.st-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      panel.querySelectorAll('.st-tab').forEach(t => t.classList.remove('st-active'));
+      panel.querySelectorAll('.st-pane').forEach(p => p.classList.remove('st-active'));
+      tab.classList.add('st-active');
+      panel.querySelector(`#st-pane-${tab.dataset.tab}`).classList.add('st-active');
+    });
+  });
+
+  // ─── Collapse toggle ───────────────────────────────────────────────────────
+
+  const collapseBtn = panel.querySelector('#st-collapse-btn');
+  collapseBtn.addEventListener('click', () => {
+    const collapsed = panel.classList.toggle('st-collapsed');
+    collapseBtn.textContent = collapsed ? '+' : '−';
+  });
+
+  // ─── Drag ─────────────────────────────────────────────────────────────────
+
+  const header = panel.querySelector('#st-header');
+  let dragging = false;
+  let dragOffX = 0;
+  let dragOffY = 0;
+
+  header.addEventListener('mousedown', e => {
+    if (e.target === collapseBtn) return;
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    dragOffX = e.clientX - rect.left;
+    dragOffY = e.clientY - rect.top;
+    panel.style.transition = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    let x = e.clientX - dragOffX;
+    let y = e.clientY - dragOffY;
+    const maxX = window.innerWidth  - panel.offsetWidth;
+    const maxY = window.innerHeight - panel.offsetHeight;
+    x = Math.max(0, Math.min(x, maxX));
+    y = Math.max(0, Math.min(y, maxY));
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.left   = x + 'px';
+    panel.style.top    = y + 'px';
+  });
+
+  document.addEventListener('mouseup', () => { dragging = false; });
+
+  // Touch drag support
+  header.addEventListener('touchstart', e => {
+    if (e.target === collapseBtn) return;
+    const touch = e.touches[0];
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    dragOffX = touch.clientX - rect.left;
+    dragOffY = touch.clientY - rect.top;
+    e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const touch = e.touches[0];
+    let x = touch.clientX - dragOffX;
+    let y = touch.clientY - dragOffY;
+    const maxX = window.innerWidth  - panel.offsetWidth;
+    const maxY = window.innerHeight - panel.offsetHeight;
+    x = Math.max(0, Math.min(x, maxX));
+    y = Math.max(0, Math.min(y, maxY));
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.left   = x + 'px';
+    panel.style.top    = y + 'px';
+  }, { passive: false });
+
+  document.addEventListener('touchend', () => { dragging = false; });
+
+})();
