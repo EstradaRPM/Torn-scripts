@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.4
+// @version      1.15.5
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -20,7 +20,7 @@
   if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
   if (document.getElementById('st-panel')) return;
 
-  const SCRIPT_VERSION = '1.15.4';
+  const SCRIPT_VERSION = '1.15.5';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -567,6 +567,7 @@
           <div class="st-field">
             <label for="st-input-threshold">Default threshold %</label>
             <input id="st-input-threshold" class="st-input" type="number" min="1" max="100">
+            <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
           </div>
         </div>
         <button id="st-clear-btn" class="st-btn st-btn-danger">Clear All Data</button>
@@ -666,11 +667,17 @@
         ? `<button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px;margin-right:4px">Log Buy</button>`
         : '';
 
+      const fvForAnnot = (res && !res.error) ? res.fairValue : null;
+      const snipePriceStr = fvForAnnot != null
+        ? '$' + Math.round(fvForAnnot * (1 - item.threshold / 100)).toLocaleString()
+        : null;
+      const threshCell = `${item.threshold}%<br><span style="font-size:11px;color:#8aa898;white-space:nowrap">${snipePriceStr ? '≤ ' + snipePriceStr : '—'}</span>`;
+
       return `
         <tr>
           <td>${item.name}</td>
           <td>${fairValCell}</td>
-          <td>${item.threshold}%</td>
+          <td>${threshCell}</td>
           <td>${lowestCell}</td>
           <td>${gapCell}</td>
           <td>${statusCell}</td>
@@ -1095,6 +1102,7 @@
 
   const inputInterval  = panel.querySelector('#st-input-interval');
   const inputThreshold = panel.querySelector('#st-input-threshold');
+  const threshHint     = panel.querySelector('#st-thresh-hint');
   const clearBtn       = panel.querySelector('#st-clear-btn');
 
   inputInterval.value  = MEM.settings.interval;
@@ -1106,6 +1114,13 @@
     Store.set(KEYS.settings, MEM.settings);
     startPollLoop();
   });
+
+  function updateThreshHint() {
+    // Global default has no associated item; always "—"
+    threshHint.textContent = '—';
+  }
+
+  inputThreshold.addEventListener('input', updateThreshHint);
 
   inputThreshold.addEventListener('change', () => {
     MEM.settings.threshold = Math.min(100, Math.max(1, parseInt(inputThreshold.value, 10) || 10));
