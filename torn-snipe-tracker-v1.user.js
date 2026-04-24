@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.3.0
+// @version      1.4.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.3.0';
+  const SCRIPT_VERSION = '1.4.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -631,7 +631,23 @@
   collapseBtn.addEventListener('click', () => {
     const collapsed = panel.classList.toggle('st-collapsed');
     collapseBtn.textContent = collapsed ? '+' : '−';
+    MEM.collapsed = collapsed;
+    Store.set(KEYS.collapsed, MEM.collapsed);
   });
+
+  // ─── Restore panel state ───────────────────────────────────────────────────
+
+  if (MEM.collapsed) {
+    panel.classList.add('st-collapsed');
+    collapseBtn.textContent = '+';
+  }
+
+  if (MEM.position) {
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.left   = MEM.position.left;
+    panel.style.top    = MEM.position.top;
+  }
 
   // ─── Drag ─────────────────────────────────────────────────────────────────
 
@@ -664,7 +680,13 @@
     panel.style.top    = y + 'px';
   });
 
-  document.addEventListener('mouseup', () => { dragging = false; });
+  document.addEventListener('mouseup', () => {
+    if (dragging) {
+      MEM.position = { left: panel.style.left, top: panel.style.top };
+      Store.set(KEYS.position, MEM.position);
+    }
+    dragging = false;
+  });
 
   // Touch drag support
   header.addEventListener('touchstart', e => {
@@ -692,7 +714,13 @@
     panel.style.top    = y + 'px';
   }, { passive: false });
 
-  document.addEventListener('touchend', () => { dragging = false; });
+  document.addEventListener('touchend', () => {
+    if (dragging) {
+      MEM.position = { left: panel.style.left, top: panel.style.top };
+      Store.set(KEYS.position, MEM.position);
+    }
+    dragging = false;
+  });
 
   // ─── Settings inputs ───────────────────────────────────────────────────────
 
@@ -724,6 +752,12 @@
     MEM.position  = null;
     inputInterval.value  = MEM.settings.interval;
     inputThreshold.value = MEM.settings.threshold;
+    panel.classList.remove('st-collapsed');
+    collapseBtn.textContent = '−';
+    panel.style.left   = 'auto';
+    panel.style.right  = '18px';
+    panel.style.top    = 'auto';
+    panel.style.bottom = '18px';
     renderWatchlist();
   });
 
