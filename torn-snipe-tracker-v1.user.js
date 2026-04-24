@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.11.0
+// @version      1.12.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.11.0';
+  const SCRIPT_VERSION = '1.12.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -476,6 +476,7 @@
               <th>Qty</th>
               <th>Buy Price</th>
               <th>Total</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="st-open-trades-body"></tbody>
@@ -760,20 +761,66 @@
 
   function renderOpenTrades() {
     const tbody = panel.querySelector('#st-open-trades-body');
-    const open = MEM.trades.filter(t => t.sellPrice === null);
+    const open = MEM.trades
+      .map((t, i) => ({ ...t, _idx: i }))
+      .filter(t => t.sellPrice === null);
     if (!open.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8aa898;padding:12px 8px">No open trades</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8aa898;padding:12px 8px">No open trades</td></tr>';
       return;
     }
     tbody.innerHTML = open.map(t => `
-      <tr>
+      <tr data-trade-idx="${t._idx}">
         <td>${fmtDate(t.buyDate)}</td>
         <td>${t.name}</td>
         <td>${t.qty}</td>
         <td>${fmtMoney(t.buyPrice)}</td>
         <td>${fmtMoney(t.buyPrice * t.qty)}</td>
+        <td><button class="st-log-sell-btn st-btn" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px">Log Sell</button></td>
       </tr>
     `).join('');
+
+    tbody.querySelectorAll('.st-log-sell-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const existing = tbody.querySelector('.st-sell-form-row');
+        if (existing) existing.remove();
+
+        const tradeIdx = parseInt(btn.dataset.tradeIdx, 10);
+        const parentRow = btn.closest('tr');
+
+        const formRow = document.createElement('tr');
+        formRow.className = 'st-sell-form-row';
+        formRow.innerHTML = `
+          <td colspan="6" style="padding:6px 8px 10px">
+            <div style="background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
+              <div class="st-field">
+                <label>Sell price / unit ($)</label>
+                <input class="st-sell-price-input st-input" type="number" min="1" style="width:150px">
+              </div>
+              <div class="st-btn-row" style="margin-top:8px">
+                <button class="st-sell-confirm-btn st-btn">Confirm</button>
+                <button class="st-sell-cancel-btn st-btn st-btn-danger">Cancel</button>
+              </div>
+            </div>
+          </td>
+        `;
+        parentRow.after(formRow);
+        formRow.querySelector('.st-sell-price-input').focus();
+
+        formRow.querySelector('.st-sell-cancel-btn').addEventListener('click', () => {
+          formRow.remove();
+        });
+
+        formRow.querySelector('.st-sell-confirm-btn').addEventListener('click', () => {
+          const price = parseInt(formRow.querySelector('.st-sell-price-input').value, 10);
+          if (!(price > 0)) return;
+          MEM.trades[tradeIdx].sellPrice = price;
+          MEM.trades[tradeIdx].sellDate  = Date.now();
+          Store.set(KEYS.trades, MEM.trades);
+          renderOpenTrades();
+          renderClosedTrades();
+        });
+      });
+    });
   }
 
   // ─── Closed trades render ──────────────────────────────────────────────────
