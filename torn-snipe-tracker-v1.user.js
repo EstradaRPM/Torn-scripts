@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.3
+// @version      1.15.4
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -20,7 +20,7 @@
   if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
   if (document.getElementById('st-panel')) return;
 
-  const SCRIPT_VERSION = '1.15.3';
+  const SCRIPT_VERSION = '1.15.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -741,15 +741,15 @@
   async function fetchItemLookup() {
     if (itemLookupCache) return itemLookupCache;
     try {
-      const r = await fetch(`https://api.torn.com/market/lookup?selections=itemmarket&key=${API_KEY}`);
+      const r = await fetch(`https://api.torn.com/torn/?selections=items&key=${API_KEY}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
+      console.log('[SnipeTracker] fetchItemLookup raw response:', d);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      const raw = d.itemmarket ?? {};
-      const arr = Array.isArray(raw)
-        ? raw.map(it => ({ itemId: it.ID ?? it.id, name: it.name }))
-        : Object.entries(raw).map(([id, v]) => ({ itemId: parseInt(id, 10), name: v.name ?? v }));
-      itemLookupCache = arr.filter(it => it.itemId && it.name);
+      const raw = d.items ?? {};
+      itemLookupCache = Object.entries(raw)
+        .map(([id, v]) => ({ itemId: parseInt(id, 10), name: v.name }))
+        .filter(it => it.itemId && it.name);
       return itemLookupCache;
     } catch (err) {
       console.error('[SnipeTracker] fetchItemLookup failed:', err.message);
