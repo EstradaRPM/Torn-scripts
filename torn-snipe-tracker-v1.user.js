@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.10.0
+// @version      1.11.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.10.0';
+  const SCRIPT_VERSION = '1.11.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -494,26 +494,7 @@
               <th>Held</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td>Cannabis</td>
-              <td>10</td>
-              <td>$88,000</td>
-              <td>$94,500</td>
-              <td class="st-profit">$65,000</td>
-              <td class="st-roi">7.4%</td>
-              <td>1d 4h</td>
-            </tr>
-            <tr>
-              <td>LSD</td>
-              <td>3</td>
-              <td>$410,000</td>
-              <td>$490,000</td>
-              <td class="st-profit">$240,000</td>
-              <td class="st-roi">19.5%</td>
-              <td>0d 18h</td>
-            </tr>
-          </tbody>
+          <tbody id="st-closed-trades-body"></tbody>
         </table>
 
         <div class="st-summary">
@@ -795,6 +776,49 @@
     `).join('');
   }
 
+  // ─── Closed trades render ──────────────────────────────────────────────────
+
+  function fmtHeld(buyTs, sellTs) {
+    const totalHours = Math.floor((sellTs - buyTs) / 3600000);
+    const days  = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    return `${days}d ${hours}h`;
+  }
+
+  function renderClosedTrades() {
+    const tbody = panel.querySelector('#st-closed-trades-body');
+    const closed = MEM.trades.filter(t => t.sellPrice !== null);
+    if (!closed.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8aa898;padding:12px 8px">No closed trades</td></tr>';
+      return;
+    }
+    tbody.innerHTML = closed.map(t => {
+      const profit = (t.sellPrice - t.buyPrice) * t.qty;
+      const roi    = ((t.sellPrice - t.buyPrice) / t.buyPrice) * 100;
+      const roiStr = roi.toFixed(1) + '%';
+      const held   = fmtHeld(t.buyDate, t.sellDate);
+      const rowBg  = roi > 0
+        ? 'background:rgba(0,255,136,0.06)'
+        : roi < 0
+          ? 'background:rgba(255,60,60,0.06)'
+          : '';
+      const numStyle = roi >= 0
+        ? 'color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.35)'
+        : 'color:#ff4444';
+      return `
+        <tr style="${rowBg}">
+          <td>${t.name}</td>
+          <td>${t.qty}</td>
+          <td>${fmtMoney(t.buyPrice)}</td>
+          <td>${fmtMoney(t.sellPrice)}</td>
+          <td style="${numStyle}">${fmtMoney(profit)}</td>
+          <td style="${numStyle}">${roiStr}</td>
+          <td>${held}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
   panel.querySelectorAll('.st-tab').forEach(tab => {
@@ -803,7 +827,7 @@
       panel.querySelectorAll('.st-pane').forEach(p => p.classList.remove('st-active'));
       tab.classList.add('st-active');
       panel.querySelector(`#st-pane-${tab.dataset.tab}`).classList.add('st-active');
-      if (tab.dataset.tab === 'ledger') renderOpenTrades();
+      if (tab.dataset.tab === 'ledger') { renderOpenTrades(); renderClosedTrades(); }
     });
   });
 
