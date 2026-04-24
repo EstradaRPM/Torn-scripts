@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.7
+// @version      1.15.8
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
 // @match        https://www.torn.com/market.php*
 // @match        https://www.torn.com/imarket.php*
 // @match        https://www.torn.com/trade.php*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      api.torn.com
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
 // @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
 // ==/UserScript==
@@ -20,7 +21,7 @@
   if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
   if (document.getElementById('st-panel')) return;
 
-  const SCRIPT_VERSION = '1.15.7';
+  const SCRIPT_VERSION = '1.15.8';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -589,6 +590,17 @@
 
   // ─── API ──────────────────────────────────────────────────────────────────
 
+  function gmFetch(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method:  'GET',
+        url,
+        onload:  r  => resolve(r.responseText),
+        onerror: () => reject(new Error('GM_xmlhttpRequest network error')),
+      });
+    });
+  }
+
   function computeMedian(arr) {
     if (!arr.length) return null;
     const mid = Math.floor(arr.length / 2);
@@ -596,16 +608,15 @@
   }
 
   async function fetchItemPrice(item) {
+    const key = getApiKey();
+    const url = `https://api.torn.com/v2/market/${item.itemId}/itemmarket?key=${key}`;
+    console.log(`[SnipeTracker] fetch → v2/market/${item.itemId}/itemmarket`);
     try {
-      const key = getApiKey();
-      const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${key}`;
-      console.log(`[SnipeTracker] fetch → market/${item.itemId}?selections=bazaar (key: ${key ? key.slice(0, 4) + '****' : 'MISSING'})`);
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
+      const text = await gmFetch(url);
+      const d    = JSON.parse(text);
       console.log(`[SnipeTracker] response itemId=${item.itemId}:`, d);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      const prices = (d.bazaar ?? []).map(l => l.cost).sort((a, b) => a - b);
+      const prices = (d.itemmarket?.listings ?? []).map(l => l.price).sort((a, b) => a - b);
       const sample  = prices.slice(0, 5);
       MEM.pollResults[item.itemId] = {
         fairValue:    computeMedian(sample),
@@ -768,9 +779,8 @@
   async function fetchItemLookup() {
     if (itemLookupCache) return itemLookupCache;
     try {
-      const r = await fetch(`https://api.torn.com/torn/?selections=items&key=${getApiKey()}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
+      const text = await gmFetch(`https://api.torn.com/torn/?selections=items&key=${getApiKey()}`);
+      const d    = JSON.parse(text);
       console.log('[SnipeTracker] fetchItemLookup raw response:', d);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
       const raw = d.items ?? {};
