@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.2
+// @version      1.15.3
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -20,7 +20,7 @@
   if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
   if (document.getElementById('st-panel')) return;
 
-  const SCRIPT_VERSION = '1.15.2';
+  const SCRIPT_VERSION = '1.15.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -387,6 +387,25 @@
     }
 
     /* ── Mobile adjustments ── */
+    /* ── Search dropdown ── */
+    #st-add-dropdown .st-dd-item {
+      padding: 7px 10px;
+      font-size: 13px;
+      color: #c0d0c8;
+      cursor: pointer;
+      border-bottom: 1px solid #0f1e2e;
+    }
+    #st-add-dropdown .st-dd-item:last-child { border-bottom: none; }
+    #st-add-dropdown .st-dd-item:hover {
+      background: rgba(0,255,136,0.08);
+      color: #00ff88;
+    }
+    #st-add-dropdown .st-dd-empty {
+      padding: 7px 10px;
+      font-size: 12px;
+      color: #8aa898;
+    }
+
     @media (max-width: 560px) {
       #st-panel {
         width: calc(100vw - 24px);
@@ -441,14 +460,11 @@
           <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
         </div>
         <div id="st-add-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
-          <div class="st-settings-row" style="margin-bottom:0">
-            <div class="st-field">
-              <label>Item ID</label>
-              <input id="st-add-itemid" class="st-input" type="number" min="1" placeholder="206" style="width:80px">
-            </div>
-            <div class="st-field">
-              <label>Item name</label>
-              <input id="st-add-name" class="st-input" type="text" placeholder="Xanax" style="width:120px">
+          <div class="st-settings-row" style="margin-bottom:0;align-items:flex-start">
+            <div class="st-field" style="position:relative">
+              <label>Search item name</label>
+              <input id="st-add-search" class="st-input" type="text" placeholder="e.g. Xanax" autocomplete="off" style="width:180px">
+              <div id="st-add-dropdown" style="display:none;position:absolute;top:100%;left:0;width:220px;background:#0c1622;border:1px solid #1a2a3a;border-radius:0 0 4px 4px;z-index:10;max-height:200px;overflow-y:auto"></div>
             </div>
             <div class="st-field">
               <label>Threshold %</label>
@@ -684,26 +700,90 @@
 
   // ─── Add Item form ─────────────────────────────────────────────────────────
 
-  const addItemBtn     = panel.querySelector('#st-add-item-btn');
-  const addForm        = panel.querySelector('#st-add-form');
-  const addItemId      = panel.querySelector('#st-add-itemid');
-  const addName        = panel.querySelector('#st-add-name');
-  const addThresh      = panel.querySelector('#st-add-threshold');
-  const addConfirmBtn  = panel.querySelector('#st-add-confirm-btn');
-  const addCancelBtn   = panel.querySelector('#st-add-cancel-btn');
+  const addItemBtn    = panel.querySelector('#st-add-item-btn');
+  const addForm       = panel.querySelector('#st-add-form');
+  const addSearch     = panel.querySelector('#st-add-search');
+  const addDropdown   = panel.querySelector('#st-add-dropdown');
+  const addThresh     = panel.querySelector('#st-add-threshold');
+  const addConfirmBtn = panel.querySelector('#st-add-confirm-btn');
+  const addCancelBtn  = panel.querySelector('#st-add-cancel-btn');
+
+  let addSelectedItem = null;  // { itemId, name } populated by dropdown click
+  let itemLookupCache = null;  // full item list cached after first fetch
+  let searchDebounceT = null;
 
   function hideAddForm() {
-    addForm.style.display = 'none';
-    addItemId.value = '';
-    addName.value   = '';
+    addForm.style.display     = 'none';
+    addSearch.value           = '';
+    addDropdown.style.display = 'none';
+    addDropdown.innerHTML     = '';
+    addSelectedItem           = null;
   }
+
+  function renderDropdown(items) {
+    if (!items.length) {
+      addDropdown.innerHTML = '<div class="st-dd-empty">No matches</div>';
+    } else {
+      addDropdown.innerHTML = items.slice(0, 8).map(it =>
+        `<div class="st-dd-item" data-id="${it.itemId}" data-name="${it.name.replace(/"/g, '&quot;')}">${it.name}</div>`
+      ).join('');
+      addDropdown.querySelectorAll('.st-dd-item').forEach(el => {
+        el.addEventListener('click', () => {
+          addSelectedItem       = { itemId: parseInt(el.dataset.id, 10), name: el.dataset.name };
+          addSearch.value       = el.dataset.name;
+          addDropdown.style.display = 'none';
+        });
+      });
+    }
+    addDropdown.style.display = 'block';
+  }
+
+  async function fetchItemLookup() {
+    if (itemLookupCache) return itemLookupCache;
+    try {
+      const r = await fetch(`https://api.torn.com/market/lookup?selections=itemmarket&key=${API_KEY}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
+      const raw = d.itemmarket ?? {};
+      const arr = Array.isArray(raw)
+        ? raw.map(it => ({ itemId: it.ID ?? it.id, name: it.name }))
+        : Object.entries(raw).map(([id, v]) => ({ itemId: parseInt(id, 10), name: v.name ?? v }));
+      itemLookupCache = arr.filter(it => it.itemId && it.name);
+      return itemLookupCache;
+    } catch (err) {
+      console.error('[SnipeTracker] fetchItemLookup failed:', err.message);
+      return [];
+    }
+  }
+
+  addSearch.addEventListener('input', () => {
+    clearTimeout(searchDebounceT);
+    addSelectedItem = null;
+    const q = addSearch.value.trim();
+    if (!q) {
+      addDropdown.style.display = 'none';
+      addDropdown.innerHTML     = '';
+      return;
+    }
+    searchDebounceT = setTimeout(async () => {
+      const all    = await fetchItemLookup();
+      const ql     = q.toLowerCase();
+      const matches = all.filter(it => it.name.toLowerCase().includes(ql));
+      renderDropdown(matches);
+    }, 400);
+  });
+
+  document.addEventListener('click', e => {
+    if (!addForm.contains(e.target)) addDropdown.style.display = 'none';
+  });
 
   addItemBtn.addEventListener('click', () => {
     const opening = addForm.style.display === 'none';
     if (opening) {
-      addThresh.value = MEM.settings.threshold;
+      addThresh.value       = MEM.settings.threshold;
       addForm.style.display = 'block';
-      addName.focus();
+      addSearch.focus();
     } else {
       hideAddForm();
     }
@@ -712,11 +792,9 @@
   addCancelBtn.addEventListener('click', hideAddForm);
 
   addConfirmBtn.addEventListener('click', () => {
-    const itemId    = parseInt(addItemId.value, 10);
-    const name      = addName.value.trim();
+    if (!addSelectedItem) return;
     const threshold = Math.min(100, Math.max(1, parseInt(addThresh.value, 10) || MEM.settings.threshold));
-    if (!(itemId > 0) || !name) return;
-    MEM.watchlist.push({ itemId, name, threshold });
+    MEM.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold });
     Store.set(KEYS.watchlist, MEM.watchlist);
     renderWatchlist();
     hideAddForm();
