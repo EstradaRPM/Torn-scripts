@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.9
+// @version      1.16.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -26,7 +26,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.15.9';
+  const SCRIPT_VERSION = '1.16.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -1064,9 +1064,29 @@
   // ─── Drag ─────────────────────────────────────────────────────────────────
 
   const header = panel.querySelector('#st-header');
+  const DRAG_MARGIN = 60;
   let dragging = false;
   let dragOffX = 0;
   let dragOffY = 0;
+
+  function clampPos(x, y) {
+    const minX = DRAG_MARGIN - panel.offsetWidth;
+    const maxX = window.innerWidth  - DRAG_MARGIN;
+    const minY = DRAG_MARGIN - panel.offsetHeight;
+    const maxY = window.innerHeight - DRAG_MARGIN;
+    return [
+      Math.max(minX, Math.min(x, maxX)),
+      Math.max(minY, Math.min(y, maxY)),
+    ];
+  }
+
+  function applyPos(x, y) {
+    const [cx, cy] = clampPos(x, y);
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.left   = cx + 'px';
+    panel.style.top    = cy + 'px';
+  }
 
   header.addEventListener('mousedown', e => {
     if (e.target === collapseBtn) return;
@@ -1080,16 +1100,7 @@
 
   document.addEventListener('mousemove', e => {
     if (!dragging) return;
-    let x = e.clientX - dragOffX;
-    let y = e.clientY - dragOffY;
-    const maxX = window.innerWidth  - panel.offsetWidth;
-    const maxY = window.innerHeight - panel.offsetHeight;
-    x = Math.max(0, Math.min(x, maxX));
-    y = Math.max(0, Math.min(y, maxY));
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left   = x + 'px';
-    panel.style.top    = y + 'px';
+    applyPos(e.clientX - dragOffX, e.clientY - dragOffY);
   });
 
   document.addEventListener('mouseup', () => {
@@ -1114,16 +1125,7 @@
   document.addEventListener('touchmove', e => {
     if (!dragging) return;
     const touch = e.touches[0];
-    let x = touch.clientX - dragOffX;
-    let y = touch.clientY - dragOffY;
-    const maxX = window.innerWidth  - panel.offsetWidth;
-    const maxY = window.innerHeight - panel.offsetHeight;
-    x = Math.max(0, Math.min(x, maxX));
-    y = Math.max(0, Math.min(y, maxY));
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left   = x + 'px';
-    panel.style.top    = y + 'px';
+    applyPos(touch.clientX - dragOffX, touch.clientY - dragOffY);
   }, { passive: false });
 
   document.addEventListener('touchend', () => {
@@ -1132,6 +1134,13 @@
       Store.set(KEYS.position, MEM.position);
     }
     dragging = false;
+  });
+
+  window.addEventListener('resize', () => {
+    if (!MEM.position) return;
+    const curX = parseInt(panel.style.left, 10);
+    const curY = parseInt(panel.style.top,  10);
+    if (!isNaN(curX) && !isNaN(curY)) applyPos(curX, curY);
   });
 
   // ─── Settings inputs ───────────────────────────────────────────────────────
