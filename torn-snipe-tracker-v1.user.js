@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.16.0
+// @version      1.16.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -26,7 +26,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.16.0';
+  const SCRIPT_VERSION = '1.16.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -488,6 +488,7 @@
             <button id="st-add-confirm-btn" class="st-btn">Add</button>
             <button id="st-add-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
           </div>
+          <div id="st-add-error" style="display:none;color:#ff4444;font-size:12px;margin-top:6px"></div>
         </div>
         <div id="st-buy-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
           <div class="st-settings-row" style="margin-bottom:0">
@@ -751,16 +752,24 @@
   const addThresh     = panel.querySelector('#st-add-threshold');
   const addConfirmBtn = panel.querySelector('#st-add-confirm-btn');
   const addCancelBtn  = panel.querySelector('#st-add-cancel-btn');
+  const addError      = panel.querySelector('#st-add-error');
 
   let addSelectedItem = null;  // { itemId, name } populated by dropdown click
   let itemLookupCache = null;  // full item list cached after first fetch
   let searchDebounceT = null;
+
+  function showAddError(msg) {
+    addError.textContent    = msg;
+    addError.style.display  = 'block';
+  }
 
   function hideAddForm() {
     addForm.style.display     = 'none';
     addSearch.value           = '';
     addDropdown.style.display = 'none';
     addDropdown.innerHTML     = '';
+    addError.style.display    = 'none';
+    addError.textContent      = '';
     addSelectedItem           = null;
   }
 
@@ -802,7 +811,8 @@
 
   addSearch.addEventListener('input', () => {
     clearTimeout(searchDebounceT);
-    addSelectedItem = null;
+    addSelectedItem        = null;
+    addError.style.display = 'none';
     const q = addSearch.value.trim();
     if (!q) {
       addDropdown.style.display = 'none';
@@ -835,9 +845,25 @@
   addCancelBtn.addEventListener('click', hideAddForm);
 
   addConfirmBtn.addEventListener('click', () => {
-    if (!addSelectedItem) return;
-    const threshold = Math.min(100, Math.max(1, parseInt(addThresh.value, 10) || MEM.settings.threshold));
-    MEM.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold });
+    addError.style.display = 'none';
+
+    if (!addSelectedItem) {
+      showAddError('Select an item from the dropdown first.');
+      return;
+    }
+
+    const pct = parseInt(addThresh.value, 10);
+    if (isNaN(pct) || pct < 1 || pct > 50) {
+      showAddError('Threshold must be a number between 1 and 50.');
+      return;
+    }
+
+    if (MEM.watchlist.some(it => it.itemId === addSelectedItem.itemId)) {
+      showAddError(`${addSelectedItem.name} is already on the watchlist.`);
+      return;
+    }
+
+    MEM.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold: pct });
     Store.set(KEYS.watchlist, MEM.watchlist);
     renderWatchlist();
     hideAddForm();
