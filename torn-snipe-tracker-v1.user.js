@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.8.0
+// @version      1.9.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.8.0';
+  const SCRIPT_VERSION = '1.9.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -24,6 +24,7 @@
     settings:  'st_settings',
     collapsed: 'st_collapsed',
     position:  'st_position',
+    trades:    'st_trades',
   };
 
   const Store = {
@@ -42,7 +43,9 @@
     settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10 },
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
+    trades:      Store.get(KEYS.trades)    ?? [],
     pollResults: {},   // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
+    logBuyIdx:   null, // index of watchlist item currently in the buy form — not persisted
   };
 
   // ─── Styles ───────────────────────────────────────────────────────────────
@@ -439,6 +442,26 @@
             <button id="st-add-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
           </div>
         </div>
+        <div id="st-buy-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
+          <div class="st-settings-row" style="margin-bottom:0">
+            <div class="st-field">
+              <label>Item</label>
+              <span id="st-buy-item-name" style="font-size:13px;color:#c0d0c8"></span>
+            </div>
+            <div class="st-field">
+              <label>Qty</label>
+              <input id="st-buy-qty" class="st-input" type="number" min="1" style="width:80px">
+            </div>
+            <div class="st-field">
+              <label>Buy price / unit ($)</label>
+              <input id="st-buy-price" class="st-input" type="number" min="1">
+            </div>
+          </div>
+          <div class="st-btn-row" style="margin-top:8px">
+            <button id="st-buy-confirm-btn" class="st-btn">Confirm</button>
+            <button id="st-buy-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
+          </div>
+        </div>
       </div>
 
       <!-- ── LEDGER pane ── -->
@@ -608,7 +631,7 @@
     }
     tbody.innerHTML = MEM.watchlist.map((item, i) => {
       const res = MEM.pollResults[item.itemId];
-      let fairValCell, lowestCell, gapCell, statusCell;
+      let fairValCell, lowestCell, gapCell, statusCell, snipe = false;
 
       if (!res) {
         fairValCell = '—';
@@ -626,10 +649,10 @@
         fairValCell = fv  != null ? '$' + fv.toLocaleString()  : '—';
         lowestCell  = low != null ? '$' + low.toLocaleString() : '—';
         if (fv != null && low != null) {
-          const gap   = (fv - low) / fv * 100;
-          const snipe = low < fv * (1 - item.threshold / 100);
-          gapCell     = gap.toFixed(1) + '%';
-          statusCell  = snipe
+          const gap = (fv - low) / fv * 100;
+          snipe     = low < fv * (1 - item.threshold / 100);
+          gapCell   = gap.toFixed(1) + '%';
+          statusCell = snipe
             ? '<span class="st-status-snipe">SNIPE</span>'
             : '<span class="st-status-watch">watch</span>';
         } else {
@@ -637,6 +660,10 @@
           statusCell = '<span class="st-status-watch">watch</span>';
         }
       }
+
+      const logBuyBtn = snipe
+        ? `<button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px;margin-right:4px">Log Buy</button>`
+        : '';
 
       return `
         <tr>
@@ -646,7 +673,7 @@
           <td>${lowestCell}</td>
           <td>${gapCell}</td>
           <td>${statusCell}</td>
-          <td><button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
+          <td>${logBuyBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
         </tr>
       `;
     }).join('');
@@ -655,6 +682,17 @@
         MEM.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
         Store.set(KEYS.watchlist, MEM.watchlist);
         renderWatchlist();
+      });
+    });
+    tbody.querySelectorAll('.st-log-buy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        MEM.logBuyIdx = parseInt(btn.dataset.idx, 10);
+        const item = MEM.watchlist[MEM.logBuyIdx];
+        buyItemName.textContent  = item.name;
+        buyPriceInput.value      = MEM.pollResults[item.itemId]?.lowestListed ?? '';
+        buyQtyInput.value        = '';
+        buyForm.style.display    = 'block';
+        buyQtyInput.focus();
       });
     });
   }
@@ -700,6 +738,42 @@
   });
 
   renderWatchlist();
+
+  // ─── Buy form ──────────────────────────────────────────────────────────────
+
+  const buyForm        = panel.querySelector('#st-buy-form');
+  const buyItemName    = panel.querySelector('#st-buy-item-name');
+  const buyQtyInput    = panel.querySelector('#st-buy-qty');
+  const buyPriceInput  = panel.querySelector('#st-buy-price');
+  const buyConfirmBtn  = panel.querySelector('#st-buy-confirm-btn');
+  const buyCancelBtn   = panel.querySelector('#st-buy-cancel-btn');
+
+  function hideBuyForm() {
+    buyForm.style.display = 'none';
+    buyQtyInput.value     = '';
+    buyPriceInput.value   = '';
+    MEM.logBuyIdx         = null;
+  }
+
+  buyCancelBtn.addEventListener('click', hideBuyForm);
+
+  buyConfirmBtn.addEventListener('click', () => {
+    const qty   = parseInt(buyQtyInput.value, 10);
+    const price = parseInt(buyPriceInput.value, 10);
+    if (!(qty > 0) || !(price > 0) || MEM.logBuyIdx === null) return;
+    const item = MEM.watchlist[MEM.logBuyIdx];
+    MEM.trades.push({
+      itemId:    item.itemId,
+      name:      item.name,
+      qty,
+      buyPrice:  price,
+      buyDate:   Date.now(),
+      sellPrice: null,
+      sellDate:  null,
+    });
+    Store.set(KEYS.trades, MEM.trades);
+    hideBuyForm();
+  });
 
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
