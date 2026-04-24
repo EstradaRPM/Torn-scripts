@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.2.0
+// @version      1.3.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.2.0';
+  const SCRIPT_VERSION = '1.3.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -293,6 +293,17 @@
       color: #ff4444;
     }
 
+    .st-rm-btn {
+      background: none;
+      border: none;
+      color: #4a6070;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 2px 4px;
+      transition: color 0.15s;
+    }
+    .st-rm-btn:hover { color: #ff4444; }
+
     .st-btn-row {
       display: flex;
       gap: 8px;
@@ -387,39 +398,39 @@
             <tr>
               <th>Item</th>
               <th>Fair Value</th>
+              <th>Threshold</th>
               <th>Lowest</th>
               <th>Gap %</th>
               <th>Status</th>
+              <th></th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td>Xanax</td>
-              <td>$850,000</td>
-              <td>$612,000</td>
-              <td>28.0%</td>
-              <td><span class="st-status-snipe">SNIPE</span></td>
-            </tr>
-            <tr>
-              <td>Cannabis</td>
-              <td>$95,000</td>
-              <td>$91,500</td>
-              <td>3.7%</td>
-              <td><span class="st-status-watch">watch</span></td>
-            </tr>
-            <tr>
-              <td>Speed</td>
-              <td>$320,000</td>
-              <td>$278,000</td>
-              <td>13.1%</td>
-              <td><span class="st-status-snipe">SNIPE</span></td>
-            </tr>
-          </tbody>
+          <tbody id="st-watchlist-body"></tbody>
         </table>
         <div class="st-scan-line">Last scan: &mdash;</div>
         <div class="st-btn-row">
           <button class="st-btn" disabled>Scan Now</button>
-          <button class="st-btn st-btn-blue" disabled>+ Add Item</button>
+          <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
+        </div>
+        <div id="st-add-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
+          <div class="st-settings-row" style="margin-bottom:0">
+            <div class="st-field">
+              <label>Item name</label>
+              <input id="st-add-name" class="st-input" type="text" placeholder="Xanax" style="width:130px">
+            </div>
+            <div class="st-field">
+              <label>Fair value ($)</label>
+              <input id="st-add-fairvalue" class="st-input" type="number" min="1" placeholder="850000">
+            </div>
+            <div class="st-field">
+              <label>Threshold %</label>
+              <input id="st-add-threshold" class="st-input" type="number" min="1" max="100" style="width:80px">
+            </div>
+          </div>
+          <div class="st-btn-row" style="margin-top:8px">
+            <button id="st-add-confirm-btn" class="st-btn">Add</button>
+            <button id="st-add-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
+          </div>
         </div>
       </div>
 
@@ -533,6 +544,76 @@
   `;
   document.body.appendChild(panel);
 
+  // ─── Watchlist render ──────────────────────────────────────────────────────
+
+  function renderWatchlist() {
+    const tbody = panel.querySelector('#st-watchlist-body');
+    if (MEM.watchlist.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
+      return;
+    }
+    tbody.innerHTML = MEM.watchlist.map((item, i) => `
+      <tr>
+        <td>${item.name}</td>
+        <td>$${item.fairValue.toLocaleString()}</td>
+        <td>${item.threshold}%</td>
+        <td>—</td>
+        <td>—</td>
+        <td><span class="st-status-watch">watch</span></td>
+        <td><button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
+      </tr>
+    `).join('');
+    tbody.querySelectorAll('.st-rm-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        MEM.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
+        Store.set(KEYS.watchlist, MEM.watchlist);
+        renderWatchlist();
+      });
+    });
+  }
+
+  // ─── Add Item form ─────────────────────────────────────────────────────────
+
+  const addItemBtn     = panel.querySelector('#st-add-item-btn');
+  const addForm        = panel.querySelector('#st-add-form');
+  const addName        = panel.querySelector('#st-add-name');
+  const addFair        = panel.querySelector('#st-add-fairvalue');
+  const addThresh      = panel.querySelector('#st-add-threshold');
+  const addConfirmBtn  = panel.querySelector('#st-add-confirm-btn');
+  const addCancelBtn   = panel.querySelector('#st-add-cancel-btn');
+
+  function hideAddForm() {
+    addForm.style.display = 'none';
+    addName.value = '';
+    addFair.value = '';
+  }
+
+  addItemBtn.addEventListener('click', () => {
+    const opening = addForm.style.display === 'none';
+    if (opening) {
+      addThresh.value = MEM.settings.threshold;
+      addForm.style.display = 'block';
+      addName.focus();
+    } else {
+      hideAddForm();
+    }
+  });
+
+  addCancelBtn.addEventListener('click', hideAddForm);
+
+  addConfirmBtn.addEventListener('click', () => {
+    const name      = addName.value.trim();
+    const fairValue = parseInt(addFair.value, 10);
+    const threshold = Math.min(100, Math.max(1, parseInt(addThresh.value, 10) || MEM.settings.threshold));
+    if (!name || !(fairValue > 0)) return;
+    MEM.watchlist.push({ name, fairValue, threshold });
+    Store.set(KEYS.watchlist, MEM.watchlist);
+    renderWatchlist();
+    hideAddForm();
+  });
+
+  renderWatchlist();
+
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
   panel.querySelectorAll('.st-tab').forEach(tab => {
@@ -643,6 +724,7 @@
     MEM.position  = null;
     inputInterval.value  = MEM.settings.interval;
     inputThreshold.value = MEM.settings.threshold;
+    renderWatchlist();
   });
 
 })();
