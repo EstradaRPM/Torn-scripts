@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.7.0
+// @version      1.8.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.7.0';
+  const SCRIPT_VERSION = '1.8.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -197,6 +197,12 @@
     }
     .st-status-watch {
       color: #7a9888;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+    .st-status-error {
+      color: #ff4444;
+      font-weight: 700;
       font-size: 12px;
       letter-spacing: 0.04em;
     }
@@ -584,6 +590,7 @@
     }
     const scanLine = panel.querySelector('.st-scan-line');
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
+    renderWatchlist();
   }
 
   function startPollLoop() {
@@ -599,17 +606,50 @@
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
       return;
     }
-    tbody.innerHTML = MEM.watchlist.map((item, i) => `
-      <tr>
-        <td>${item.name}</td>
-        <td>${item.fairValue != null ? '$' + item.fairValue.toLocaleString() : '—'}</td>
-        <td>${item.threshold}%</td>
-        <td>—</td>
-        <td>—</td>
-        <td><span class="st-status-watch">watch</span></td>
-        <td><button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = MEM.watchlist.map((item, i) => {
+      const res = MEM.pollResults[item.itemId];
+      let fairValCell, lowestCell, gapCell, statusCell;
+
+      if (!res) {
+        fairValCell = '—';
+        lowestCell  = '—';
+        gapCell     = '—';
+        statusCell  = '<span class="st-status-watch">watch</span>';
+      } else if (res.error) {
+        fairValCell = '—';
+        lowestCell  = '—';
+        gapCell     = '—';
+        statusCell  = '<span class="st-status-error">API error</span>';
+      } else {
+        const fv  = res.fairValue;
+        const low = res.lowestListed;
+        fairValCell = fv  != null ? '$' + fv.toLocaleString()  : '—';
+        lowestCell  = low != null ? '$' + low.toLocaleString() : '—';
+        if (fv != null && low != null) {
+          const gap   = (fv - low) / fv * 100;
+          const snipe = low < fv * (1 - item.threshold / 100);
+          gapCell     = gap.toFixed(1) + '%';
+          statusCell  = snipe
+            ? '<span class="st-status-snipe">SNIPE</span>'
+            : '<span class="st-status-watch">watch</span>';
+        } else {
+          gapCell    = '—';
+          statusCell = '<span class="st-status-watch">watch</span>';
+        }
+      }
+
+      return `
+        <tr>
+          <td>${item.name}</td>
+          <td>${fairValCell}</td>
+          <td>${item.threshold}%</td>
+          <td>${lowestCell}</td>
+          <td>${gapCell}</td>
+          <td>${statusCell}</td>
+          <td><button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
+        </tr>
+      `;
+    }).join('');
     tbody.querySelectorAll('.st-rm-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         MEM.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
