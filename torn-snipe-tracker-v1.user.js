@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.1.0
+// @version      1.2.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.1.0';
+  const SCRIPT_VERSION = '1.2.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -520,14 +520,14 @@
         <div class="st-settings-row">
           <div class="st-field">
             <label for="st-input-interval">Scan interval (sec)</label>
-            <input id="st-input-interval" class="st-input" type="number" value="60" min="10" disabled>
+            <input id="st-input-interval" class="st-input" type="number" min="10">
           </div>
           <div class="st-field">
             <label for="st-input-threshold">Default threshold %</label>
-            <input id="st-input-threshold" class="st-input" type="number" value="10" min="1" max="100" disabled>
+            <input id="st-input-threshold" class="st-input" type="number" min="1" max="100">
           </div>
         </div>
-        <button class="st-btn st-btn-danger" disabled>Clear All Data</button>
+        <button id="st-clear-btn" class="st-btn st-btn-danger">Clear All Data</button>
       </div>
     </div>
   `;
@@ -612,5 +612,37 @@
   }, { passive: false });
 
   document.addEventListener('touchend', () => { dragging = false; });
+
+  // ─── Settings inputs ───────────────────────────────────────────────────────
+
+  const inputInterval  = panel.querySelector('#st-input-interval');
+  const inputThreshold = panel.querySelector('#st-input-threshold');
+  const clearBtn       = panel.querySelector('#st-clear-btn');
+
+  inputInterval.value  = MEM.settings.interval;
+  inputThreshold.value = MEM.settings.threshold;
+
+  inputInterval.addEventListener('change', () => {
+    MEM.settings.interval = Math.max(10, parseInt(inputInterval.value, 10) || 60);
+    inputInterval.value = MEM.settings.interval;
+    Store.set(KEYS.settings, MEM.settings);
+  });
+
+  inputThreshold.addEventListener('change', () => {
+    MEM.settings.threshold = Math.min(100, Math.max(1, parseInt(inputThreshold.value, 10) || 10));
+    inputThreshold.value = MEM.settings.threshold;
+    Store.set(KEYS.settings, MEM.settings);
+  });
+
+  clearBtn.addEventListener('click', () => {
+    if (!confirm('Clear all Snipe Tracker data?')) return;
+    Object.values(KEYS).forEach(k => localStorage.removeItem(k));
+    MEM.watchlist = [...SEED_WATCHLIST];
+    MEM.settings  = { interval: 60, threshold: 10 };
+    MEM.collapsed = false;
+    MEM.position  = null;
+    inputInterval.value  = MEM.settings.interval;
+    inputThreshold.value = MEM.settings.threshold;
+  });
 
 })();
