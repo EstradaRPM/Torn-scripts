@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.6
+// @version      1.15.7
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -20,8 +20,14 @@
   if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
   if (document.getElementById('st-panel')) return;
 
-  const SCRIPT_VERSION = '1.15.6';
+  const SCRIPT_VERSION = '1.15.7';
   const API_KEY = '###PDA-APIKEY###';
+
+  // Prefer PDA-injected key; fall back to manually stored key
+  function getApiKey() {
+    if (API_KEY !== '###PDA-APIKEY###') return API_KEY;
+    return localStorage.getItem('st_apikey') ?? '';
+  }
 
   // ─── Persistence ──────────────────────────────────────────────────────────
 
@@ -31,6 +37,7 @@
     collapsed: 'st_collapsed',
     position:  'st_position',
     trades:    'st_trades',
+    apiKey:    'st_apikey',
   };
 
   const Store = {
@@ -570,6 +577,10 @@
             <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
           </div>
         </div>
+        <div class="st-field" style="margin-bottom:10px">
+          <label for="st-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
+          <input id="st-input-apikey" class="st-input" type="password" placeholder="paste key here" style="width:240px">
+        </div>
         <button id="st-clear-btn" class="st-btn st-btn-danger">Clear All Data</button>
       </div>
     </div>
@@ -586,8 +597,9 @@
 
   async function fetchItemPrice(item) {
     try {
-      const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${API_KEY}`;
-      console.log(`[SnipeTracker] fetch → market/${item.itemId}?selections=bazaar (key: ${API_KEY === '###PDA-APIKEY###' ? 'NOT SUBSTITUTED' : API_KEY.slice(0, 4) + '****'})`);
+      const key = getApiKey();
+      const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${key}`;
+      console.log(`[SnipeTracker] fetch → market/${item.itemId}?selections=bazaar (key: ${key ? key.slice(0, 4) + '****' : 'MISSING'})`);
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
@@ -612,9 +624,9 @@
 
   async function runPoll() {
     const scanLine = panel.querySelector('.st-scan-line');
-    if (API_KEY === '###PDA-APIKEY###') {
-      console.warn('[SnipeTracker] API key not substituted — open script in Torn PDA or set key manually.');
-      if (scanLine) scanLine.textContent = 'Error: API key not set (need Torn PDA or manual key)';
+    if (!getApiKey()) {
+      console.warn('[SnipeTracker] No API key available — enter one in Settings.');
+      if (scanLine) scanLine.textContent = 'Error: no API key — paste one in Settings below';
       renderWatchlist();
       return;
     }
@@ -756,7 +768,7 @@
   async function fetchItemLookup() {
     if (itemLookupCache) return itemLookupCache;
     try {
-      const r = await fetch(`https://api.torn.com/torn/?selections=items&key=${API_KEY}`);
+      const r = await fetch(`https://api.torn.com/torn/?selections=items&key=${getApiKey()}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       console.log('[SnipeTracker] fetchItemLookup raw response:', d);
@@ -1111,10 +1123,22 @@
   const inputInterval  = panel.querySelector('#st-input-interval');
   const inputThreshold = panel.querySelector('#st-input-threshold');
   const threshHint     = panel.querySelector('#st-thresh-hint');
+  const inputApiKey    = panel.querySelector('#st-input-apikey');
   const clearBtn       = panel.querySelector('#st-clear-btn');
 
   inputInterval.value  = MEM.settings.interval;
   inputThreshold.value = MEM.settings.threshold;
+  // show stored key placeholder but not the actual value for security
+  if (localStorage.getItem('st_apikey')) inputApiKey.placeholder = '(key saved)';
+
+  inputApiKey.addEventListener('change', () => {
+    const val = inputApiKey.value.trim();
+    if (val) {
+      localStorage.setItem('st_apikey', val);
+      inputApiKey.value       = '';
+      inputApiKey.placeholder = '(key saved)';
+    }
+  });
 
   inputInterval.addEventListener('change', () => {
     MEM.settings.interval = Math.max(10, parseInt(inputInterval.value, 10) || 60);
