@@ -57,6 +57,7 @@
       letter-spacing: 0.06em;
       color: #00ff88;
       text-transform: uppercase;
+      text-shadow: 0 0 12px rgba(0,255,136,0.5);
     }
 
     #st-collapse-btn {
@@ -104,17 +105,18 @@
       font-weight: 600;
       letter-spacing: 0.04em;
       cursor: pointer;
-      color: #5a7a6a;
+      color: #8aa898;
       border-bottom: 2px solid transparent;
       transition: color 0.15s, border-color 0.15s;
       text-transform: uppercase;
     }
     .st-tab:hover {
-      color: #c0d0c8;
+      color: #d4e4dc;
     }
     .st-tab.st-active {
       color: #00ff88;
       border-bottom: 2px solid #00ff88;
+      text-shadow: 0 0 10px rgba(0,255,136,0.4);
     }
 
     /* ── Tab panes ── */
@@ -141,11 +143,13 @@
       text-transform: uppercase;
       padding: 5px 8px;
       border-bottom: 1px solid #1a2a3a;
+      text-shadow: 0 0 8px rgba(0,204,255,0.35);
     }
     .st-table td {
       padding: 6px 8px;
       border-bottom: 1px solid #0f1e2e;
       vertical-align: middle;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.7);
     }
     .st-table tr:last-child td {
       border-bottom: none;
@@ -163,7 +167,7 @@
       text-shadow: 0 0 8px rgba(0,255,136,0.45);
     }
     .st-status-watch {
-      color: #3a5a4a;
+      color: #7a9888;
       font-size: 12px;
       letter-spacing: 0.04em;
     }
@@ -171,9 +175,11 @@
     /* ── Profit/ROI tints ── */
     .st-profit {
       color: #00ff88;
+      text-shadow: 0 0 8px rgba(0,255,136,0.35);
     }
     .st-roi {
       color: #00ff88;
+      text-shadow: 0 0 8px rgba(0,255,136,0.35);
     }
 
     /* ── Section labels ── */
@@ -186,6 +192,7 @@
       margin: 14px 0 8px 0;
       padding-bottom: 4px;
       border-bottom: 1px solid #1a2a3a;
+      text-shadow: 0 0 8px rgba(0,204,255,0.4);
     }
     .st-section-label:first-child {
       margin-top: 0;
@@ -194,7 +201,7 @@
     /* ── Scan line ── */
     .st-scan-line {
       font-size: 12px;
-      color: #3a5a4a;
+      color: #8aa898;
       margin-top: 10px;
     }
 
@@ -216,7 +223,7 @@
       gap: 2px;
     }
     .st-summary-label {
-      color: #3a6a5a;
+      color: #8aa898;
       font-size: 10px;
       letter-spacing: 0.06em;
       text-transform: uppercase;
@@ -225,6 +232,7 @@
       color: #00ff88;
       font-weight: 700;
       font-size: 14px;
+      text-shadow: 0 0 10px rgba(0,255,136,0.4);
     }
 
     /* ── Buttons ── */
@@ -245,7 +253,7 @@
       color: #00ff88;
     }
     .st-btn:disabled {
-      opacity: 0.35;
+      opacity: 0.5;
       cursor: not-allowed;
     }
     .st-btn-blue:hover:not(:disabled) {
@@ -276,7 +284,7 @@
       font-weight: 700;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: #3a5a6a;
+      color: #8aa0b0;
       margin-bottom: 10px;
     }
     .st-settings-row {
@@ -293,7 +301,7 @@
     }
     .st-field label {
       font-size: 11px;
-      color: #3a5a6a;
+      color: #8aa0b0;
       letter-spacing: 0.05em;
     }
     .st-input {
