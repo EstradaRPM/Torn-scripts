@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.15.5
+// @version      1.15.6
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -20,7 +20,7 @@
   if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
   if (document.getElementById('st-panel')) return;
 
-  const SCRIPT_VERSION = '1.15.5';
+  const SCRIPT_VERSION = '1.15.6';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -587,12 +587,14 @@
   async function fetchItemPrice(item) {
     try {
       const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${API_KEY}`;
+      console.log(`[SnipeTracker] fetch → market/${item.itemId}?selections=bazaar (key: ${API_KEY === '###PDA-APIKEY###' ? 'NOT SUBSTITUTED' : API_KEY.slice(0, 4) + '****'})`);
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
+      console.log(`[SnipeTracker] response itemId=${item.itemId}:`, d);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
       const prices = (d.bazaar ?? []).map(l => l.cost).sort((a, b) => a - b);
-      const sample  = prices.slice(0, 5);  // lowest 3-5 listings
+      const sample  = prices.slice(0, 5);
       MEM.pollResults[item.itemId] = {
         fairValue:    computeMedian(sample),
         lowestListed: prices[0] ?? null,
@@ -609,11 +611,17 @@
   let pollTimer = null;
 
   async function runPoll() {
+    const scanLine = panel.querySelector('.st-scan-line');
+    if (API_KEY === '###PDA-APIKEY###') {
+      console.warn('[SnipeTracker] API key not substituted — open script in Torn PDA or set key manually.');
+      if (scanLine) scanLine.textContent = 'Error: API key not set (need Torn PDA or manual key)';
+      renderWatchlist();
+      return;
+    }
     for (const item of MEM.watchlist) {
       if (!(item.itemId > 0)) continue;
       await fetchItemPrice(item);
     }
-    const scanLine = panel.querySelector('.st-scan-line');
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
     renderWatchlist();
   }
