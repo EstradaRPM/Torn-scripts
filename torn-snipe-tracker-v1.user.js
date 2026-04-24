@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.0.2
+// @version      1.1.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,8 +14,35 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.0.2';
+  const SCRIPT_VERSION = '1.1.0';
   const API_KEY = '###PDA-APIKEY###';
+
+  // ─── Persistence ──────────────────────────────────────────────────────────
+
+  const KEYS = {
+    watchlist: 'st_watchlist',
+    settings:  'st_settings',
+    collapsed: 'st_collapsed',
+    position:  'st_position',
+  };
+
+  const Store = {
+    get(k)    { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  };
+
+  const SEED_WATCHLIST = [
+    { name: 'Xanax',    fairValue: 850000, threshold: 10 },
+    { name: 'Cannabis', fairValue: 95000,  threshold: 10 },
+    { name: 'Speed',    fairValue: 320000, threshold: 10 },
+  ];
+
+  const MEM = {
+    watchlist: Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
+    settings:  Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10 },
+    collapsed: Store.get(KEYS.collapsed) ?? false,
+    position:  Store.get(KEYS.position)  ?? null,
+  };
 
   // ─── Styles ───────────────────────────────────────────────────────────────
 
