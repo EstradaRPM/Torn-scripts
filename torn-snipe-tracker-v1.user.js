@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.13.0
+// @version      1.14.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.13.0';
+  const SCRIPT_VERSION = '1.14.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -518,7 +518,7 @@
         </div>
 
         <div class="st-btn-row">
-          <button class="st-btn st-btn-blue" disabled>Export CSV</button>
+          <button id="st-export-btn" class="st-btn st-btn-blue">Export CSV</button>
         </div>
       </div>
 
@@ -1033,6 +1033,35 @@
     panel.style.top    = 'auto';
     panel.style.bottom = '18px';
     renderWatchlist();
+  });
+
+  // ─── Export CSV ───────────────────────────────────────────────────────────
+
+  function csvEsc(v) {
+    const s = String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  panel.querySelector('#st-export-btn').addEventListener('click', () => {
+    const closed = MEM.trades.filter(t => t.sellPrice !== null);
+    const rows = [
+      ['Item', 'Qty', 'Buy Price', 'Sell Price', 'Profit', 'ROI %', 'Held'],
+      ...closed.map(t => {
+        const profit = (t.sellPrice - t.buyPrice) * t.qty;
+        const roi    = ((t.sellPrice - t.buyPrice) / t.buyPrice * 100).toFixed(1);
+        return [t.name, t.qty, t.buyPrice, t.sellPrice, profit, roi, fmtHeld(t.buyDate, t.sellDate)];
+      }),
+    ];
+    const csv  = rows.map(r => r.map(csvEsc).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'snipe_trades.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   });
 
   // ─── Init ─────────────────────────────────────────────────────────────────
