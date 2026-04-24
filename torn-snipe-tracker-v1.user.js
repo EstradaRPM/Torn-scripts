@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.9.0
+// @version      1.10.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.0';
+  const SCRIPT_VERSION = '1.10.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -478,22 +478,7 @@
               <th>Total</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td>2026-04-20</td>
-              <td>Xanax</td>
-              <td>2</td>
-              <td>$612,000</td>
-              <td>$1,224,000</td>
-            </tr>
-            <tr>
-              <td>2026-04-22</td>
-              <td>Speed</td>
-              <td>5</td>
-              <td>$278,000</td>
-              <td>$1,390,000</td>
-            </tr>
-          </tbody>
+          <tbody id="st-open-trades-body"></tbody>
         </table>
 
         <div class="st-section-label">Closed Trades</div>
@@ -773,7 +758,42 @@
     });
     Store.set(KEYS.trades, MEM.trades);
     hideBuyForm();
+    renderOpenTrades();
   });
+
+  // ─── Ledger helpers ────────────────────────────────────────────────────────
+
+  function fmtDate(ts) {
+    const d = new Date(ts);
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  }
+
+  function fmtMoney(n) {
+    return '$' + Math.round(n).toLocaleString();
+  }
+
+  // ─── Open trades render ────────────────────────────────────────────────────
+
+  function renderOpenTrades() {
+    const tbody = panel.querySelector('#st-open-trades-body');
+    const open = MEM.trades.filter(t => t.sellPrice === null);
+    if (!open.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8aa898;padding:12px 8px">No open trades</td></tr>';
+      return;
+    }
+    tbody.innerHTML = open.map(t => `
+      <tr>
+        <td>${fmtDate(t.buyDate)}</td>
+        <td>${t.name}</td>
+        <td>${t.qty}</td>
+        <td>${fmtMoney(t.buyPrice)}</td>
+        <td>${fmtMoney(t.buyPrice * t.qty)}</td>
+      </tr>
+    `).join('');
+  }
 
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
@@ -783,6 +803,7 @@
       panel.querySelectorAll('.st-pane').forEach(p => p.classList.remove('st-active'));
       tab.classList.add('st-active');
       panel.querySelector(`#st-pane-${tab.dataset.tab}`).classList.add('st-active');
+      if (tab.dataset.tab === 'ledger') renderOpenTrades();
     });
   });
 
