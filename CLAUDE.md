@@ -11,6 +11,7 @@ Personal collection of scripts for the browser game **Torn City** (torn.com). Sc
 | File | Type | Purpose |
 |------|------|---------|
 | `torn-gym-optomizer-v5.js` | Userscript | Multi-month gym training planner with real-time energy tracking and buff rotation support. Note: filename has a typo ("optomizer"); the canonical name is "Torn Gym Optimizer". |
+| `torn-snipe-tracker-v1.user.js` | Userscript | Bazaar snipe detector and trade ledger. Watches a configurable item list, flags listings priced below a threshold, and tracks open/closed trades with P&L. |
 
 ---
 
