@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.5.0
+// @version      1.5.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.5.0';
+  const SCRIPT_VERSION = '1.5.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Persistence ──────────────────────────────────────────────────────────
@@ -554,16 +554,23 @@
   }
 
   async function fetchItemPrice(item) {
-    const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${API_KEY}`;
-    const r = await fetch(url);
-    const d = await r.json();
-    const prices = (d.bazaar ?? []).map(l => l.cost).sort((a, b) => a - b);
-    const sample  = prices.slice(0, 5);  // lowest 3-5 listings
-    MEM.pollResults[item.itemId] = {
-      fairValue:    computeMedian(sample),
-      lowestListed: prices[0] ?? null,
-      updatedAt:    Date.now(),
-    };
+    try {
+      const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar&key=${API_KEY}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
+      const prices = (d.bazaar ?? []).map(l => l.cost).sort((a, b) => a - b);
+      const sample  = prices.slice(0, 5);  // lowest 3-5 listings
+      MEM.pollResults[item.itemId] = {
+        fairValue:    computeMedian(sample),
+        lowestListed: prices[0] ?? null,
+        updatedAt:    Date.now(),
+      };
+    } catch (err) {
+      console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
+      MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
+    }
   }
 
   // ─── Watchlist render ──────────────────────────────────────────────────────
