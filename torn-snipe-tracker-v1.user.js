@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.17.5
+// @version      1.18.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.17.5';
+  const SCRIPT_VERSION = '1.18.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -631,6 +631,56 @@
     const tabs = panel.querySelector('#st-tabs');
     tabs.parentNode.insertBefore(warn, tabs);
     panel.querySelector('#st-storage-warn-dismiss').addEventListener('click', () => warn.remove());
+  }
+
+  // ─── Trend calculation ────────────────────────────────────────────────────
+
+  function calculateTrend(itemId) {
+    const TREND_BAND_PCT = 0.005; // 0.5% of current price per hour; tune here
+
+    const snaps = MEM.snapshots[itemId] ?? [];
+    if (snaps.length < 6) {
+      return { trend: 'insufficient', slopePerHour: null, dataPoints: snaps.length, oldestSnapshot: null, newestSnapshot: null };
+    }
+
+    // Lowest listed price per snapshot; skip snapshots that have no listings
+    const points = snaps
+      .map(s => {
+        const prices = (s.listings ?? []).map(l => l.price).filter(p => p > 0);
+        return prices.length ? { t: s.timestamp, price: Math.min(...prices) } : null;
+      })
+      .filter(Boolean);
+
+    if (points.length < 6) {
+      return { trend: 'insufficient', slopePerHour: null, dataPoints: points.length, oldestSnapshot: snaps[0].timestamp, newestSnapshot: snaps[snaps.length - 1].timestamp };
+    }
+
+    const oldestSnapshot = points[0].t;
+    const newestSnapshot = points[points.length - 1].t;
+
+    // Timestamps in hours relative to oldest point (numerical stability)
+    const xs = points.map(p => (p.t - oldestSnapshot) / 3600000);
+    const ys = points.map(p => p.price);
+    const n  = xs.length;
+
+    const sumX  = xs.reduce((a, v) => a + v, 0);
+    const sumY  = ys.reduce((a, v) => a + v, 0);
+    const sumXY = xs.reduce((a, v, i) => a + v * ys[i], 0);
+    const sumX2 = xs.reduce((a, v) => a + v * v, 0);
+
+    const denom       = n * sumX2 - sumX * sumX;
+    const slopePerHour = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+
+    // Band threshold relative to most recent observed price
+    const currentPrice = ys[ys.length - 1];
+    const band = TREND_BAND_PCT * currentPrice;
+
+    let trend;
+    if (slopePerHour > band)       trend = 'rising';
+    else if (slopePerHour < -band) trend = 'falling';
+    else                           trend = 'flat';
+
+    return { trend, slopePerHour, dataPoints: n, oldestSnapshot, newestSnapshot };
   }
 
   async function fetchItemPrice(item) {
