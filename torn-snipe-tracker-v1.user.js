@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.17.1
+// @version      1.17.2
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.17.1';
+  const SCRIPT_VERSION = '1.17.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -637,6 +637,8 @@
 
       if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
       MEM.snapshots[item.itemId].push({ timestamp: Date.now(), listings: rawListings });
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
       Store.set(KEYS.snapshots, MEM.snapshots);
     } catch (err) {
       console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
