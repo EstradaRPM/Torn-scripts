@@ -832,7 +832,7 @@
     try {
       const text = await gmFetch(url);
       const d    = JSON.parse(text);
-      console.log(`[SnipeTracker] raw response itemId=${item.itemId}:`, d);
+      console.log(`[SnipeTracker] raw response itemId=${item.itemId}:`, JSON.stringify(d));
       // Step 1: raw response logged — no parsing yet
     } catch (err) {
       console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
