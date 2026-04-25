@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.21.0
+// @version      1.22.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.21.0';
+  const SCRIPT_VERSION = '1.22.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -727,11 +727,18 @@
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
       const rawListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity }));
       const prices = rawListings.map(l => l.price).sort((a, b) => a - b);
-      const sample  = prices.slice(0, 5);
+      let sample, outlierExcluded = false;
+      if (prices.length >= 2 && prices[0] < prices[1] * (1 - item.threshold / 100)) {
+        sample          = prices.slice(1, 6);
+        outlierExcluded = true;
+      } else {
+        sample = prices.slice(0, 5);
+      }
       MEM.pollResults[item.itemId] = {
-        fairValue:    computeMedian(sample),
-        lowestListed: prices[0] ?? null,
-        updatedAt:    Date.now(),
+        fairValue:       computeMedian(sample),
+        lowestListed:    prices[0] ?? null,
+        outlierExcluded,
+        updatedAt:       Date.now(),
       };
 
       if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
@@ -863,7 +870,10 @@
       } else {
         const fv  = res.fairValue;
         const low = res.lowestListed;
-        fairValCell = fv  != null ? '$' + fv.toLocaleString()  : '—';
+        const outlierNote = res.outlierExcluded
+          ? '<br><span style="font-size:10px;color:#3a5060;letter-spacing:0.02em">⚠ outlier excluded</span>'
+          : '';
+        fairValCell = fv  != null ? '$' + fv.toLocaleString() + outlierNote : '—';
         lowestCell  = low != null ? '$' + low.toLocaleString() : '—';
         if (fv != null && low != null) {
           const gap = (fv - low) / fv * 100;
