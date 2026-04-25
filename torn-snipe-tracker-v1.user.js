@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.17.4
+// @version      1.17.5
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.17.4';
+  const SCRIPT_VERSION = '1.17.5';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -77,9 +77,10 @@
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
     trades:      Store.get(KEYS.trades)    ?? [],
-    snapshots:   Store.get(KEYS.snapshots) ?? {},
-    pollResults: {},   // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
-    logBuyIdx:   null, // index of watchlist item currently in the buy form — not persisted
+    snapshots:        Store.get(KEYS.snapshots) ?? {},
+    pollResults:      {},     // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
+    logBuyIdx:        null,   // index of watchlist item currently in the buy form — not persisted
+    storageWarnShown: false,  // whether the quota warning banner has been shown this session
   };
 
   // ─── Styles ───────────────────────────────────────────────────────────────
@@ -617,6 +618,21 @@
     return arr.length % 2 !== 0 ? arr[mid] : Math.round((arr[mid - 1] + arr[mid]) / 2);
   }
 
+  function showStorageWarning() {
+    if (MEM.storageWarnShown) return;
+    MEM.storageWarnShown = true;
+    const warn = document.createElement('div');
+    warn.id = 'st-storage-warn';
+    warn.style.cssText = 'background:#1a0800;border-bottom:1px solid #ff6600;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:#ff9944;line-height:1.4';
+    warn.innerHTML = `
+      <span>Storage limit approaching — consider reducing watchlist size or snapshot retention period.</span>
+      <button style="background:none;border:none;color:#ff9944;cursor:pointer;font-size:14px;padding:0 4px;line-height:1;flex-shrink:0" id="st-storage-warn-dismiss">✕</button>
+    `;
+    const tabs = panel.querySelector('#st-tabs');
+    tabs.parentNode.insertBefore(warn, tabs);
+    panel.querySelector('#st-storage-warn-dismiss').addEventListener('click', () => warn.remove());
+  }
+
   async function fetchItemPrice(item) {
     const key = getApiKey();
     const url = `https://api.torn.com/v2/market/${item.itemId}/itemmarket?key=${key}`;
@@ -640,7 +656,14 @@
       const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
       MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
       if (MEM.snapshots[item.itemId].length > 500) MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].slice(-500);
-      Store.set(KEYS.snapshots, MEM.snapshots);
+      try {
+        localStorage.setItem(KEYS.snapshots, JSON.stringify(MEM.snapshots));
+      } catch (e) {
+        if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
+          console.warn(`[SnipeTracker] QuotaExceededError: snapshot for itemId ${item.itemId} not saved this cycle.`);
+          showStorageWarning();
+        }
+      }
     } catch (err) {
       console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
       MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
