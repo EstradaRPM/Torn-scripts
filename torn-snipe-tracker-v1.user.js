@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.19.0
+// @version      1.19.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.19.0';
+  const SCRIPT_VERSION = '1.19.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -638,7 +638,8 @@
   // ─── Trend calculation ────────────────────────────────────────────────────
 
   function calculateTrend(itemId) {
-    const TREND_BAND_PCT = 0.005; // 0.5% of current price per hour; tune here
+    const TREND_BAND_PCT    = 0.005;           // 0.5% of current price per hour; tune here
+    const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hours minimum span; tune here
 
     const snaps = MEM.snapshots[itemId] ?? [];
     if (snaps.length < 6) {
@@ -659,11 +660,15 @@
 
     const oldestSnapshot = points[0].t;
     const newestSnapshot = points[points.length - 1].t;
+    const n              = points.length;
+
+    if (newestSnapshot - oldestSnapshot < MIN_TIMESPAN_MS) {
+      return { trend: 'insufficient', slopePerHour: null, dataPoints: n, oldestSnapshot, newestSnapshot };
+    }
 
     // Timestamps in hours relative to oldest point (numerical stability)
     const xs = points.map(p => (p.t - oldestSnapshot) / 3600000);
     const ys = points.map(p => p.price);
-    const n  = xs.length;
 
     const sumX  = xs.reduce((a, v) => a + v, 0);
     const sumY  = ys.reduce((a, v) => a + v, 0);
