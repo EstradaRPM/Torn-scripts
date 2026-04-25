@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.25.0
+// @version      1.26.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.25.0';
+  const SCRIPT_VERSION = '1.26.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -736,9 +736,14 @@
       } else {
         sample = prices.slice(0, 5);
       }
+      const lowestPrice     = prices[0] ?? null;
+      const lowestListedQty = lowestPrice != null
+        ? rawListings.filter(l => l.price === lowestPrice).reduce((s, l) => s + l.quantity, 0)
+        : null;
       MEM.pollResults[item.itemId] = {
         fairValue:       computeMedian(sample),
-        lowestListed:    prices[0] ?? null,
+        lowestListed:    lowestPrice,
+        lowestListedQty,
         secondLowest:    prices[1] ?? null,
         outlierExcluded,
         updatedAt:       Date.now(),
@@ -856,6 +861,44 @@
     }).join(' ');
 
     return `<svg width="${W}" height="${H}" style="display:block;margin-top:3px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  }
+
+  function renderProjection(item, res) {
+    const snipePrice = res?.lowestListed;
+    const snipeQty   = res?.lowestListedQty;
+    if (snipePrice == null || !(snipeQty > 0)) return '';
+
+    const sellTarget  = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
+    if (sellTarget == null) return '';
+
+    const totalCost   = snipePrice * snipeQty;
+    const grossRev    = sellTarget * snipeQty;
+    const grossProfit = grossRev - totalCost;
+    const roi         = (grossProfit / totalCost) * 100;
+    const fmt         = n => '$' + Math.round(n).toLocaleString();
+
+    const stats = [
+      { label: 'Snipe Price',   value: fmt(snipePrice) },
+      { label: 'Snipe Qty',     value: snipeQty.toLocaleString() },
+      { label: 'Total Cost',    value: fmt(totalCost) },
+      { label: 'Sell Target',   value: fmt(sellTarget) },
+      { label: 'Gross Revenue', value: fmt(grossRev) },
+      { label: 'Gross Profit',  value: fmt(grossProfit) },
+      { label: 'ROI %',         value: roi.toFixed(1) + '%' },
+    ];
+
+    const statsHtml = stats.map(s => `
+      <div class="st-summary-item">
+        <span class="st-summary-label">${s.label}</span>
+        <span class="st-summary-value" style="font-size:13px">${s.value}</span>
+      </div>`).join('');
+
+    return `<tr class="st-proj-row"><td colspan="10" style="padding:0 8px 8px">
+      <div style="background:#0a1220;border:1px solid #1a2a3a;border-radius:4px;padding:8px 12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Snipe Projection</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
+      </div>
+    </td></tr>`;
   }
 
   function renderOrderBook(item, res) {
@@ -1004,6 +1047,7 @@
           <td>${logBuyBtn}${expandBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
         </tr>
         ${isExpanded ? renderOrderBook(item, res) : ''}
+        ${snipe ? renderProjection(item, res) : ''}
       `;
     }).join('');
     tbody.querySelectorAll('.st-rm-btn').forEach(btn => {
