@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.20.0
+// @version      1.20.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.20.0';
+  const SCRIPT_VERSION = '1.20.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -265,6 +265,11 @@
     .st-trend-dim {
       color: #3a5060;
       font-size: 11px;
+    }
+    .st-trend-age {
+      color: #3a5060;
+      font-size: 10px;
+      letter-spacing: 0.03em;
     }
 
     /* ── Profit/ROI tints ── */
@@ -782,19 +787,22 @@
   function renderTrendCell(itemId) {
     const cache     = MEM.trendCache[itemId];
     const snapCount = (MEM.snapshots[itemId] ?? []).length;
+    const ageText   = cache ? 'updated ' + fmtAgo(cache.calculatedAt) : 'pending';
+    const ageLine   = `<br><span class="st-trend-age">${ageText}</span>`;
+
     if (!cache || cache.trend === 'insufficient') {
-      return `<span class="st-trend-dim">… building history · ${snapCount} snapshot${snapCount === 1 ? '' : 's'}</span>`;
+      return `<span class="st-trend-dim">… building history · ${snapCount} snapshot${snapCount === 1 ? '' : 's'}</span>${ageLine}`;
     }
     const { trend, slopePerHour } = cache;
     if (trend === 'rising') {
       const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
-      return `<span class="st-trend-rising">▲ Rising <span style="font-size:11px">${s}</span></span>`;
+      return `<span class="st-trend-rising">▲ Rising <span style="font-size:11px">${s}</span></span>${ageLine}`;
     }
     if (trend === 'falling') {
       const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
-      return `<span class="st-trend-falling">▼ Falling <span style="font-size:11px">${s}</span></span>`;
+      return `<span class="st-trend-falling">▼ Falling <span style="font-size:11px">${s}</span></span>${ageLine}`;
     }
-    return `<span class="st-trend-flat">→ stable</span>`;
+    return `<span class="st-trend-flat">→ stable</span>${ageLine}`;
   }
 
   function renderWatchlist() {
