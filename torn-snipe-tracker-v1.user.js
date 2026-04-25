@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.33.0
+// @version      1.34.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.33.0';
+  const SCRIPT_VERSION = '1.34.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -871,6 +871,12 @@
     MEM.pollResults[item.itemId] = {
       fairValue:       computeMedian(sample),
       outlierExcluded,
+      lowestListed:    merged[0]?.price ?? null,
+      lowestListedQty: merged[0]?.price != null
+        ? merged.filter(l => l.price === merged[0].price).reduce((s, l) => s + l.quantity, 0)
+        : null,
+      secondLowest:    merged[1]?.price ?? null,
+      listings:        merged,
       updatedAt:       Date.now(),
     };
   }
@@ -1061,15 +1067,9 @@
 
   function renderOrderBook(item, res) {
     const TH = `style="text-align:left;color:#00ccff;font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid #1a2a3a"`;
-    const snaps = MEM.snapshots[item.itemId] ?? [];
-    if (!snaps.length) {
-      return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></div>`;
-    }
-
-    const latestSnap = snaps[snaps.length - 1];
-    const listings   = latestSnap.listings ?? [];
+    const listings = (res?.listings ?? []).filter(l => Number.isFinite(l.price) && Number.isFinite(l.quantity));
     if (!listings.length) {
-      return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">no listings in latest scan</div></div>`;
+      return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></div>`;
     }
 
     const byPrice = new Map();
