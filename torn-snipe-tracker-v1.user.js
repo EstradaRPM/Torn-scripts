@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.5
+// @version      1.37.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.5';
+  const SCRIPT_VERSION = '1.37.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -577,6 +577,14 @@
       letter-spacing: 0.02em;
     }
 
+    /* ── Order book buy rows ── */
+    .st-book-row-buy {
+      cursor: pointer;
+    }
+    .st-book-row-buy:hover > td {
+      background: rgba(0,255,136,0.06) !important;
+    }
+
     @media (max-width: 560px) {
       #st-panel {
         width: calc(100vw - 24px);
@@ -687,6 +695,7 @@
               <th>Profit</th>
               <th>ROI %</th>
               <th>Held</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="st-closed-trades-body"></tbody>
@@ -1216,9 +1225,9 @@
 
     const bookRows = tiers.map(t => {
       const isPos    = effectiveTarget != null && t.price === effectiveTarget;
-      const rowStyle = isPos ? 'background:rgba(0,204,255,0.07)' : '';
+      const rowStyle = isPos ? 'background:rgba(0,204,255,0.07);' : '';
       const posNote  = isPos ? ' <span style="font-size:10px;color:#00ccff;opacity:0.6">← your position</span>' : '';
-      return `<tr style="${rowStyle}">
+      return `<tr class="st-book-row-buy" data-itemid="${item.itemId}" data-price="${t.price}" style="${rowStyle}" title="Click to log a buy at $${t.price.toLocaleString()}">
         <td style="padding:3px 8px;font-size:12px;color:#c0d0c8">$${t.price.toLocaleString()}${posNote}</td>
         <td style="padding:3px 8px;font-size:12px;color:#8aa898">${t.qty.toLocaleString()}</td>
         <td style="padding:3px 8px;font-size:12px;color:#6a8070">${t.cumQty.toLocaleString()}</td>
@@ -1468,6 +1477,20 @@
         renderWatchlist();
       });
     });
+    container.querySelectorAll('.st-book-row-buy').forEach(row => {
+      row.addEventListener('click', () => {
+        const itemId = parseInt(row.dataset.itemid, 10);
+        const price  = parseInt(row.dataset.price, 10);
+        const idx    = MEM.watchlist.findIndex(w => w.itemId === itemId);
+        if (idx === -1) return;
+        MEM.logBuyIdx           = idx;
+        buyItemName.textContent = MEM.watchlist[idx].name;
+        buyPriceInput.value     = price;
+        buyQtyInput.value       = '';
+        buyForm.style.display   = 'block';
+        buyQtyInput.focus();
+      });
+    });
     renderCapitalBar();
   }
 
@@ -1679,7 +1702,10 @@
         <td>${t.qty}</td>
         <td>${fmtMoney(t.buyPrice)}</td>
         <td>${fmtMoney(t.buyPrice * t.qty)}</td>
-        <td><button class="st-log-sell-btn st-btn" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px">Log Sell</button></td>
+        <td style="white-space:nowrap">
+          <button class="st-log-sell-btn st-btn" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px">Log Sell</button>
+          <button class="st-delete-trade-btn st-btn st-btn-danger" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px" title="Delete this trade">✕</button>
+        </td>
       </tr>
     `).join('');
 
@@ -1726,6 +1752,16 @@
         });
       });
     });
+
+    tbody.querySelectorAll('.st-delete-trade-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!confirm('Delete this trade entry? This cannot be undone.')) return;
+        MEM.trades.splice(parseInt(btn.dataset.tradeIdx, 10), 1);
+        Store.set(KEYS.trades, MEM.trades);
+        renderOpenTrades();
+        renderSummary();
+      });
+    });
   }
 
   // ─── Closed trades render ──────────────────────────────────────────────────
@@ -1739,7 +1775,9 @@
 
   function renderClosedTrades() {
     const tbody = panel.querySelector('#st-closed-trades-body');
-    const closed = MEM.trades.filter(t => t.sellPrice !== null);
+    const closed = MEM.trades
+      .map((t, i) => ({ ...t, _idx: i }))
+      .filter(t => t.sellPrice !== null);
     if (!closed.length) {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8aa898;padding:12px 8px">No closed trades</td></tr>';
       return;
@@ -1762,9 +1800,20 @@
           <td style="${numStyle}">${fmtMoney(profit)}</td>
           <td style="${numStyle}">${roiLabel}</td>
           <td>${held}</td>
+          <td><button class="st-delete-trade-btn st-btn st-btn-danger" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px" title="Delete this trade">✕</button></td>
         </tr>
       `;
     }).join('');
+
+    tbody.querySelectorAll('.st-delete-trade-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!confirm('Delete this closed trade? This cannot be undone.')) return;
+        MEM.trades.splice(parseInt(btn.dataset.tradeIdx, 10), 1);
+        Store.set(KEYS.trades, MEM.trades);
+        renderClosedTrades();
+        renderSummary();
+      });
+    });
   }
 
   // ─── Summary render ───────────────────────────────────────────────────────
