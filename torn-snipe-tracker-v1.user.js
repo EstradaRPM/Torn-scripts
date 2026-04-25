@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.1
+// @version      1.36.2
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.1';
+  const SCRIPT_VERSION = '1.36.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -873,7 +873,10 @@
       return;
     }
 
-    const { p25, p50, p75 } = computeFairValue(merged);
+    // Sample only the 20 cheapest listings. The competitive market sits in the
+    // low-price tier; going deeper pulls in aspirational pricing that inflates
+    // fair value well above where the item actually trades.
+    const { p25, p50, p75 } = computeFairValue(merged.slice(0, 20));
     const iqr          = p75 - p25;
     const outlierFloor = Math.round(p25 - 1.5 * iqr);
     const outlierExcluded = merged[0].price < outlierFloor;
