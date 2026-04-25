@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.17.0
+// @version      1.17.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.17.0';
+  const SCRIPT_VERSION = '1.17.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -626,13 +626,18 @@
       const d    = JSON.parse(text);
       console.log(`[SnipeTracker] response itemId=${item.itemId}:`, d);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      const prices = (d.itemmarket?.listings ?? []).map(l => l.price).sort((a, b) => a - b);
+      const rawListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity }));
+      const prices = rawListings.map(l => l.price).sort((a, b) => a - b);
       const sample  = prices.slice(0, 5);
       MEM.pollResults[item.itemId] = {
         fairValue:    computeMedian(sample),
         lowestListed: prices[0] ?? null,
         updatedAt:    Date.now(),
       };
+
+      if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
+      MEM.snapshots[item.itemId].push({ timestamp: Date.now(), listings: rawListings });
+      Store.set(KEYS.snapshots, MEM.snapshots);
     } catch (err) {
       console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
       MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
