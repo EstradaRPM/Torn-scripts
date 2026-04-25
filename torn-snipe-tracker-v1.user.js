@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.3
+// @version      1.36.5
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.3';
+  const SCRIPT_VERSION = '1.36.5';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -247,6 +247,13 @@
       font-size: 12px;
       letter-spacing: 0.05em;
       text-shadow: 0 0 8px rgba(0,255,136,0.45);
+    }
+    .st-status-flood {
+      color: #ff9944;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-shadow: 0 0 8px rgba(255,153,68,0.45);
     }
     .st-status-watch {
       color: #7a9888;
@@ -783,7 +790,7 @@
 
   function calculateTrend(itemId) {
     const TREND_BAND_PCT    = 0.005;           // 0.5% of current price per hour; tune here
-    const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hours minimum span; tune here
+    const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hour minimum span; tune here
 
     const snaps = MEM.snapshots[itemId] ?? [];
     if (snaps.length < 6) {
@@ -884,9 +891,18 @@
     const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
     const fairValue    = p50;
 
-    // Lowest listing with meaningful quantity priced below fair value.
-    // Listing above this price means sitting unsold until that block clears.
+    // Informational: any large-quantity listing below fair value.
     const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
+
+    // Actionable flood play requires two hard constraints:
+    // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
+    //    Ensures the flood is actually setting the market bottom, not lurking mid-range.
+    // 2. Fair value is at least threshold% above the flood — a clearly profitable exit exists.
+    //    Uses the item's own snipe threshold so the bar matches the user's margin expectations.
+    const firstNonOutlierPrice = merged.find(l => l.price >= outlierFloor)?.price ?? p25;
+    const isFloodPlay = marketFlood != null
+      && marketFlood.price <= firstNonOutlierPrice * 1.05
+      && fairValue >= marketFlood.price * (1 + item.threshold / 100);
 
     // Historical fair-value series for 7-day range display
     const historicalFVs = (MEM.snapshots[item.itemId] ?? [])
@@ -916,6 +932,7 @@
       secondLowest:    merged[1]?.price ?? null,
       listings:        merged,
       marketFlood,
+      isFloodPlay,
       historicalMedian,
       historicalLow,
       historicalHigh,
@@ -939,9 +956,13 @@
     MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
     Store.set(KEYS.trendcache, MEM.trendCache);
 
-    // If a large block sits below fair value, you cannot sell above it —
-    // that price is the real ceiling regardless of what fair value says.
-    const sellCeiling = marketFlood?.price ?? fairValue;
+    // Snipe sell ceiling: when there's a true outlier snipe (single low-qty listing below
+    // outlierFloor), find any large block between the snipe and FV — you can't sell above it.
+    // When the flood IS the floor (no outlier below it), no blocker applies and ceiling = FV.
+    const sniperBlocker = outlierExcluded
+      ? merged.find(l => l.quantity >= 100 && l.price > merged[0].price && l.price < fairValue)
+      : null;
+    const sellCeiling = sniperBlocker?.price ?? fairValue;
 
     const trendSignal = MEM.trendCache[item.itemId].trend;
     if (trendSignal === 'falling') {
@@ -1086,6 +1107,43 @@
       </div>`;
   }
 
+  function renderFloodPlay(item, res) {
+    const flood = res?.marketFlood;
+    const fv    = res?.fairValue;
+    if (!flood || !fv) return '';
+
+    // Units listed between flood price and fair value — must sell before you can hit FV.
+    const competingUnits = (res.listings ?? [])
+      .filter(l => l.price > flood.price && l.price < fv)
+      .reduce((s, l) => s + l.quantity, 0);
+
+    const discount = ((fv - flood.price) / fv * 100);
+    const roi      = ((fv - flood.price) / flood.price * 100);
+    const fmt      = n => '$' + Math.round(n).toLocaleString();
+    const compColor = competingUnits > 1000 ? '#ff4444' : competingUnits > 200 ? '#ff9944' : '#00ff88';
+
+    const stats = [
+      { label: 'Flood Price',     value: fmt(flood.price),                style: 'color:#ff9944' },
+      { label: 'Flood Qty',       value: flood.quantity.toLocaleString(), style: '' },
+      { label: 'Discount',        value: discount.toFixed(1) + '%',       style: 'color:#ff9944' },
+      { label: 'Max ROI',         value: roi.toFixed(1) + '%',            style: 'color:#ff9944' },
+      { label: 'Competing Units', value: competingUnits.toLocaleString(), style: `color:${compColor}` },
+    ];
+
+    const statsHtml = stats.map(s => `
+      <div class="st-summary-item">
+        <span class="st-summary-label">${s.label}</span>
+        <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
+      </div>`).join('');
+
+    return `<div class="st-card-proj" style="background:rgba(255,153,68,0.06)">
+      <div style="padding:8px 12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#ff9944;margin-bottom:6px">Flood Play</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
+      </div>
+    </div>`;
+  }
+
   function roiTier(roi) {
     if (roi < 0)  return { bg: 'rgba(255,60,60,0.10)',   color: '#ff4444', label: '' };
     if (roi < 3)  return { bg: '',                        color: '#c0d0c8', label: '' };
@@ -1193,7 +1251,7 @@
     container.innerHTML = MEM.watchlist.map((item, i) => {
       const res     = MEM.pollResults[item.itemId];
       const enabled = item.enabled !== false;
-      let fairValStr, lowestStr, gapStr, statusHtml, snipe = false;
+      let fairValStr, lowestStr, gapStr, statusHtml, snipe = false, isFlood = false;
 
       if (!res) {
         fairValStr = '—'; lowestStr = '—'; gapStr = '—';
@@ -1214,10 +1272,13 @@
         lowestStr  = low != null ? '$' + low.toLocaleString() : '—';
         if (fv != null && low != null) {
           const gap = (fv - low) / fv * 100;
-          snipe     = low < fv * (1 - item.threshold / 100);
-          gapStr    = gap.toFixed(1) + '%';
+          snipe   = low < fv * (1 - item.threshold / 100);
+          isFlood = !snipe && res.isFloodPlay === true;
+          gapStr  = gap.toFixed(1) + '%';
           statusHtml = snipe
             ? '<span class="st-status-snipe">SNIPE</span>'
+            : isFlood
+            ? '<span class="st-status-flood">FLOOD</span>'
             : '<span class="st-status-watch">watch</span>';
         } else {
           gapStr     = '—';
@@ -1341,9 +1402,9 @@
           </button>
           ${isExpanded ? renderOrderBook(item, res) : ''}
 
-          <!-- Row 5: projection panel (only when SNIPE) -->
-          ${snipe ? renderProjection(item, res) : ''}
-          ${snipe ? `<div class="st-card-log-buy"><button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px">Log Buy</button></div>` : ''}
+          <!-- Row 5: snipe projection or flood play panel -->
+          ${snipe ? renderProjection(item, res) : isFlood ? renderFloodPlay(item, res) : ''}
+          ${(snipe || isFlood) ? `<div class="st-card-log-buy"><button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px">Log Buy</button></div>` : ''}
 
           <!-- Row 6: snapshot count + sparkline -->
           <div class="st-card-r6">
