@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.2
+// @version      1.36.3
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.2';
+  const SCRIPT_VERSION = '1.36.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -879,8 +879,14 @@
     const { p25, p50, p75 } = computeFairValue(merged.slice(0, 20));
     const iqr          = p75 - p25;
     const outlierFloor = Math.round(p25 - 1.5 * iqr);
-    const outlierExcluded = merged[0].price < outlierFloor;
+    // Only a true outlier if small quantity — a 5k-unit dump at sub-floor price
+    // is a market event that sets the sell ceiling, not a typo to ignore.
+    const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
     const fairValue    = p50;
+
+    // Lowest listing with meaningful quantity priced below fair value.
+    // Listing above this price means sitting unsold until that block clears.
+    const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
 
     // Historical fair-value series for 7-day range display
     const historicalFVs = (MEM.snapshots[item.itemId] ?? [])
@@ -909,6 +915,7 @@
         : null,
       secondLowest:    merged[1]?.price ?? null,
       listings:        merged,
+      marketFlood,
       historicalMedian,
       historicalLow,
       historicalHigh,
@@ -932,14 +939,16 @@
     MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
     Store.set(KEYS.trendcache, MEM.trendCache);
 
+    // If a large block sits below fair value, you cannot sell above it —
+    // that price is the real ceiling regardless of what fair value says.
+    const sellCeiling = marketFlood?.price ?? fairValue;
+
     const trendSignal = MEM.trendCache[item.itemId].trend;
     if (trendSignal === 'falling') {
-      // Price at the lowest non-outlier listing — competitive enough to move inventory
-      // before the market falls further, but not racing to the absolute floor.
       const firstNonOutlier = merged.find(l => l.price >= outlierFloor);
-      MEM.pollResults[item.itemId].recommendedSellTarget = firstNonOutlier?.price ?? p25;
+      MEM.pollResults[item.itemId].recommendedSellTarget = Math.min(firstNonOutlier?.price ?? p25, sellCeiling);
     } else {
-      MEM.pollResults[item.itemId].recommendedSellTarget = fairValue;
+      MEM.pollResults[item.itemId].recommendedSellTarget = sellCeiling;
     }
   }
 
@@ -1250,6 +1259,9 @@
       const clearBtnHtml = isManual
         ? `<button class="st-sell-target-clear" data-idx="${i}" title="Clear manual override" style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s" onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>`
         : '';
+      const floodNote = (!isManual && res?.marketFlood != null)
+        ? `<div style="font-size:9px;color:#ff9944;margin-top:2px">⚠ flood ${res.marketFlood.quantity.toLocaleString()} @ $${res.marketFlood.price.toLocaleString()}</div>`
+        : '';
 
       const snipePrice = res?.lowestListed ?? null;
       const roiVal     = (showTarget != null && snipePrice != null && snipePrice > 0)
@@ -1311,6 +1323,7 @@
                        style="width:78px;font-size:12px;padding:3px 6px;color:${targetColor};${targetBorder}">
                 ${clearBtnHtml}
               </div>
+              ${floodNote}
             </div>
             <div class="st-card-col">
               <span class="st-card-lbl">ROI</span>
