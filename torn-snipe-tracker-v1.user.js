@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.16.4
+// @version      1.17.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.16.4';
+  const SCRIPT_VERSION = '1.17.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -45,6 +45,7 @@
     position:  'st_position',
     trades:    'st_trades',
     apiKey:    'st_apikey',
+    snapshots: 'st_snapshots',
   };
 
   const Store = {
@@ -76,6 +77,7 @@
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
     trades:      Store.get(KEYS.trades)    ?? [],
+    snapshots:   Store.get(KEYS.snapshots) ?? {},
     pollResults: {},   // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
     logBuyIdx:   null, // index of watchlist item currently in the buy form — not persisted
   };
