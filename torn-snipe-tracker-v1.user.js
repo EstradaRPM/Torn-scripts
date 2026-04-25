@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.34.0
+// @version      1.35.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.34.0';
+  const SCRIPT_VERSION = '1.35.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -879,6 +879,30 @@
       listings:        merged,
       updatedAt:       Date.now(),
     };
+
+    if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
+    MEM.snapshots[item.itemId].push({ timestamp: Date.now(), listings: merged });
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
+    if (MEM.snapshots[item.itemId].length > 500) MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].slice(-500);
+    try {
+      localStorage.setItem(KEYS.snapshots, JSON.stringify(MEM.snapshots));
+    } catch (e) {
+      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
+        console.warn(`[SnipeTracker] QuotaExceededError: snapshot for itemId ${item.itemId} not saved this cycle.`);
+        showStorageWarning();
+      }
+    }
+
+    MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
+    Store.set(KEYS.trendcache, MEM.trendCache);
+
+    const trendSignal = MEM.trendCache[item.itemId].trend;
+    if (trendSignal === 'falling' && MEM.pollResults[item.itemId].secondLowest != null) {
+      MEM.pollResults[item.itemId].recommendedSellTarget = MEM.pollResults[item.itemId].secondLowest;
+    } else {
+      MEM.pollResults[item.itemId].recommendedSellTarget = MEM.pollResults[item.itemId].fairValue;
+    }
   }
 
   // ─── Poll loop ────────────────────────────────────────────────────────────
