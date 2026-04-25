@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.20.1
+// @version      1.21.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.20.1';
+  const SCRIPT_VERSION = '1.21.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -790,19 +790,54 @@
     const ageText   = cache ? 'updated ' + fmtAgo(cache.calculatedAt) : 'pending';
     const ageLine   = `<br><span class="st-trend-age">${ageText}</span>`;
 
+    let signal;
     if (!cache || cache.trend === 'insufficient') {
-      return `<span class="st-trend-dim">… building history · ${snapCount} snapshot${snapCount === 1 ? '' : 's'}</span>${ageLine}`;
+      signal = `<span class="st-trend-dim">… building history · ${snapCount} snapshot${snapCount === 1 ? '' : 's'}</span>`;
+    } else {
+      const { trend, slopePerHour } = cache;
+      if (trend === 'rising') {
+        const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
+        signal = `<span class="st-trend-rising">▲ Rising <span style="font-size:11px">${s}</span></span>`;
+      } else if (trend === 'falling') {
+        const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
+        signal = `<span class="st-trend-falling">▼ Falling <span style="font-size:11px">${s}</span></span>`;
+      } else {
+        signal = `<span class="st-trend-flat">→ stable</span>`;
+      }
     }
-    const { trend, slopePerHour } = cache;
-    if (trend === 'rising') {
-      const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
-      return `<span class="st-trend-rising">▲ Rising <span style="font-size:11px">${s}</span></span>${ageLine}`;
-    }
-    if (trend === 'falling') {
-      const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
-      return `<span class="st-trend-falling">▼ Falling <span style="font-size:11px">${s}</span></span>${ageLine}`;
-    }
-    return `<span class="st-trend-flat">→ stable</span>${ageLine}`;
+    return signal + ageLine + renderSparkline(itemId);
+  }
+
+  function renderSparkline(itemId) {
+    const snaps = MEM.snapshots[itemId] ?? [];
+    const prices = snaps
+      .map(s => {
+        const p = (s.listings ?? []).map(l => l.price).filter(v => v > 0);
+        return p.length ? Math.min(...p) : null;
+      })
+      .filter(v => v !== null);
+
+    if (prices.length < 2) return '';
+
+    const W = 80, H = 24;
+    const min   = Math.min(...prices);
+    const max   = Math.max(...prices);
+    const range = max - min || 1;
+    const n     = prices.length;
+
+    const cache = MEM.trendCache[itemId];
+    const trend = cache?.trend;
+    const color = trend === 'rising'  ? '#00ff88'
+                : trend === 'falling' ? '#ff4444'
+                : '#3a5060';
+
+    const pts = prices.map((p, i) => {
+      const x = (i / (n - 1)) * W;
+      const y = (H - 2) - ((p - min) / range) * (H - 4);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+
+    return `<svg width="${W}" height="${H}" style="display:block;margin-top:3px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   }
 
   function renderWatchlist() {
