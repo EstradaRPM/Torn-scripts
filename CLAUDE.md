@@ -173,3 +173,82 @@ Torn factions grant stat buffs (%) that rotate monthly. Scripts that plan traini
 - Don't add external script dependencies — no jQuery, no lodash, no frameworks
 - Don't write scripts that target pages outside `torn.com`
 - Don't commit API keys, even test keys
+
+---
+
+## Torn Scripting Rules & API Compliance
+
+**These are hard constraints. Any script that violates them risks account ban, suspension, or permanent loss of API access. Every new script and every modification to an existing script must be verified against all rules below before commit.**
+
+### Permitted data sources — hard gate
+
+A script may only consume data from exactly two sources:
+
+1. **Torn's official API** (`https://api.torn.com/`) — using the player's own key
+2. **The DOM of the page currently loaded and actively viewed** by the user in their browser tab
+
+Any other data source is prohibited. This means:
+
+- **No background page scraping.** A script must not fetch or read any Torn page that the user has not manually navigated to and is currently viewing.
+- **No cross-tab or unfocused-window data extraction.** Reading DOM from a tab that is not in focus is prohibited.
+- **No non-API HTTP requests to Torn** (`torn.com` endpoints, internal APIs, etc.) except the official API — and only when triggered by the user loading a relevant page or explicitly interacting with the script UI.
+- **No CAPTCHA bypass attempts** of any kind.
+- **No sending data extracted from unfocused pages to external services, alerts, or notifications.**
+
+### Automation prohibition
+
+Scripts must not take autonomous actions on behalf of the player. Specifically:
+
+- **No automated clicking, form submission, or game action triggering** — the script may display information but must not act.
+- **No polling loops that make non-API requests to Torn** on a timer without the user actively viewing the relevant page.
+- **API polling is allowed** but must be rate-limited (see below) and scoped to data the script genuinely needs.
+
+### API key handling — non-negotiable rules
+
+- **Never request passwords.** Scripts must never ask for, read, or transmit a Torn account password under any circumstance.
+- **Never request a player name or player ID** as a substitute for the API key — the key alone is sufficient to retrieve all user data.
+- **Never store keys in plaintext outside `localStorage`** (which is sandboxed to the browser/domain). Keys must not be sent to any external server unless the user has explicitly opted in and the ToS disclosure table (see below) is shown.
+- **Never share or expose another player's key.** If a script ever accepts keys from multiple users (e.g., a faction tool), each key must be treated as confidential and never surfaced to other users.
+- **Remove or disable invalid keys immediately on API error code 2 (incorrect key) or code 13 (key owner banned).** Do not continue polling with a broken key.
+- **Use `###PDA-APIKEY###` as the key placeholder** in all userscripts — never hardcode real keys, not even for testing.
+
+### Rate limiting — enforced in code
+
+- Hard cap: **100 API requests per minute** across all keys for a single player. Scripts must never exceed this.
+- For most data (battle stats, bars, etc.) a **5-minute polling interval is the minimum acceptable default**. Use longer intervals where freshness is not critical.
+- Use the `timestamp` query parameter to bust the 30-second service cache only when fresh data is genuinely required — not by default.
+- **Globally cached selections cannot be bypassed** and must not be polled more frequently than their cache TTL makes meaningful. Current globally cached selections:
+  - `market` → `itemmarket`, `properties`, `rentals`
+  - `company` → `companies`
+  - `user` → `bazaar`, `bounties`
+  - `torn` → `bounties`
+- Request **only the selections actually needed** for the feature. Never request broad selections to cache for hypothetical future use.
+
+### Disclosure requirements — required for any script that stores or shares data/keys
+
+If a script stores API data or keys beyond the user's own `localStorage`, or shares any data with external services, the script's UI **must display** the following disclosure table at the point where the user provides their API key:
+
+| Data Storage | Data Sharing | Purpose of Use | Key Storage & Sharing | Key Access Level |
+|---|---|---|---|---|
+| *(one of: No / Only locally / Temporary <1 min / Temporary <1 day / Persistent until deletion / Persistent forever)* | *(one of: Nobody / Faction / Friends & faction / General public / Service owners / Service owners & customers)* | *(one of: Non-malicious statistical analysis / Public amusement / Public community tools / Competitive advantage [specify] / Personal gain [specify] / Other [specify])* | *(one of: Not stored/Not shared / Stored, used only for automation / Stored, shared with faction / Stored, shared with other services / Public)* | *(one of: Minimal / Limited / Full / Custom — specify selections)* |
+
+**All current scripts in this repo are local-only** (data stays in the browser, key stays in `localStorage` or is injected by PDA and never transmitted). The correct disclosure for any such script is: `Only locally | Nobody | [purpose] | Not stored/Not shared | [selections used]`. If a future script changes this, the table must be updated and displayed in the UI.
+
+### No malicious or undisclosed functionality
+
+- All script functionality must be visible and documented. No hidden behaviors, silent data collection, or obfuscated code.
+- Scripts must not be used to gain an advantage through means Torn's rules prohibit (botting, automated attacking, market manipulation bots, etc.).
+- Releasing a script with functionality not described to the user is a bannable offense.
+
+### Summary checklist — verify before every commit
+
+- [ ] Script only reads from the official API or the currently viewed page DOM
+- [ ] No background scraping, no unfocused-tab reads, no non-API Torn requests
+- [ ] No automated game actions (clicks, submissions, etc.)
+- [ ] API polling interval ≥ 5 minutes; total requests stay well under 100/min
+- [ ] Only the minimum required API selections are requested
+- [ ] Key handled via `###PDA-APIKEY###` or user-entered into `localStorage`; never transmitted externally
+- [ ] Invalid key errors (codes 2, 13) remove/disable the key immediately
+- [ ] No passwords or usernames requested
+- [ ] If data or keys leave `localStorage`, the disclosure table is shown in the UI
+- [ ] No hidden, obfuscated, or undisclosed functionality
