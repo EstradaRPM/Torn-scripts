@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.32.0
+// @version      1.32.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.32.0';
+  const SCRIPT_VERSION = '1.32.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -838,7 +838,7 @@
       const text = await gmFetch(weav3rUrl);
       const d    = JSON.parse(text);
       if (d.error) throw new Error(d.error);
-      bazaarListings = (d.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity }));
+      bazaarListings = (d.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity, source: 'bazaar' }));
     } catch (err) {
       console.error(`[SnipeTracker] weav3r fetch failed for itemId ${item.itemId}:`, err.message);
     }
@@ -847,7 +847,7 @@
       const text = await gmFetch(tornUrl);
       const d    = JSON.parse(text);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      itemMktListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.amount }));
+      itemMktListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.amount, source: 'itemmarket' }));
     } catch (err) {
       console.error(`[SnipeTracker] torn fetch failed for itemId ${item.itemId}:`, err.message);
       MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
