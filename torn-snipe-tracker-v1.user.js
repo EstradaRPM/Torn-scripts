@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.35.0
+// @version      1.36.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.35.0';
+  const SCRIPT_VERSION = '1.36.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -750,10 +750,26 @@
     });
   }
 
-  function computeMedian(arr) {
-    if (!arr.length) return null;
-    const mid = Math.floor(arr.length / 2);
-    return arr.length % 2 !== 0 ? arr[mid] : Math.round((arr[mid - 1] + arr[mid]) / 2);
+  // Volume-weighted percentile fair value using full listing depth.
+  // Returns p25/p50/p75 prices by cumulative quantity so a single bulk listing
+  // at a weird price doesn't distort the estimate the way a simple top-N median would.
+  function computeFairValue(listings) {
+    if (!listings.length) return { p25: null, p50: null, p75: null };
+    const sorted   = [...listings].sort((a, b) => a.price - b.price);
+    const totalQty = sorted.reduce((s, l) => s + (l.quantity || 1), 0);
+    let cumQty = 0, p25 = null, p50 = null, p75 = null;
+    for (const l of sorted) {
+      cumQty += (l.quantity || 1);
+      if (p25 === null && cumQty >= totalQty * 0.25) p25 = l.price;
+      if (p50 === null && cumQty >= totalQty * 0.50) p50 = l.price;
+      if (p75 === null && cumQty >= totalQty * 0.75) p75 = l.price;
+      if (p75 !== null) break;
+    }
+    return {
+      p25: p25 ?? sorted[0].price,
+      p50: p50 ?? sorted[Math.floor(sorted.length / 2)].price,
+      p75: p75 ?? sorted[sorted.length - 1].price,
+    };
   }
 
   function showStorageWarning() {
@@ -782,11 +798,16 @@
       return { trend: 'insufficient', slopePerHour: null, dataPoints: snaps.length, oldestSnapshot: null, newestSnapshot: null };
     }
 
-    // Lowest listed price per snapshot; skip snapshots that have no listings
+    // Use stored fair value (P50 by volume) per snapshot; fall back to raw median
+    // for legacy snapshots that pre-date the fairValue field.
     const points = snaps
       .map(s => {
+        if (s.fairValue != null) return { t: s.timestamp, price: s.fairValue };
         const prices = (s.listings ?? []).map(l => l.price).filter(p => p > 0);
-        return prices.length ? { t: s.timestamp, price: Math.min(...prices) } : null;
+        if (!prices.length) return null;
+        const sorted = [...prices].sort((a, b) => a - b);
+        const mid    = Math.floor(sorted.length / 2);
+        return { t: s.timestamp, price: sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2) };
       })
       .filter(Boolean);
 
@@ -860,28 +881,47 @@
       return;
     }
 
-    let sample, outlierExcluded = false;
-    if (merged.length >= 2 && merged[0].price < merged[1].price * (1 - item.threshold / 100)) {
-      sample          = merged.slice(1, 6).map(l => l.price);
-      outlierExcluded = true;
-    } else {
-      sample = merged.slice(0, 5).map(l => l.price);
+    const { p25, p50, p75 } = computeFairValue(merged);
+    const iqr          = p75 - p25;
+    const outlierFloor = Math.round(p25 - 1.5 * iqr);
+    const outlierExcluded = merged[0].price < outlierFloor;
+    const fairValue    = p50;
+
+    // Historical fair-value series for 7-day range display
+    const historicalFVs = (MEM.snapshots[item.itemId] ?? [])
+      .filter(s => s.fairValue != null)
+      .map(s => s.fairValue)
+      .sort((a, b) => a - b);
+    let historicalMedian = null, historicalLow = null, historicalHigh = null;
+    if (historicalFVs.length >= 3) {
+      const mid = Math.floor(historicalFVs.length / 2);
+      historicalMedian = historicalFVs.length % 2 !== 0
+        ? historicalFVs[mid]
+        : Math.round((historicalFVs[mid - 1] + historicalFVs[mid]) / 2);
+      historicalLow  = historicalFVs[0];
+      historicalHigh = historicalFVs[historicalFVs.length - 1];
     }
 
     MEM.pollResults[item.itemId] = {
-      fairValue:       computeMedian(sample),
+      fairValue,
+      p25,
+      p75,
       outlierExcluded,
+      outlierFloor,
       lowestListed:    merged[0]?.price ?? null,
       lowestListedQty: merged[0]?.price != null
         ? merged.filter(l => l.price === merged[0].price).reduce((s, l) => s + l.quantity, 0)
         : null,
       secondLowest:    merged[1]?.price ?? null,
       listings:        merged,
+      historicalMedian,
+      historicalLow,
+      historicalHigh,
       updatedAt:       Date.now(),
     };
 
     if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
-    MEM.snapshots[item.itemId].push({ timestamp: Date.now(), listings: merged });
+    MEM.snapshots[item.itemId].push({ timestamp: Date.now(), listings: merged, fairValue });
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
     if (MEM.snapshots[item.itemId].length > 500) MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].slice(-500);
@@ -898,10 +938,13 @@
     Store.set(KEYS.trendcache, MEM.trendCache);
 
     const trendSignal = MEM.trendCache[item.itemId].trend;
-    if (trendSignal === 'falling' && MEM.pollResults[item.itemId].secondLowest != null) {
-      MEM.pollResults[item.itemId].recommendedSellTarget = MEM.pollResults[item.itemId].secondLowest;
+    if (trendSignal === 'falling') {
+      // Price at the lowest non-outlier listing — competitive enough to move inventory
+      // before the market falls further, but not racing to the absolute floor.
+      const firstNonOutlier = merged.find(l => l.price >= outlierFloor);
+      MEM.pollResults[item.itemId].recommendedSellTarget = firstNonOutlier?.price ?? p25;
     } else {
-      MEM.pollResults[item.itemId].recommendedSellTarget = MEM.pollResults[item.itemId].fairValue;
+      MEM.pollResults[item.itemId].recommendedSellTarget = fairValue;
     }
   }
 
@@ -961,6 +1004,7 @@
     const snaps = MEM.snapshots[itemId] ?? [];
     const prices = snaps
       .map(s => {
+        if (s.fairValue != null) return s.fairValue;
         const p = (s.listings ?? []).map(l => l.price).filter(v => v > 0);
         return p.length ? Math.min(...p) : null;
       })
@@ -1159,7 +1203,10 @@
         const outlierNote = res.outlierExcluded
           ? '<br><span style="font-size:10px;color:#3a5060">⚠ outlier excl.</span>'
           : '';
-        fairValStr = fv  != null ? '$' + fv.toLocaleString() + outlierNote : '—';
+        const histLine = res.historicalMedian != null
+          ? `<br><span style="font-size:9px;color:#3a5060">7d: $${res.historicalLow.toLocaleString()}–$${res.historicalHigh.toLocaleString()}</span>`
+          : '';
+        fairValStr = fv  != null ? '$' + fv.toLocaleString() + outlierNote + histLine : '—';
         lowestStr  = low != null ? '$' + low.toLocaleString() : '—';
         if (fv != null && low != null) {
           const gap = (fv - low) / fv * 100;
