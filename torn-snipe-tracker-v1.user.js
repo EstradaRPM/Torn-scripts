@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.0
+// @version      1.36.3
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.0';
+  const SCRIPT_VERSION = '1.36.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -750,25 +750,17 @@
     });
   }
 
-  // Volume-weighted percentile fair value using full listing depth.
-  // Returns p25/p50/p75 prices by cumulative quantity so a single bulk listing
-  // at a weird price doesn't distort the estimate the way a simple top-N median would.
+  // Listing-count percentile fair value. Each listing is one data point regardless
+  // of quantity — a bulk seller with 500 units gets one vote, not 500, so large
+  // cheap inventories can't drag the fair value to the market floor.
   function computeFairValue(listings) {
     if (!listings.length) return { p25: null, p50: null, p75: null };
-    const sorted   = [...listings].sort((a, b) => a.price - b.price);
-    const totalQty = sorted.reduce((s, l) => s + (l.quantity || 1), 0);
-    let cumQty = 0, p25 = null, p50 = null, p75 = null;
-    for (const l of sorted) {
-      cumQty += (l.quantity || 1);
-      if (p25 === null && cumQty >= totalQty * 0.25) p25 = l.price;
-      if (p50 === null && cumQty >= totalQty * 0.50) p50 = l.price;
-      if (p75 === null && cumQty >= totalQty * 0.75) p75 = l.price;
-      if (p75 !== null) break;
-    }
+    const sorted = [...listings].sort((a, b) => a.price - b.price);
+    const n = sorted.length;
     return {
-      p25: p25 ?? sorted[0].price,
-      p50: p50 ?? sorted[Math.floor(sorted.length / 2)].price,
-      p75: p75 ?? sorted[sorted.length - 1].price,
+      p25: sorted[Math.floor(n * 0.25)].price,
+      p50: sorted[Math.floor(n * 0.50)].price,
+      p75: sorted[Math.floor(n * 0.75)].price,
     };
   }
 
@@ -881,11 +873,20 @@
       return;
     }
 
-    const { p25, p50, p75 } = computeFairValue(merged);
+    // Sample only the 20 cheapest listings. The competitive market sits in the
+    // low-price tier; going deeper pulls in aspirational pricing that inflates
+    // fair value well above where the item actually trades.
+    const { p25, p50, p75 } = computeFairValue(merged.slice(0, 20));
     const iqr          = p75 - p25;
     const outlierFloor = Math.round(p25 - 1.5 * iqr);
-    const outlierExcluded = merged[0].price < outlierFloor;
+    // Only a true outlier if small quantity — a 5k-unit dump at sub-floor price
+    // is a market event that sets the sell ceiling, not a typo to ignore.
+    const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
     const fairValue    = p50;
+
+    // Lowest listing with meaningful quantity priced below fair value.
+    // Listing above this price means sitting unsold until that block clears.
+    const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
 
     // Historical fair-value series for 7-day range display
     const historicalFVs = (MEM.snapshots[item.itemId] ?? [])
@@ -914,6 +915,7 @@
         : null,
       secondLowest:    merged[1]?.price ?? null,
       listings:        merged,
+      marketFlood,
       historicalMedian,
       historicalLow,
       historicalHigh,
@@ -937,14 +939,16 @@
     MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
     Store.set(KEYS.trendcache, MEM.trendCache);
 
+    // If a large block sits below fair value, you cannot sell above it —
+    // that price is the real ceiling regardless of what fair value says.
+    const sellCeiling = marketFlood?.price ?? fairValue;
+
     const trendSignal = MEM.trendCache[item.itemId].trend;
     if (trendSignal === 'falling') {
-      // Price at the lowest non-outlier listing — competitive enough to move inventory
-      // before the market falls further, but not racing to the absolute floor.
       const firstNonOutlier = merged.find(l => l.price >= outlierFloor);
-      MEM.pollResults[item.itemId].recommendedSellTarget = firstNonOutlier?.price ?? p25;
+      MEM.pollResults[item.itemId].recommendedSellTarget = Math.min(firstNonOutlier?.price ?? p25, sellCeiling);
     } else {
-      MEM.pollResults[item.itemId].recommendedSellTarget = fairValue;
+      MEM.pollResults[item.itemId].recommendedSellTarget = sellCeiling;
     }
   }
 
@@ -1255,6 +1259,9 @@
       const clearBtnHtml = isManual
         ? `<button class="st-sell-target-clear" data-idx="${i}" title="Clear manual override" style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s" onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>`
         : '';
+      const floodNote = (!isManual && res?.marketFlood != null)
+        ? `<div style="font-size:9px;color:#ff9944;margin-top:2px">⚠ flood ${res.marketFlood.quantity.toLocaleString()} @ $${res.marketFlood.price.toLocaleString()}</div>`
+        : '';
 
       const snipePrice = res?.lowestListed ?? null;
       const roiVal     = (showTarget != null && snipePrice != null && snipePrice > 0)
@@ -1316,6 +1323,7 @@
                        style="width:78px;font-size:12px;padding:3px 6px;color:${targetColor};${targetBorder}">
                 ${clearBtnHtml}
               </div>
+              ${floodNote}
             </div>
             <div class="st-card-col">
               <span class="st-card-lbl">ROI</span>
