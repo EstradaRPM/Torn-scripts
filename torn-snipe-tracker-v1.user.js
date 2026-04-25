@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.19.1
+// @version      1.20.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.19.1';
+  const SCRIPT_VERSION = '1.20.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -245,6 +245,26 @@
       font-weight: 700;
       font-size: 12px;
       letter-spacing: 0.04em;
+    }
+
+    /* ── Trend indicators ── */
+    .st-trend-rising {
+      color: #00ff88;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .st-trend-falling {
+      color: #ff4444;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .st-trend-flat {
+      color: #6a8070;
+      font-size: 12px;
+    }
+    .st-trend-dim {
+      color: #3a5060;
+      font-size: 11px;
     }
 
     /* ── Profit/ROI tints ── */
@@ -469,6 +489,7 @@
               <th>Lowest</th>
               <th>Gap %</th>
               <th>Status</th>
+              <th>Trend</th>
               <th></th>
             </tr>
           </thead>
@@ -758,10 +779,28 @@
 
   // ─── Watchlist render ──────────────────────────────────────────────────────
 
+  function renderTrendCell(itemId) {
+    const cache     = MEM.trendCache[itemId];
+    const snapCount = (MEM.snapshots[itemId] ?? []).length;
+    if (!cache || cache.trend === 'insufficient') {
+      return `<span class="st-trend-dim">… building history · ${snapCount} snapshot${snapCount === 1 ? '' : 's'}</span>`;
+    }
+    const { trend, slopePerHour } = cache;
+    if (trend === 'rising') {
+      const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
+      return `<span class="st-trend-rising">▲ Rising <span style="font-size:11px">${s}</span></span>`;
+    }
+    if (trend === 'falling') {
+      const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
+      return `<span class="st-trend-falling">▼ Falling <span style="font-size:11px">${s}</span></span>`;
+    }
+    return `<span class="st-trend-flat">→ stable</span>`;
+  }
+
   function renderWatchlist() {
     const tbody = panel.querySelector('#st-watchlist-body');
     if (MEM.watchlist.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
       return;
     }
     tbody.innerHTML = MEM.watchlist.map((item, i) => {
@@ -822,6 +861,7 @@
           <td>${lowestCell}</td>
           <td>${gapCell}</td>
           <td>${statusCell}</td>
+          <td>${renderTrendCell(item.itemId)}</td>
           <td>${logBuyBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
         </tr>
       `;
