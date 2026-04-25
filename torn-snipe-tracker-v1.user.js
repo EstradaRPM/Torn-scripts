@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.26.0
+// @version      1.28.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.26.0';
+  const SCRIPT_VERSION = '1.28.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -74,7 +74,7 @@
 
   const MEM = {
     watchlist:   Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10 },
+    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, availableCapital: 0 },
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
     trades:      Store.get(KEYS.trades)    ?? [],
@@ -545,6 +545,7 @@
             <button id="st-buy-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
           </div>
         </div>
+        <div id="st-capital-bar" style="margin-top:10px"></div>
       </div>
 
       <!-- ── LEDGER pane ── -->
@@ -617,6 +618,10 @@
             <label for="st-input-threshold">Default threshold %</label>
             <input id="st-input-threshold" class="st-input" type="number" min="1" max="100">
             <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
+          </div>
+          <div class="st-field">
+            <label for="st-input-capital">Available Capital ($)</label>
+            <input id="st-input-capital" class="st-input" type="number" min="0" style="width:130px">
           </div>
         </div>
         <div class="st-field" style="margin-bottom:10px">
@@ -863,6 +868,63 @@
     return `<svg width="${W}" height="${H}" style="display:block;margin-top:3px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   }
 
+  function renderCapitalBar() {
+    const bar = panel.querySelector('#st-capital-bar');
+    if (!bar) return;
+    const available = MEM.settings.availableCapital ?? 0;
+    if (!available) {
+      bar.innerHTML = '<div style="font-size:11px;color:#3a5060;text-align:center;padding:4px 0">Set available capital in settings to enable utilization tracking</div>';
+      return;
+    }
+
+    let committed = 0;
+    for (const item of MEM.watchlist) {
+      if (item.enabled === false) continue;
+      const res = MEM.pollResults[item.itemId];
+      if (!res || res.error) continue;
+      const { fairValue, lowestListed, lowestListedQty } = res;
+      if (fairValue != null && lowestListed != null && lowestListed < fairValue * (1 - item.threshold / 100) && lowestListedQty > 0) {
+        committed += lowestListed * lowestListedQty;
+      }
+    }
+
+    const remaining   = available - committed;
+    const utilPct     = (committed / available * 100).toFixed(1);
+    const remColor    = remaining >= 0 ? '#00ff88' : '#ff4444';
+    const fmt         = n => '$' + Math.round(n).toLocaleString();
+
+    bar.innerHTML = `
+      <div style="background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:8px 12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Capital</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+          <div class="st-summary-item">
+            <span class="st-summary-label">Available</span>
+            <span class="st-summary-value" style="font-size:13px">${fmt(available)}</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Committed</span>
+            <span class="st-summary-value" style="font-size:13px">${fmt(committed)}</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Remaining</span>
+            <span class="st-summary-value" style="font-size:13px;color:${remColor}">${fmt(remaining)}</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Utilization</span>
+            <span class="st-summary-value" style="font-size:13px">${utilPct}%</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function roiTier(roi) {
+    if (roi < 0)  return { bg: 'rgba(255,60,60,0.10)',   color: '#ff4444', label: '' };
+    if (roi < 3)  return { bg: '',                        color: '#c0d0c8', label: '' };
+    if (roi < 8)  return { bg: 'rgba(0,255,136,0.06)',   color: '#00ff88', label: '' };
+    if (roi < 15) return { bg: 'rgba(0,255,136,0.12)',   color: '#00ff88', label: '' };
+    return        { bg: 'rgba(0,255,136,0.20)',           color: '#00ff88', label: 'STRONG' };
+  }
+
   function renderProjection(item, res) {
     const snipePrice = res?.lowestListed;
     const snipeQty   = res?.lowestListedQty;
@@ -876,25 +938,30 @@
     const grossProfit = grossRev - totalCost;
     const roi         = (grossProfit / totalCost) * 100;
     const fmt         = n => '$' + Math.round(n).toLocaleString();
+    const tier        = roiTier(roi);
+
+    const roiLabel = tier.label
+      ? `${roi.toFixed(1)}% <span style="font-size:11px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.6);letter-spacing:0.06em">${tier.label}</span>`
+      : roi.toFixed(1) + '%';
 
     const stats = [
-      { label: 'Snipe Price',   value: fmt(snipePrice) },
-      { label: 'Snipe Qty',     value: snipeQty.toLocaleString() },
-      { label: 'Total Cost',    value: fmt(totalCost) },
-      { label: 'Sell Target',   value: fmt(sellTarget) },
-      { label: 'Gross Revenue', value: fmt(grossRev) },
-      { label: 'Gross Profit',  value: fmt(grossProfit) },
-      { label: 'ROI %',         value: roi.toFixed(1) + '%' },
+      { label: 'Snipe Price',   value: fmt(snipePrice),           style: '' },
+      { label: 'Snipe Qty',     value: snipeQty.toLocaleString(), style: '' },
+      { label: 'Total Cost',    value: fmt(totalCost),            style: '' },
+      { label: 'Sell Target',   value: fmt(sellTarget),           style: '' },
+      { label: 'Gross Revenue', value: fmt(grossRev),             style: '' },
+      { label: 'Gross Profit',  value: fmt(grossProfit),          style: `color:${tier.color}` },
+      { label: 'ROI %',         value: roiLabel,                  style: `color:${tier.color}` },
     ];
 
     const statsHtml = stats.map(s => `
       <div class="st-summary-item">
         <span class="st-summary-label">${s.label}</span>
-        <span class="st-summary-value" style="font-size:13px">${s.value}</span>
+        <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
       </div>`).join('');
 
     return `<tr class="st-proj-row"><td colspan="10" style="padding:0 8px 8px">
-      <div style="background:#0a1220;border:1px solid #1a2a3a;border-radius:4px;padding:8px 12px">
+      <div style="background:${tier.bg || '#0a1220'};border:1px solid #1a2a3a;border-radius:4px;padding:8px 12px">
         <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Snipe Projection</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
       </div>
@@ -1102,6 +1169,7 @@
         renderWatchlist();
       });
     });
+    renderCapitalBar();
   }
 
   // ─── Add Item form ─────────────────────────────────────────────────────────
@@ -1380,24 +1448,20 @@
     tbody.innerHTML = closed.map(t => {
       const profit = (t.sellPrice - t.buyPrice) * t.qty;
       const roi    = ((t.sellPrice - t.buyPrice) / t.buyPrice) * 100;
-      const roiStr = roi.toFixed(1) + '%';
       const held   = fmtHeld(t.buyDate, t.sellDate);
-      const rowBg  = roi > 0
-        ? 'background:rgba(0,255,136,0.06)'
-        : roi < 0
-          ? 'background:rgba(255,60,60,0.06)'
-          : '';
-      const numStyle = roi >= 0
-        ? 'color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.35)'
-        : 'color:#ff4444';
+      const tier   = roiTier(roi);
+      const numStyle  = `color:${tier.color}`;
+      const roiLabel  = tier.label
+        ? `${roi.toFixed(1)}% <span style="font-size:10px;letter-spacing:0.05em">${tier.label}</span>`
+        : roi.toFixed(1) + '%';
       return `
-        <tr style="${rowBg}">
+        <tr style="${tier.bg ? 'background:' + tier.bg : ''}">
           <td>${t.name}</td>
           <td>${t.qty}</td>
           <td>${fmtMoney(t.buyPrice)}</td>
           <td>${fmtMoney(t.sellPrice)}</td>
           <td style="${numStyle}">${fmtMoney(profit)}</td>
-          <td style="${numStyle}">${roiStr}</td>
+          <td style="${numStyle}">${roiLabel}</td>
           <td>${held}</td>
         </tr>
       `;
@@ -1546,10 +1610,12 @@
   const inputThreshold = panel.querySelector('#st-input-threshold');
   const threshHint     = panel.querySelector('#st-thresh-hint');
   const inputApiKey    = panel.querySelector('#st-input-apikey');
+  const inputCapital   = panel.querySelector('#st-input-capital');
   const clearBtn       = panel.querySelector('#st-clear-btn');
 
   inputInterval.value  = MEM.settings.interval;
   inputThreshold.value = MEM.settings.threshold;
+  inputCapital.value   = MEM.settings.availableCapital ?? 0;
   // show stored key placeholder but not the actual value for security
   if (localStorage.getItem('st_apikey')) inputApiKey.placeholder = '(key saved)';
 
@@ -1582,15 +1648,23 @@
     Store.set(KEYS.settings, MEM.settings);
   });
 
+  inputCapital.addEventListener('change', () => {
+    MEM.settings.availableCapital = Math.max(0, parseInt(inputCapital.value, 10) || 0);
+    inputCapital.value = MEM.settings.availableCapital;
+    Store.set(KEYS.settings, MEM.settings);
+    renderCapitalBar();
+  });
+
   clearBtn.addEventListener('click', () => {
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
     MEM.watchlist = [...SEED_WATCHLIST];
-    MEM.settings  = { interval: 60, threshold: 10 };
+    MEM.settings  = { interval: 60, threshold: 10, availableCapital: 0 };
     MEM.collapsed = false;
     MEM.position  = null;
     inputInterval.value  = MEM.settings.interval;
     inputThreshold.value = MEM.settings.threshold;
+    inputCapital.value   = 0;
     panel.classList.remove('st-collapsed');
     collapseBtn.textContent = '−';
     panel.style.left   = 'auto';
