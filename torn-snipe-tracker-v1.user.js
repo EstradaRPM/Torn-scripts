@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.17.3
+// @version      1.17.4
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.17.3';
+  const SCRIPT_VERSION = '1.17.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -725,10 +725,15 @@
 
       const enabled = item.enabled !== false;
 
+      const snaps = MEM.snapshots[item.itemId] ?? [];
+      const snapLabel = snaps.length === 0
+        ? 'no history yet'
+        : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
+
       return `
         <tr style="${enabled ? '' : 'opacity:0.4'}">
           <td><input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''} style="cursor:pointer;accent-color:#00ff88;width:15px;height:15px"></td>
-          <td>${item.name}</td>
+          <td>${item.name}<br><span style="font-size:10px;color:#3a5060;letter-spacing:0.03em">${snapLabel}</span></td>
           <td>${fairValCell}</td>
           <td>${threshCell}</td>
           <td>${lowestCell}</td>
@@ -944,6 +949,16 @@
 
   function fmtMoney(n) {
     return '$' + Math.round(n).toLocaleString();
+  }
+
+  function fmtAgo(ts) {
+    const totalMins = Math.floor((Date.now() - ts) / 60000);
+    const days  = Math.floor(totalMins / 1440);
+    const hours = Math.floor((totalMins % 1440) / 60);
+    const mins  = totalMins % 60;
+    if (days > 0)  return `${days}d ${hours}h ago`;
+    if (hours > 0) return `${hours}h ${mins}m ago`;
+    return `${mins}m ago`;
   }
 
   // ─── Open trades render ────────────────────────────────────────────────────
