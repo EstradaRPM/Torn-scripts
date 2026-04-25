@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.16.2
+// @version      1.16.3
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -26,7 +26,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.16.2';
+  const SCRIPT_VERSION = '1.16.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -456,6 +456,7 @@
         <table class="st-table">
           <thead>
             <tr>
+              <th></th>
               <th>Item</th>
               <th>Fair Value</th>
               <th>Threshold</th>
@@ -648,7 +649,7 @@
       return;
     }
     for (const item of MEM.watchlist) {
-      if (!(item.itemId > 0)) continue;
+      if (!(item.itemId > 0) || item.enabled === false) continue;
       await fetchItemPrice(item);
       renderWatchlist(); // clear error state immediately on per-item success
     }
@@ -666,7 +667,7 @@
   function renderWatchlist() {
     const tbody = panel.querySelector('#st-watchlist-body');
     if (MEM.watchlist.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
       return;
     }
     tbody.innerHTML = MEM.watchlist.map((item, i) => {
@@ -711,8 +712,11 @@
         : null;
       const threshCell = `${item.threshold}%<br><span style="font-size:11px;color:#8aa898;white-space:nowrap">${snipePriceStr ? '≤ ' + snipePriceStr : '—'}</span>`;
 
+      const enabled = item.enabled !== false;
+
       return `
-        <tr>
+        <tr style="${enabled ? '' : 'opacity:0.4'}">
+          <td><input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''} style="cursor:pointer;accent-color:#00ff88;width:15px;height:15px"></td>
           <td>${item.name}</td>
           <td>${fairValCell}</td>
           <td>${threshCell}</td>
@@ -739,6 +743,14 @@
         buyQtyInput.value        = '';
         buyForm.style.display    = 'block';
         buyQtyInput.focus();
+      });
+    });
+    tbody.querySelectorAll('.st-toggle-chk').forEach(chk => {
+      chk.addEventListener('change', () => {
+        const idx = parseInt(chk.dataset.idx, 10);
+        MEM.watchlist[idx].enabled = chk.checked;
+        Store.set(KEYS.watchlist, MEM.watchlist);
+        renderWatchlist();
       });
     });
   }
@@ -863,7 +875,7 @@
       return;
     }
 
-    MEM.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold: pct });
+    MEM.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold: pct, enabled: true });
     Store.set(KEYS.watchlist, MEM.watchlist);
     renderWatchlist();
     hideAddForm();
