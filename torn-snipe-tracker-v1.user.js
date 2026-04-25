@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.29.0
+// @version      1.30.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.29.0';
+  const SCRIPT_VERSION = '1.30.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -827,59 +827,13 @@
 
   async function fetchItemPrice(item) {
     const key = getApiKey();
-    const url = `https://api.torn.com/v2/market/${item.itemId}/itemmarket?key=${key}`;
-    console.log(`[SnipeTracker] fetch → v2/market/${item.itemId}/itemmarket`);
+    const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar,itemmarket&key=${key}`;
+    console.log(`[SnipeTracker] fetch → market/${item.itemId}?selections=bazaar,itemmarket`);
     try {
       const text = await gmFetch(url);
       const d    = JSON.parse(text);
-      console.log(`[SnipeTracker] response itemId=${item.itemId}:`, d);
-      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      const rawListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity }));
-      const prices = rawListings.map(l => l.price).sort((a, b) => a - b);
-      let sample, outlierExcluded = false;
-      if (prices.length >= 2 && prices[0] < prices[1] * (1 - item.threshold / 100)) {
-        sample          = prices.slice(1, 6);
-        outlierExcluded = true;
-      } else {
-        sample = prices.slice(0, 5);
-      }
-      const lowestPrice     = prices[0] ?? null;
-      const lowestListedQty = lowestPrice != null
-        ? rawListings.filter(l => l.price === lowestPrice).reduce((s, l) => s + l.quantity, 0)
-        : null;
-      MEM.pollResults[item.itemId] = {
-        fairValue:       computeMedian(sample),
-        lowestListed:    lowestPrice,
-        lowestListedQty,
-        secondLowest:    prices[1] ?? null,
-        outlierExcluded,
-        updatedAt:       Date.now(),
-      };
-
-      if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
-      MEM.snapshots[item.itemId].push({ timestamp: Date.now(), listings: rawListings });
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
-      if (MEM.snapshots[item.itemId].length > 500) MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].slice(-500);
-      try {
-        localStorage.setItem(KEYS.snapshots, JSON.stringify(MEM.snapshots));
-      } catch (e) {
-        if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
-          console.warn(`[SnipeTracker] QuotaExceededError: snapshot for itemId ${item.itemId} not saved this cycle.`);
-          showStorageWarning();
-        }
-      }
-
-      MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
-      Store.set(KEYS.trendcache, MEM.trendCache);
-
-      const res = MEM.pollResults[item.itemId];
-      const trendSignal = MEM.trendCache[item.itemId].trend;
-      if (trendSignal === 'falling' && res.secondLowest != null) {
-        res.recommendedSellTarget = res.secondLowest;
-      } else {
-        res.recommendedSellTarget = res.fairValue;
-      }
+      console.log(`[SnipeTracker] raw response itemId=${item.itemId}:`, d);
+      // Step 1: raw response logged — no parsing yet
     } catch (err) {
       console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
       MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
