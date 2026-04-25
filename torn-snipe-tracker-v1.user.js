@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.18.0
+// @version      1.19.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.18.0';
+  const SCRIPT_VERSION = '1.19.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -45,7 +45,8 @@
     position:  'st_position',
     trades:    'st_trades',
     apiKey:    'st_apikey',
-    snapshots: 'st_snapshots',
+    snapshots:  'st_snapshots',
+    trendcache: 'st_trendcache',
   };
 
   const Store = {
@@ -77,7 +78,8 @@
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
     trades:      Store.get(KEYS.trades)    ?? [],
-    snapshots:        Store.get(KEYS.snapshots) ?? {},
+    snapshots:        Store.get(KEYS.snapshots)   ?? {},
+    trendCache:       Store.get(KEYS.trendcache)  ?? {},
     pollResults:      {},     // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
     logBuyIdx:        null,   // index of watchlist item currently in the buy form — not persisted
     storageWarnShown: false,  // whether the quota warning banner has been shown this session
@@ -714,6 +716,9 @@
           showStorageWarning();
         }
       }
+
+      MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
+      Store.set(KEYS.trendcache, MEM.trendCache);
     } catch (err) {
       console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
       MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
