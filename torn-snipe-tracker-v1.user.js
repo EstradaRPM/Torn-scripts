@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.28.0
+// @version      1.29.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.28.0';
+  const SCRIPT_VERSION = '1.29.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -97,6 +97,9 @@
       z-index: 999999;
       width: 520px;
       max-width: calc(100vw - 24px);
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
       background: #080e18;
       border: 1px solid #1a2a3a;
       border-radius: 8px;
@@ -147,7 +150,11 @@
 
     /* ── Body ── */
     #st-body {
-      padding: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+      flex: 1;
     }
     #st-panel.st-collapsed #st-body {
       display: none;
@@ -191,10 +198,14 @@
     /* ── Tab panes ── */
     .st-pane {
       display: none;
-      padding: 14px;
+      padding: 10px;
     }
     .st-pane.st-active {
-      display: block;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      flex: 1;
+      min-height: 0;
     }
 
     /* ── Tables ── */
@@ -386,6 +397,7 @@
 
     /* ── Settings ── */
     .st-settings {
+      flex-shrink: 0;
       border-top: 1px solid #1a2a3a;
       padding: 12px 14px 14px;
       background: #070c14;
@@ -451,6 +463,112 @@
       color: #8aa898;
     }
 
+    /* ── Watchlist card layout ── */
+    #st-watchlist-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .st-card {
+      background: #080e18;
+      border: 1px solid #1a2a3a;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .st-card-disabled {
+      opacity: 0.4;
+    }
+    .st-card-r1 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      background: #0c1622;
+      border-bottom: 1px solid #1a2a3a;
+    }
+    .st-card-name {
+      flex: 1;
+      font-weight: 700;
+      font-size: 13px;
+      color: #d0e0d8;
+    }
+    .st-card-trend-badge {
+      font-size: 11px;
+    }
+    .st-card-r2, .st-card-r3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      border-bottom: 1px solid #0f1e2e;
+    }
+    .st-card-col {
+      padding: 5px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border-right: 1px solid #0f1e2e;
+    }
+    .st-card-col:last-child {
+      border-right: none;
+    }
+    .st-card-lbl {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #3a5060;
+    }
+    .st-card-val {
+      font-size: 12px;
+      color: #c0d0c8;
+    }
+    .st-card-book-toggle {
+      width: 100%;
+      background: none;
+      border: none;
+      border-bottom: 1px solid #0f1e2e;
+      padding: 5px 10px;
+      text-align: left;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #3a5060;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-family: inherit;
+    }
+    .st-card-book-toggle:hover {
+      color: #00ccff;
+      background: rgba(0,204,255,0.04);
+    }
+    .st-card-book-content {
+      background: #05080f;
+      border-bottom: 1px solid #0f1e2e;
+    }
+    .st-card-proj {
+      border-bottom: 1px solid #0f1e2e;
+    }
+    .st-card-log-buy {
+      padding: 6px 10px;
+      border-bottom: 1px solid #0f1e2e;
+      background: #07100a;
+    }
+    .st-card-r6 {
+      display: flex;
+      align-items: center;
+      padding: 5px 10px;
+      gap: 8px;
+      background: #070c14;
+    }
+    .st-card-snap-info {
+      flex: 1;
+      font-size: 10px;
+      color: #3a5060;
+      letter-spacing: 0.02em;
+    }
+
     @media (max-width: 560px) {
       #st-panel {
         width: calc(100vw - 24px);
@@ -485,24 +603,8 @@
 
       <!-- ── SNIPE pane ── -->
       <div id="st-pane-snipe" class="st-pane st-active">
-        <table class="st-table">
-          <thead>
-            <tr>
-              <th></th>
-              <th>Item</th>
-              <th>Fair Value</th>
-              <th>Threshold</th>
-              <th>Lowest</th>
-              <th>Gap %</th>
-              <th>Status</th>
-              <th>Sell Target</th>
-              <th>Trend</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="st-watchlist-body"></tbody>
-        </table>
-        <div class="st-scan-line">Last scan: &mdash;</div>
+        <div id="st-watchlist-cards"></div>
+        <div class="st-scan-line" style="margin-top:10px">Last scan: &mdash;</div>
         <div class="st-btn-row">
           <button id="st-scan-btn" class="st-btn">Scan Now</button>
           <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
@@ -960,25 +1062,25 @@
         <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
       </div>`).join('');
 
-    return `<tr class="st-proj-row"><td colspan="10" style="padding:0 8px 8px">
-      <div style="background:${tier.bg || '#0a1220'};border:1px solid #1a2a3a;border-radius:4px;padding:8px 12px">
+    return `<div class="st-card-proj" style="${tier.bg ? 'background:' + tier.bg : ''}">
+      <div style="padding:8px 12px">
         <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Snipe Projection</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
       </div>
-    </td></tr>`;
+    </div>`;
   }
 
   function renderOrderBook(item, res) {
     const TH = `style="text-align:left;color:#00ccff;font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid #1a2a3a"`;
     const snaps = MEM.snapshots[item.itemId] ?? [];
     if (!snaps.length) {
-      return `<tr class="st-book-row"><td colspan="10" style="padding:0 8px 8px;background:#05080f"><div style="background:#080e18;border:1px solid #1a2a3a;border-radius:4px;padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></td></tr>`;
+      return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></div>`;
     }
 
     const latestSnap = snaps[snaps.length - 1];
     const listings   = latestSnap.listings ?? [];
     if (!listings.length) {
-      return `<tr class="st-book-row"><td colspan="10" style="padding:0 8px 8px;background:#05080f"><div style="background:#080e18;border:1px solid #1a2a3a;border-radius:4px;padding:10px 12px;font-size:12px;color:#3a5060">no listings in latest scan</div></td></tr>`;
+      return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">no listings in latest scan</div></div>`;
     }
 
     const byPrice = new Map();
@@ -1008,81 +1110,82 @@
       ? `<div style="font-size:11px;color:#3a5060;padding:4px 8px 6px">${unitsAhead.toLocaleString()} units listed cheaper</div>`
       : '';
 
-    return `<tr class="st-book-row"><td colspan="10" style="padding:0 8px 8px;background:#05080f">
-      <div style="background:#080e18;border:1px solid #1a2a3a;border-radius:4px;overflow:hidden">
-        <div style="max-height:180px;overflow-y:auto">
-          <table style="width:100%;border-collapse:collapse">
-            <thead><tr><th ${TH}>Price</th><th ${TH}>Qty</th><th ${TH}>Cum. Qty</th></tr></thead>
-            <tbody>${bookRows}</tbody>
-          </table>
-        </div>
-        ${aheadNote}
+    return `<div class="st-card-book-content">
+      <div style="max-height:180px;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr><th ${TH}>Price</th><th ${TH}>Qty</th><th ${TH}>Cum. Qty</th></tr></thead>
+          <tbody>${bookRows}</tbody>
+        </table>
       </div>
-    </td></tr>`;
+      ${aheadNote}
+    </div>`;
   }
 
   function renderWatchlist() {
-    const tbody = panel.querySelector('#st-watchlist-body');
+    const container = panel.querySelector('#st-watchlist-cards');
     if (MEM.watchlist.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
+      container.innerHTML = '<div style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</div>';
+      renderCapitalBar();
       return;
     }
-    tbody.innerHTML = MEM.watchlist.map((item, i) => {
-      const res = MEM.pollResults[item.itemId];
-      let fairValCell, lowestCell, gapCell, statusCell, snipe = false;
+
+    container.innerHTML = MEM.watchlist.map((item, i) => {
+      const res     = MEM.pollResults[item.itemId];
+      const enabled = item.enabled !== false;
+      let fairValStr, lowestStr, gapStr, statusHtml, snipe = false;
 
       if (!res) {
-        fairValCell = '—';
-        lowestCell  = '—';
-        gapCell     = '—';
-        statusCell  = '<span class="st-status-watch">watch</span>';
+        fairValStr = '—'; lowestStr = '—'; gapStr = '—';
+        statusHtml = '<span class="st-status-watch">watch</span>';
       } else if (res.error) {
-        fairValCell = '—';
-        lowestCell  = '—';
-        gapCell     = '—';
-        statusCell  = '<span class="st-status-error">API error</span>';
+        fairValStr = '—'; lowestStr = '—'; gapStr = '—';
+        statusHtml = '<span class="st-status-error">API error</span>';
       } else {
         const fv  = res.fairValue;
         const low = res.lowestListed;
         const outlierNote = res.outlierExcluded
-          ? '<br><span style="font-size:10px;color:#3a5060;letter-spacing:0.02em">⚠ outlier excluded</span>'
+          ? '<br><span style="font-size:10px;color:#3a5060">⚠ outlier excl.</span>'
           : '';
-        fairValCell = fv  != null ? '$' + fv.toLocaleString() + outlierNote : '—';
-        lowestCell  = low != null ? '$' + low.toLocaleString() : '—';
+        fairValStr = fv  != null ? '$' + fv.toLocaleString() + outlierNote : '—';
+        lowestStr  = low != null ? '$' + low.toLocaleString() : '—';
         if (fv != null && low != null) {
           const gap = (fv - low) / fv * 100;
           snipe     = low < fv * (1 - item.threshold / 100);
-          gapCell   = gap.toFixed(1) + '%';
-          statusCell = snipe
+          gapStr    = gap.toFixed(1) + '%';
+          statusHtml = snipe
             ? '<span class="st-status-snipe">SNIPE</span>'
             : '<span class="st-status-watch">watch</span>';
         } else {
-          gapCell    = '—';
-          statusCell = '<span class="st-status-watch">watch</span>';
+          gapStr     = '—';
+          statusHtml = '<span class="st-status-watch">watch</span>';
         }
       }
 
-      const logBuyBtn = snipe
-        ? `<button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px;margin-right:4px">Log Buy</button>`
+      // Row 1: trend signal only (no sparkline/age — those go in Row 6)
+      const cache = MEM.trendCache[item.itemId];
+      let trendSignal;
+      if (!cache || cache.trend === 'insufficient') {
+        trendSignal = '<span class="st-trend-dim">…</span>';
+      } else {
+        const { trend, slopePerHour } = cache;
+        if (trend === 'rising') {
+          const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
+          trendSignal = `<span class="st-trend-rising">▲ <span style="font-size:10px">${s}</span></span>`;
+        } else if (trend === 'falling') {
+          const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
+          trendSignal = `<span class="st-trend-falling">▼ <span style="font-size:10px">${s}</span></span>`;
+        } else {
+          trendSignal = '<span class="st-trend-flat">→ stable</span>';
+        }
+      }
+
+      // Row 2: threshold annotation under fair value label
+      const fvForAnnot    = (res && !res.error) ? res.fairValue : null;
+      const snipePriceAnnot = fvForAnnot != null
+        ? ' ≤ $' + Math.round(fvForAnnot * (1 - item.threshold / 100)).toLocaleString()
         : '';
 
-      const isExpanded  = !!MEM.bookExpanded[item.itemId];
-      const expandIcon  = isExpanded ? '▼' : '▶';
-      const expandBtn   = `<button class="st-book-expand-btn st-rm-btn" data-itemid="${item.itemId}" title="Toggle order book" style="color:#3a5060;margin-right:4px">${expandIcon}</button>`;
-
-      const fvForAnnot = (res && !res.error) ? res.fairValue : null;
-      const snipePriceStr = fvForAnnot != null
-        ? '$' + Math.round(fvForAnnot * (1 - item.threshold / 100)).toLocaleString()
-        : null;
-      const threshCell = `${item.threshold}%<br><span style="font-size:11px;color:#8aa898;white-space:nowrap">${snipePriceStr ? '≤ ' + snipePriceStr : '—'}</span>`;
-
-      const enabled = item.enabled !== false;
-
-      const snaps = MEM.snapshots[item.itemId] ?? [];
-      const snapLabel = snaps.length === 0
-        ? 'no history yet'
-        : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
-
+      // Row 3: sell target + ROI
       const recTarget  = res?.recommendedSellTarget ?? null;
       const manTarget  = item.manualSellTarget ?? null;
       const isManual   = manTarget != null;
@@ -1090,41 +1193,108 @@
       const targetColor  = isManual ? '#00ccff' : '#c0d0c8';
       const targetBorder = isManual ? 'border-color:#004466;' : '';
       const clearBtnHtml = isManual
-        ? `<button class="st-sell-target-clear st-rm-btn" data-idx="${i}" title="Clear manual override" style="flex-shrink:0">✕</button>`
+        ? `<button class="st-sell-target-clear" data-idx="${i}" title="Clear manual override" style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s" onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>`
         : '';
-      const sellTargetCell = `
-        <div style="display:flex;align-items:center;gap:3px">
-          <input class="st-sell-target-input st-input" type="number" min="1" data-idx="${i}"
-                 ${showTarget != null ? `value="${showTarget}"` : 'placeholder="—"'}
-                 style="width:82px;font-size:12px;padding:3px 6px;color:${targetColor};${targetBorder}">
-          ${clearBtnHtml}
-        </div>`;
+
+      const snipePrice = res?.lowestListed ?? null;
+      const roiVal     = (showTarget != null && snipePrice != null && snipePrice > 0)
+        ? ((showTarget - snipePrice) / snipePrice * 100)
+        : null;
+      const tier       = roiVal != null ? roiTier(roiVal) : null;
+      const roiStr     = roiVal != null ? roiVal.toFixed(1) + '%' : '—';
+      const tierStr    = tier?.label || '—';
+      const tierColor  = tier?.color ?? '#c0d0c8';
+
+      // Row 4: order book
+      const isExpanded = !!MEM.bookExpanded[item.itemId];
+      const expandIcon = isExpanded ? '▼' : '▶';
+
+      // Row 6: snapshot info
+      const snaps = MEM.snapshots[item.itemId] ?? [];
+      const snapLabel = snaps.length === 0
+        ? 'no history yet'
+        : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
 
       return `
-        <tr style="${enabled ? '' : 'opacity:0.4'}">
-          <td><input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''} style="cursor:pointer;accent-color:#00ff88;width:15px;height:15px"></td>
-          <td>${item.name}<br><span style="font-size:10px;color:#3a5060;letter-spacing:0.03em">${snapLabel}</span></td>
-          <td>${fairValCell}</td>
-          <td>${threshCell}</td>
-          <td>${lowestCell}</td>
-          <td>${gapCell}</td>
-          <td>${statusCell}</td>
-          <td>${sellTargetCell}</td>
-          <td>${renderTrendCell(item.itemId)}</td>
-          <td>${logBuyBtn}${expandBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
-        </tr>
-        ${isExpanded ? renderOrderBook(item, res) : ''}
-        ${snipe ? renderProjection(item, res) : ''}
+        <div class="st-card${enabled ? '' : ' st-card-disabled'}">
+
+          <!-- Row 1: checkbox | name | trend | status | remove -->
+          <div class="st-card-r1">
+            <input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''}
+                   style="cursor:pointer;accent-color:#00ff88;width:14px;height:14px;flex-shrink:0">
+            <span class="st-card-name">${item.name}</span>
+            <span class="st-card-trend-badge">${trendSignal}</span>
+            <span>${statusHtml}</span>
+            <button class="st-rm-btn" data-idx="${i}" title="Remove item"
+                    style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s"
+                    onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>
+          </div>
+
+          <!-- Row 2: fair value | lowest price | gap % -->
+          <div class="st-card-r2">
+            <div class="st-card-col">
+              <span class="st-card-lbl">Fair Value (${item.threshold}%${snipePriceAnnot})</span>
+              <span class="st-card-val">${fairValStr}</span>
+            </div>
+            <div class="st-card-col">
+              <span class="st-card-lbl">Lowest Price</span>
+              <span class="st-card-val">${lowestStr}</span>
+            </div>
+            <div class="st-card-col">
+              <span class="st-card-lbl">Gap %</span>
+              <span class="st-card-val">${gapStr}</span>
+            </div>
+          </div>
+
+          <!-- Row 3: sell target | ROI | tier -->
+          <div class="st-card-r3">
+            <div class="st-card-col">
+              <span class="st-card-lbl">Sell Target</span>
+              <div style="display:flex;align-items:center;gap:3px">
+                <input class="st-sell-target-input st-input" type="number" min="1" data-idx="${i}"
+                       ${showTarget != null ? `value="${showTarget}"` : 'placeholder="—"'}
+                       style="width:78px;font-size:12px;padding:3px 6px;color:${targetColor};${targetBorder}">
+                ${clearBtnHtml}
+              </div>
+            </div>
+            <div class="st-card-col">
+              <span class="st-card-lbl">ROI</span>
+              <span class="st-card-val" style="color:${tierColor}">${roiStr}</span>
+            </div>
+            <div class="st-card-col">
+              <span class="st-card-lbl">Tier</span>
+              <span class="st-card-val" style="color:${tierColor}">${tierStr}</span>
+            </div>
+          </div>
+
+          <!-- Row 4: order book toggle + content -->
+          <button class="st-card-book-toggle st-book-expand-btn" data-itemid="${item.itemId}">
+            ${expandIcon} Order Book
+          </button>
+          ${isExpanded ? renderOrderBook(item, res) : ''}
+
+          <!-- Row 5: projection panel (only when SNIPE) -->
+          ${snipe ? renderProjection(item, res) : ''}
+          ${snipe ? `<div class="st-card-log-buy"><button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px">Log Buy</button></div>` : ''}
+
+          <!-- Row 6: snapshot count + sparkline -->
+          <div class="st-card-r6">
+            <span class="st-card-snap-info">${snapLabel}</span>
+            ${renderSparkline(item.itemId)}
+          </div>
+
+        </div>
       `;
     }).join('');
-    tbody.querySelectorAll('.st-rm-btn').forEach(btn => {
+
+    container.querySelectorAll('.st-rm-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         MEM.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
         Store.set(KEYS.watchlist, MEM.watchlist);
         renderWatchlist();
       });
     });
-    tbody.querySelectorAll('.st-log-buy-btn').forEach(btn => {
+    container.querySelectorAll('.st-log-buy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         MEM.logBuyIdx = parseInt(btn.dataset.idx, 10);
         const item = MEM.watchlist[MEM.logBuyIdx];
@@ -1135,7 +1305,7 @@
         buyQtyInput.focus();
       });
     });
-    tbody.querySelectorAll('.st-toggle-chk').forEach(chk => {
+    container.querySelectorAll('.st-toggle-chk').forEach(chk => {
       chk.addEventListener('change', () => {
         const idx = parseInt(chk.dataset.idx, 10);
         MEM.watchlist[idx].enabled = chk.checked;
@@ -1143,7 +1313,7 @@
         renderWatchlist();
       });
     });
-    tbody.querySelectorAll('.st-sell-target-input').forEach(input => {
+    container.querySelectorAll('.st-sell-target-input').forEach(input => {
       input.addEventListener('change', () => {
         const idx = parseInt(input.dataset.idx, 10);
         const val = parseInt(input.value, 10);
@@ -1154,7 +1324,7 @@
         }
       });
     });
-    tbody.querySelectorAll('.st-sell-target-clear').forEach(btn => {
+    container.querySelectorAll('.st-sell-target-clear').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.idx, 10);
         delete MEM.watchlist[idx].manualSellTarget;
@@ -1162,7 +1332,7 @@
         renderWatchlist();
       });
     });
-    tbody.querySelectorAll('.st-book-expand-btn').forEach(btn => {
+    container.querySelectorAll('.st-book-expand-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const itemId = parseInt(btn.dataset.itemid, 10);
         MEM.bookExpanded[itemId] = !MEM.bookExpanded[itemId];
