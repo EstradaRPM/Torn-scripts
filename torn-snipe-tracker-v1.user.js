@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.4
+// @version      1.36.5
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.4';
+  const SCRIPT_VERSION = '1.36.5';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -790,7 +790,7 @@
 
   function calculateTrend(itemId) {
     const TREND_BAND_PCT    = 0.005;           // 0.5% of current price per hour; tune here
-    const MIN_TIMESPAN_MS   = 60 * 60 * 1000; // 1 hour minimum span; tune here
+    const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hour minimum span; tune here
 
     const snaps = MEM.snapshots[itemId] ?? [];
     if (snaps.length < 6) {
@@ -891,9 +891,18 @@
     const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
     const fairValue    = p50;
 
-    // Lowest listing with meaningful quantity priced below fair value.
-    // Listing above this price means sitting unsold until that block clears.
+    // Informational: any large-quantity listing below fair value.
     const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
+
+    // Actionable flood play requires two hard constraints:
+    // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
+    //    Ensures the flood is actually setting the market bottom, not lurking mid-range.
+    // 2. Fair value is at least threshold% above the flood — a clearly profitable exit exists.
+    //    Uses the item's own snipe threshold so the bar matches the user's margin expectations.
+    const firstNonOutlierPrice = merged.find(l => l.price >= outlierFloor)?.price ?? p25;
+    const isFloodPlay = marketFlood != null
+      && marketFlood.price <= firstNonOutlierPrice * 1.05
+      && fairValue >= marketFlood.price * (1 + item.threshold / 100);
 
     // Historical fair-value series for 7-day range display
     const historicalFVs = (MEM.snapshots[item.itemId] ?? [])
@@ -923,6 +932,7 @@
       secondLowest:    merged[1]?.price ?? null,
       listings:        merged,
       marketFlood,
+      isFloodPlay,
       historicalMedian,
       historicalLow,
       historicalHigh,
@@ -946,9 +956,13 @@
     MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
     Store.set(KEYS.trendcache, MEM.trendCache);
 
-    // If a large block sits below fair value, you cannot sell above it —
-    // that price is the real ceiling regardless of what fair value says.
-    const sellCeiling = marketFlood?.price ?? fairValue;
+    // Snipe sell ceiling: when there's a true outlier snipe (single low-qty listing below
+    // outlierFloor), find any large block between the snipe and FV — you can't sell above it.
+    // When the flood IS the floor (no outlier below it), no blocker applies and ceiling = FV.
+    const sniperBlocker = outlierExcluded
+      ? merged.find(l => l.quantity >= 100 && l.price > merged[0].price && l.price < fairValue)
+      : null;
+    const sellCeiling = sniperBlocker?.price ?? fairValue;
 
     const trendSignal = MEM.trendCache[item.itemId].trend;
     if (trendSignal === 'falling') {
@@ -1259,7 +1273,7 @@
         if (fv != null && low != null) {
           const gap = (fv - low) / fv * 100;
           snipe   = low < fv * (1 - item.threshold / 100);
-          isFlood = !snipe && res.marketFlood != null;
+          isFlood = !snipe && res.isFloodPlay === true;
           gapStr  = gap.toFixed(1) + '%';
           statusHtml = snipe
             ? '<span class="st-status-snipe">SNIPE</span>'
