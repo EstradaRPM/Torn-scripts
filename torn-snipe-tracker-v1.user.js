@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.24.0
+// @version      1.25.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.24.0';
+  const SCRIPT_VERSION = '1.25.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -80,9 +80,10 @@
     trades:      Store.get(KEYS.trades)    ?? [],
     snapshots:        Store.get(KEYS.snapshots)   ?? {},
     trendCache:       Store.get(KEYS.trendcache)  ?? {},
-    pollResults:      {},     // itemId -> { fairValue, lowestListed, updatedAt } — not persisted
-    logBuyIdx:        null,   // index of watchlist item currently in the buy form — not persisted
-    storageWarnShown: false,  // whether the quota warning banner has been shown this session
+    pollResults:      {},   // itemId -> { fairValue, lowestListed, … } — not persisted
+    bookExpanded:     {},   // itemId -> bool — not persisted
+    logBuyIdx:        null,
+    storageWarnShown: false,
   };
 
   // ─── Styles ───────────────────────────────────────────────────────────────
@@ -857,6 +858,59 @@
     return `<svg width="${W}" height="${H}" style="display:block;margin-top:3px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   }
 
+  function renderOrderBook(item, res) {
+    const TH = `style="text-align:left;color:#00ccff;font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid #1a2a3a"`;
+    const snaps = MEM.snapshots[item.itemId] ?? [];
+    if (!snaps.length) {
+      return `<tr class="st-book-row"><td colspan="10" style="padding:0 8px 8px;background:#05080f"><div style="background:#080e18;border:1px solid #1a2a3a;border-radius:4px;padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></td></tr>`;
+    }
+
+    const latestSnap = snaps[snaps.length - 1];
+    const listings   = latestSnap.listings ?? [];
+    if (!listings.length) {
+      return `<tr class="st-book-row"><td colspan="10" style="padding:0 8px 8px;background:#05080f"><div style="background:#080e18;border:1px solid #1a2a3a;border-radius:4px;padding:10px 12px;font-size:12px;color:#3a5060">no listings in latest scan</div></td></tr>`;
+    }
+
+    const byPrice = new Map();
+    for (const l of listings) byPrice.set(l.price, (byPrice.get(l.price) ?? 0) + l.quantity);
+    let cumQty = 0;
+    const tiers = [...byPrice.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([price, qty]) => { cumQty += qty; return { price, qty, cumQty }; });
+
+    const effectiveTarget = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
+    const unitsAhead = effectiveTarget != null
+      ? tiers.filter(t => t.price < effectiveTarget).reduce((s, t) => s + t.qty, 0)
+      : null;
+
+    const bookRows = tiers.map(t => {
+      const isPos    = effectiveTarget != null && t.price === effectiveTarget;
+      const rowStyle = isPos ? 'background:rgba(0,204,255,0.07)' : '';
+      const posNote  = isPos ? ' <span style="font-size:10px;color:#00ccff;opacity:0.6">← your position</span>' : '';
+      return `<tr style="${rowStyle}">
+        <td style="padding:3px 8px;font-size:12px;color:#c0d0c8">$${t.price.toLocaleString()}${posNote}</td>
+        <td style="padding:3px 8px;font-size:12px;color:#8aa898">${t.qty.toLocaleString()}</td>
+        <td style="padding:3px 8px;font-size:12px;color:#6a8070">${t.cumQty.toLocaleString()}</td>
+      </tr>`;
+    }).join('');
+
+    const aheadNote = unitsAhead != null && unitsAhead > 0
+      ? `<div style="font-size:11px;color:#3a5060;padding:4px 8px 6px">${unitsAhead.toLocaleString()} units listed cheaper</div>`
+      : '';
+
+    return `<tr class="st-book-row"><td colspan="10" style="padding:0 8px 8px;background:#05080f">
+      <div style="background:#080e18;border:1px solid #1a2a3a;border-radius:4px;overflow:hidden">
+        <div style="max-height:180px;overflow-y:auto">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr><th ${TH}>Price</th><th ${TH}>Qty</th><th ${TH}>Cum. Qty</th></tr></thead>
+            <tbody>${bookRows}</tbody>
+          </table>
+        </div>
+        ${aheadNote}
+      </div>
+    </td></tr>`;
+  }
+
   function renderWatchlist() {
     const tbody = panel.querySelector('#st-watchlist-body');
     if (MEM.watchlist.length === 0) {
@@ -902,6 +956,10 @@
         ? `<button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px;margin-right:4px">Log Buy</button>`
         : '';
 
+      const isExpanded  = !!MEM.bookExpanded[item.itemId];
+      const expandIcon  = isExpanded ? '▼' : '▶';
+      const expandBtn   = `<button class="st-book-expand-btn st-rm-btn" data-itemid="${item.itemId}" title="Toggle order book" style="color:#3a5060;margin-right:4px">${expandIcon}</button>`;
+
       const fvForAnnot = (res && !res.error) ? res.fairValue : null;
       const snipePriceStr = fvForAnnot != null
         ? '$' + Math.round(fvForAnnot * (1 - item.threshold / 100)).toLocaleString()
@@ -943,8 +1001,9 @@
           <td>${statusCell}</td>
           <td>${sellTargetCell}</td>
           <td>${renderTrendCell(item.itemId)}</td>
-          <td>${logBuyBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
+          <td>${logBuyBtn}${expandBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
         </tr>
+        ${isExpanded ? renderOrderBook(item, res) : ''}
       `;
     }).join('');
     tbody.querySelectorAll('.st-rm-btn').forEach(btn => {
@@ -989,6 +1048,13 @@
         const idx = parseInt(btn.dataset.idx, 10);
         delete MEM.watchlist[idx].manualSellTarget;
         Store.set(KEYS.watchlist, MEM.watchlist);
+        renderWatchlist();
+      });
+    });
+    tbody.querySelectorAll('.st-book-expand-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = parseInt(btn.dataset.itemid, 10);
+        MEM.bookExpanded[itemId] = !MEM.bookExpanded[itemId];
         renderWatchlist();
       });
     });
