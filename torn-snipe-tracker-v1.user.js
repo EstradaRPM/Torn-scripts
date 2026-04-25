@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.30.1
+// @version      1.31.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -11,6 +11,7 @@
 // @match        https://www.torn.com/page.php*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
+// @connect      weav3r.dev
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
 // @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
 // ==/UserScript==
@@ -27,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.30.1';
+  const SCRIPT_VERSION = '1.31.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -826,16 +827,26 @@
   }
 
   async function fetchItemPrice(item) {
-    const key = getApiKey();
-    const url = `https://api.torn.com/market/${item.itemId}?selections=bazaar,itemmarket&key=${key}`;
-    console.log(`[SnipeTracker] fetch → market/${item.itemId}?selections=bazaar,itemmarket`);
+    const key       = getApiKey();
+    const weav3rUrl = `https://weav3r.dev/api/marketplace/${item.itemId}`;
+    const tornUrl   = `https://api.torn.com/v2/market/${item.itemId}/itemmarket?key=${key}`;
+
+    console.log(`[SnipeTracker] fetch weav3r → marketplace/${item.itemId}`);
     try {
-      const text = await gmFetch(url);
+      const text = await gmFetch(weav3rUrl);
       const d    = JSON.parse(text);
-      console.log(`[SnipeTracker] raw response itemId=${item.itemId}:`, JSON.stringify(d));
-      // Step 1: raw response logged — no parsing yet
+      console.log(`[SnipeTracker] weav3r raw response itemId=${item.itemId}:`, JSON.stringify(d));
     } catch (err) {
-      console.error(`[SnipeTracker] fetchItemPrice failed for itemId ${item.itemId}:`, err.message);
+      console.error(`[SnipeTracker] weav3r fetch failed for itemId ${item.itemId}:`, err.message);
+    }
+
+    console.log(`[SnipeTracker] fetch torn → v2/market/${item.itemId}/itemmarket`);
+    try {
+      const text = await gmFetch(tornUrl);
+      const d    = JSON.parse(text);
+      console.log(`[SnipeTracker] torn raw response itemId=${item.itemId}:`, JSON.stringify(d));
+    } catch (err) {
+      console.error(`[SnipeTracker] torn fetch failed for itemId ${item.itemId}:`, err.message);
       MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
     }
   }
