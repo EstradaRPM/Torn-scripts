@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.0
+// @version      1.36.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.0';
+  const SCRIPT_VERSION = '1.36.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -750,25 +750,17 @@
     });
   }
 
-  // Volume-weighted percentile fair value using full listing depth.
-  // Returns p25/p50/p75 prices by cumulative quantity so a single bulk listing
-  // at a weird price doesn't distort the estimate the way a simple top-N median would.
+  // Listing-count percentile fair value. Each listing is one data point regardless
+  // of quantity — a bulk seller with 500 units gets one vote, not 500, so large
+  // cheap inventories can't drag the fair value to the market floor.
   function computeFairValue(listings) {
     if (!listings.length) return { p25: null, p50: null, p75: null };
-    const sorted   = [...listings].sort((a, b) => a.price - b.price);
-    const totalQty = sorted.reduce((s, l) => s + (l.quantity || 1), 0);
-    let cumQty = 0, p25 = null, p50 = null, p75 = null;
-    for (const l of sorted) {
-      cumQty += (l.quantity || 1);
-      if (p25 === null && cumQty >= totalQty * 0.25) p25 = l.price;
-      if (p50 === null && cumQty >= totalQty * 0.50) p50 = l.price;
-      if (p75 === null && cumQty >= totalQty * 0.75) p75 = l.price;
-      if (p75 !== null) break;
-    }
+    const sorted = [...listings].sort((a, b) => a.price - b.price);
+    const n = sorted.length;
     return {
-      p25: p25 ?? sorted[0].price,
-      p50: p50 ?? sorted[Math.floor(sorted.length / 2)].price,
-      p75: p75 ?? sorted[sorted.length - 1].price,
+      p25: sorted[Math.floor(n * 0.25)].price,
+      p50: sorted[Math.floor(n * 0.50)].price,
+      p75: sorted[Math.floor(n * 0.75)].price,
     };
   }
 
