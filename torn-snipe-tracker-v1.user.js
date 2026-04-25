@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.32.1
+// @version      1.33.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.32.1';
+  const SCRIPT_VERSION = '1.33.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -850,12 +850,29 @@
       itemMktListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.amount, source: 'itemmarket' }));
     } catch (err) {
       console.error(`[SnipeTracker] torn fetch failed for itemId ${item.itemId}:`, err.message);
-      MEM.pollResults[item.itemId] = { error: true, errorMsg: err.message, updatedAt: Date.now() };
     }
 
     const merged = [...bazaarListings, ...itemMktListings].sort((a, b) => a.price - b.price);
     console.log(`[SnipeTracker] merged listings itemId=${item.itemId}:`, JSON.stringify(merged));
-    // Step 2: merged array logged — no further processing yet
+
+    if (!merged.length) {
+      MEM.pollResults[item.itemId] = { error: true, errorMsg: 'no listings found', updatedAt: Date.now() };
+      return;
+    }
+
+    let sample, outlierExcluded = false;
+    if (merged.length >= 2 && merged[0].price < merged[1].price * (1 - item.threshold / 100)) {
+      sample          = merged.slice(1, 6).map(l => l.price);
+      outlierExcluded = true;
+    } else {
+      sample = merged.slice(0, 5).map(l => l.price);
+    }
+
+    MEM.pollResults[item.itemId] = {
+      fairValue:       computeMedian(sample),
+      outlierExcluded,
+      updatedAt:       Date.now(),
+    };
   }
 
   // ─── Poll loop ────────────────────────────────────────────────────────────
