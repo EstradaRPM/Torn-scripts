@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.36.3
+// @version      1.36.4
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -28,7 +28,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.36.3';
+  const SCRIPT_VERSION = '1.36.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -247,6 +247,13 @@
       font-size: 12px;
       letter-spacing: 0.05em;
       text-shadow: 0 0 8px rgba(0,255,136,0.45);
+    }
+    .st-status-flood {
+      color: #ff9944;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-shadow: 0 0 8px rgba(255,153,68,0.45);
     }
     .st-status-watch {
       color: #7a9888;
@@ -783,7 +790,7 @@
 
   function calculateTrend(itemId) {
     const TREND_BAND_PCT    = 0.005;           // 0.5% of current price per hour; tune here
-    const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hours minimum span; tune here
+    const MIN_TIMESPAN_MS   = 60 * 60 * 1000; // 1 hour minimum span; tune here
 
     const snaps = MEM.snapshots[itemId] ?? [];
     if (snaps.length < 6) {
@@ -1086,6 +1093,43 @@
       </div>`;
   }
 
+  function renderFloodPlay(item, res) {
+    const flood = res?.marketFlood;
+    const fv    = res?.fairValue;
+    if (!flood || !fv) return '';
+
+    // Units listed between flood price and fair value — must sell before you can hit FV.
+    const competingUnits = (res.listings ?? [])
+      .filter(l => l.price > flood.price && l.price < fv)
+      .reduce((s, l) => s + l.quantity, 0);
+
+    const discount = ((fv - flood.price) / fv * 100);
+    const roi      = ((fv - flood.price) / flood.price * 100);
+    const fmt      = n => '$' + Math.round(n).toLocaleString();
+    const compColor = competingUnits > 1000 ? '#ff4444' : competingUnits > 200 ? '#ff9944' : '#00ff88';
+
+    const stats = [
+      { label: 'Flood Price',     value: fmt(flood.price),                style: 'color:#ff9944' },
+      { label: 'Flood Qty',       value: flood.quantity.toLocaleString(), style: '' },
+      { label: 'Discount',        value: discount.toFixed(1) + '%',       style: 'color:#ff9944' },
+      { label: 'Max ROI',         value: roi.toFixed(1) + '%',            style: 'color:#ff9944' },
+      { label: 'Competing Units', value: competingUnits.toLocaleString(), style: `color:${compColor}` },
+    ];
+
+    const statsHtml = stats.map(s => `
+      <div class="st-summary-item">
+        <span class="st-summary-label">${s.label}</span>
+        <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
+      </div>`).join('');
+
+    return `<div class="st-card-proj" style="background:rgba(255,153,68,0.06)">
+      <div style="padding:8px 12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#ff9944;margin-bottom:6px">Flood Play</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
+      </div>
+    </div>`;
+  }
+
   function roiTier(roi) {
     if (roi < 0)  return { bg: 'rgba(255,60,60,0.10)',   color: '#ff4444', label: '' };
     if (roi < 3)  return { bg: '',                        color: '#c0d0c8', label: '' };
@@ -1193,7 +1237,7 @@
     container.innerHTML = MEM.watchlist.map((item, i) => {
       const res     = MEM.pollResults[item.itemId];
       const enabled = item.enabled !== false;
-      let fairValStr, lowestStr, gapStr, statusHtml, snipe = false;
+      let fairValStr, lowestStr, gapStr, statusHtml, snipe = false, isFlood = false;
 
       if (!res) {
         fairValStr = '—'; lowestStr = '—'; gapStr = '—';
@@ -1214,10 +1258,13 @@
         lowestStr  = low != null ? '$' + low.toLocaleString() : '—';
         if (fv != null && low != null) {
           const gap = (fv - low) / fv * 100;
-          snipe     = low < fv * (1 - item.threshold / 100);
-          gapStr    = gap.toFixed(1) + '%';
+          snipe   = low < fv * (1 - item.threshold / 100);
+          isFlood = !snipe && res.marketFlood != null;
+          gapStr  = gap.toFixed(1) + '%';
           statusHtml = snipe
             ? '<span class="st-status-snipe">SNIPE</span>'
+            : isFlood
+            ? '<span class="st-status-flood">FLOOD</span>'
             : '<span class="st-status-watch">watch</span>';
         } else {
           gapStr     = '—';
@@ -1341,9 +1388,9 @@
           </button>
           ${isExpanded ? renderOrderBook(item, res) : ''}
 
-          <!-- Row 5: projection panel (only when SNIPE) -->
-          ${snipe ? renderProjection(item, res) : ''}
-          ${snipe ? `<div class="st-card-log-buy"><button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px">Log Buy</button></div>` : ''}
+          <!-- Row 5: snipe projection or flood play panel -->
+          ${snipe ? renderProjection(item, res) : isFlood ? renderFloodPlay(item, res) : ''}
+          ${(snipe || isFlood) ? `<div class="st-card-log-buy"><button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px">Log Buy</button></div>` : ''}
 
           <!-- Row 6: snapshot count + sparkline -->
           <div class="st-card-r6">
