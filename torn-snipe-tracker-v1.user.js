@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.23.0
+// @version      1.24.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/bazaar.php*
@@ -27,7 +27,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.23.0';
+  const SCRIPT_VERSION = '1.24.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -494,6 +494,7 @@
               <th>Lowest</th>
               <th>Gap %</th>
               <th>Status</th>
+              <th>Sell Target</th>
               <th>Trend</th>
               <th></th>
             </tr>
@@ -859,7 +860,7 @@
   function renderWatchlist() {
     const tbody = panel.querySelector('#st-watchlist-body');
     if (MEM.watchlist.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</td></tr>';
       return;
     }
     tbody.innerHTML = MEM.watchlist.map((item, i) => {
@@ -914,6 +915,23 @@
         ? 'no history yet'
         : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
 
+      const recTarget  = res?.recommendedSellTarget ?? null;
+      const manTarget  = item.manualSellTarget ?? null;
+      const isManual   = manTarget != null;
+      const showTarget = isManual ? manTarget : recTarget;
+      const targetColor  = isManual ? '#00ccff' : '#c0d0c8';
+      const targetBorder = isManual ? 'border-color:#004466;' : '';
+      const clearBtnHtml = isManual
+        ? `<button class="st-sell-target-clear st-rm-btn" data-idx="${i}" title="Clear manual override" style="flex-shrink:0">✕</button>`
+        : '';
+      const sellTargetCell = `
+        <div style="display:flex;align-items:center;gap:3px">
+          <input class="st-sell-target-input st-input" type="number" min="1" data-idx="${i}"
+                 ${showTarget != null ? `value="${showTarget}"` : 'placeholder="—"'}
+                 style="width:82px;font-size:12px;padding:3px 6px;color:${targetColor};${targetBorder}">
+          ${clearBtnHtml}
+        </div>`;
+
       return `
         <tr style="${enabled ? '' : 'opacity:0.4'}">
           <td><input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''} style="cursor:pointer;accent-color:#00ff88;width:15px;height:15px"></td>
@@ -923,6 +941,7 @@
           <td>${lowestCell}</td>
           <td>${gapCell}</td>
           <td>${statusCell}</td>
+          <td>${sellTargetCell}</td>
           <td>${renderTrendCell(item.itemId)}</td>
           <td>${logBuyBtn}<button class="st-rm-btn" data-idx="${i}" title="Remove item">✕</button></td>
         </tr>
@@ -950,6 +969,25 @@
       chk.addEventListener('change', () => {
         const idx = parseInt(chk.dataset.idx, 10);
         MEM.watchlist[idx].enabled = chk.checked;
+        Store.set(KEYS.watchlist, MEM.watchlist);
+        renderWatchlist();
+      });
+    });
+    tbody.querySelectorAll('.st-sell-target-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const idx = parseInt(input.dataset.idx, 10);
+        const val = parseInt(input.value, 10);
+        if (val > 0) {
+          MEM.watchlist[idx].manualSellTarget = val;
+          Store.set(KEYS.watchlist, MEM.watchlist);
+          renderWatchlist();
+        }
+      });
+    });
+    tbody.querySelectorAll('.st-sell-target-clear').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        delete MEM.watchlist[idx].manualSellTarget;
         Store.set(KEYS.watchlist, MEM.watchlist);
         renderWatchlist();
       });
