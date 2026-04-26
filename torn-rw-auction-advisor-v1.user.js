@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.10.0
+// @version      1.10.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.10.0';
+  const SCRIPT_VERSION = '1.10.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -392,8 +392,12 @@
   async function fetchTornW3BComp(armorSet, pieceType, rarity) {
     const cacheKey = `${armorSet}_${pieceType}_${rarity}`;
     try {
-      const url  = `https://weav3r.dev/api/ranked-weapons?tab=armor&armorSet=${armorSet}&armorPiece=${pieceType}&rarity=${rarity}&sortField=price&sortDirection=asc`;
-      const data = await apiFetch(url);
+      // Torn's page CSP always blocks fetch() to weav3r.dev — use gmFetch directly.
+      // Omit armorPiece for now to confirm the API returns results and to see the
+      // piece name format TornW3B uses in its response data.
+      const url  = `https://weav3r.dev/api/ranked-weapons?tab=armor&armorSet=${armorSet}&rarity=${rarity}&sortField=price&sortDirection=asc`;
+      const text = await gmFetch(url);
+      const data = JSON.parse(text);
 
       if (!_tornw3bLogDone) {
         console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) full raw:`, JSON.stringify(data));
