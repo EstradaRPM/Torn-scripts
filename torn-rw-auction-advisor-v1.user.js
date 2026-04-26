@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.13.0
+// @version      1.14.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.13.0';
+  const SCRIPT_VERSION = '1.14.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -127,12 +127,21 @@
 
   // ── Armor quality scoring (King's method) ──────────────────────────────────
 
-  // Base bonus % and high-tier threshold by armor set
+  // Base bonus % and high-tier threshold by armor set.
+  // This object is the single source of truth for which sets are actively supported.
+  // To add a new set, append an entry here with verified values — the filter,
+  // scoring, and TornW3B queries all derive their set list from these keys.
   const ARMOR_SCORING = {
     Riot    : { baseBonusPct: 20, highTierThreshold: 26 },
     Assault : { baseBonusPct: 20, highTierThreshold: 26 },
     Dune    : { baseBonusPct: 30, highTierThreshold: 37 },
+    // Delta, Marauder, Vanguard, Sentinel, EOD — add entries here when
+    // base bonus % and high-tier threshold values are confirmed.
   };
+
+  // Sets that trade at or near BB floor; all others (Assault and above) trade
+  // significantly above BB and use the formula result without a floor guard.
+  const BB_FLOOR_SETS = new Set(['Riot', 'Dune']);
 
   /**
    * Returns King's quality score for a single armor piece.
@@ -564,17 +573,17 @@
 
   // ── DOM parsing ─────────────────────────────────────────────────────────────
 
-  const ARMOR_PIECES  = ['Helmet', 'Body', 'Pants', 'Gloves', 'Boots'];
+  // Piece type names across all RW armor sets.
+  // 'Vest' covers Dune Vest; 'Mask' covers Delta Gas Mask.
+  const ARMOR_PIECES  = ['Helmet', 'Body', 'Vest', 'Mask', 'Pants', 'Gloves', 'Boots'];
   const RARITY_GLOWS  = ['red', 'orange', 'yellow'];
 
-  // Regexes against each listing's full text content
-  const RE_QUALITY    = /[Qq]uality[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%/;
-  const RE_BONUS_VAL  = /(?:Impregnable|Impenetrable)[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%/i;
-  const RE_PRICE      = /\$\s*([0-9,]+)/;
-  const RE_TIME       = /\b(\d+d\s*)?\s*(\d+h\s*)?\s*(\d+m)?\b/;
+  const RE_QUALITY = /[Qq]uality[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%/;
+  const RE_PRICE   = /\$\s*([0-9,]+)/;
 
   /**
-   * Parses all Riot and Assault armor listings from the current amarket.php DOM.
+   * Parses all supported RW armor listings from the current amarket.php DOM.
+   * Supported sets are defined by ARMOR_SCORING keys; add a set there to enable it.
    * Populates MEM.listings with one object per qualifying listing.
    *
    * Fields extracted:
@@ -600,10 +609,8 @@
       const uidM = rawTitle.match(/\(\w+\s+(\d+)\)/);
       const uid  = uidM ? parseInt(uidM[1], 10) : null;
 
-      // ── Filter: Riot and Assault only ────────────────────────────────────
-      const armorSet = name.startsWith('Riot')    ? 'Riot'
-                     : name.startsWith('Assault') ? 'Assault'
-                     : null;
+      // ── Filter: supported sets only (derived from ARMOR_SCORING keys) ───
+      const armorSet = Object.keys(ARMOR_SCORING).find(s => name.startsWith(s)) ?? null;
       if (!armorSet) continue;
 
       const pieceType = ARMOR_PIECES.find(p => name.includes(p)) ?? null;
@@ -629,14 +636,15 @@
           .trim() || null;
       }
 
-      // ── Quality % and bonus % via full-text regex ────────────────────────
-      // Torn renders these in stat/tooltip text within the listing element.
-      // Null when not visible in DOM — to be filled from API in Step 10.
-      const liText   = li.textContent;
-      const qualM    = liText.match(RE_QUALITY);
-      const bonusM   = liText.match(RE_BONUS_VAL);
-      const qualityPct = qualM  ? parseFloat(qualM[1])  : null;
-      const bonusPct   = bonusM ? parseFloat(bonusM[1]) : null;
+      // ── Quality % and bonus % ────────────────────────────────────────────
+      // qualityPct: from full listing text via regex.
+      // bonusPct: extracted from the already-parsed bonusType tooltip string —
+      //   works for any armor set without naming specific bonus types.
+      const liText     = li.textContent;
+      const qualM      = liText.match(RE_QUALITY);
+      const qualityPct = qualM ? parseFloat(qualM[1]) : null;
+      const bonusPctM  = bonusType?.match(/(\d+(?:\.\d+)?)\s*%/);
+      const bonusPct   = bonusPctM ? parseFloat(bonusPctM[1]) : null;
 
       // ── Current bid ──────────────────────────────────────────────────────
       // Try a dedicated price element first; fall back to first $ amount in text
@@ -953,7 +961,7 @@
 
   function render() {
     if (!MEM.listings.length) {
-      listingsContent.innerHTML = '<div class="rw-empty">No Riot or Assault armor found on this page.</div>';
+      listingsContent.innerHTML = '<div class="rw-empty">No supported RW armor found on this page.</div>';
       return;
     }
 
@@ -967,8 +975,9 @@
         ? scoreArmorPiece(l.qualityPct, l.bonusPct, baseBonusPct, highTierThreshold)
         : null;
 
-      // BB floor — only meaningful for Riot; Assault does not approach BB
-      const bbFloor = (l.armorSet === 'Riot' && bbRate && l.rarity)
+      // BB floor — applies to sets that trade near BB (Riot, Dune).
+      // Assault and higher-tier sets trade significantly above BB floor.
+      const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
         ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
         : null;
 
@@ -979,7 +988,7 @@
       const maxOffer = refPrice != null
         ? calcMaxOffer({
             refPrice,
-            bbFloor        : l.armorSet === 'Riot' ? bbFloor : null,
+            bbFloor        : BB_FLOOR_SETS.has(l.armorSet) ? bbFloor : null,
             targetProfitPct: MEM.settings.targetProfitPct,
             mugBufferPct   : MEM.settings.mugBufferPct,
             sellViaTrade   : MEM.settings.sellViaTrade,
