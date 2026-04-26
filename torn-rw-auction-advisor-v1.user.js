@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.5
+// @version      1.15.6
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.5';
+  const SCRIPT_VERSION = '1.15.6';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -270,27 +270,33 @@
 
   // King's guide defines three distinct pricing regimes:
   //
-  //   base       — quality <25% AND bonus at lower end (≤ baseBonusPct + 1%)
+  //   base       — quality <25% AND bonus not meaningfully elevated above base
   //                Riot/Dune: buy at/near BB floor
   //                Assault:   bid 10–20% below item market value
   //
-  //   hq         — quality ≥25% OR bonus above base tier
+  //   hq         — quality ≥25% OR bonus meaningfully above base tier
   //                Any set: bid no more than 2× the cheapest base-stat listing
   //
   //   exceptional — quality ≥40% AND bonus ≥ highTierThreshold (e.g. ≥26% Assault/Riot)
   //                Any set: bid no more than 2.5× the cheapest base-stat listing
   //
+  // "Base-stat listing" = cheapest item market / bazaar listing near baseBonusPct (±bonusMatchRange),
+  // quality-agnostic. This is the price floor — what the piece costs with no special stats.
+  // The cap is a hard ceiling only; refPrice still comes from quality-aware comps for all tiers.
   // "NEVER BUY DIRECTLY FROM ITEM MARKET" for hq/exceptional — market prices
-  // for high-quality pieces are 3–4× base. Quality-matched market comps are
-  // inflated and must not be used as the resale reference for these tiers.
-  // The reference is always the cheapest available listing × the tier multiplier.
+  // run 3–4× base for quality pieces. The cap guards against the formula
+  // recommending bids that track those inflated listings.
 
   const HQ_MULTIPLIER          = 2.0;
   const EXCEPTIONAL_MULTIPLIER = 2.5;
 
   function classifyArmorTier(qualityPct, bonusPct, baseBonusPct, highTierThreshold) {
-    const isBaseQual  = qualityPct == null || qualityPct < 25;
-    const isBaseBonus = bonusPct   == null || bonusPct <= baseBonusPct + 1;
+    const isBaseQual = qualityPct == null || qualityPct < 25;
+    // Bonus must exceed base by more than 1/3 of the range to exceptional
+    // to count as "elevated". The old +1 tolerance made 31% Dune = "HQ",
+    // which is wrong — one point above base is not meaningfully high quality.
+    const bonusGap      = Math.ceil((highTierThreshold - baseBonusPct) / 3);
+    const isBaseBonus   = bonusPct == null || bonusPct <= baseBonusPct + bonusGap;
     if (isBaseQual && isBaseBonus) return 'base';
 
     const isExcepQual  = qualityPct != null && qualityPct >= 40;
@@ -588,7 +594,9 @@
    * @param {number|null} qualityPct  - auction listing quality; null = skip quality filter
    * @returns {{ price: number, avgQuality: number|null, qualityMatched: boolean } | null}
    */
-  function getItemMarketComp(itemId, bonusPct, qualityPct = null) {
+  // strict=true: return null if no bonus-matched listings exist (no fallback to all listings).
+  // Used when computing King's cap anchor — we must find a true base-stat price, not any price.
+  function getItemMarketComp(itemId, bonusPct, qualityPct = null, { strict = false } = {}) {
     const comp = itemId ? MEM.itemMarketComps[itemId] : null;
     if (!comp) return null;
 
@@ -596,6 +604,7 @@
       const bv = l.item_details?.bonuses?.[0]?.value ?? null;
       return bv != null && Math.abs(bv - bonusPct) <= MEM.settings.bonusMatchRange;
     });
+    if (strict && !bonusMatched.length) return null;
     const bonusSrc = bonusMatched.length ? bonusMatched : comp.listings;
 
     // All bonus-matched quality+price pairs — used by caller for interpolation
@@ -661,7 +670,9 @@
    * @param {number|null} qualityPct  - auction listing quality; null = skip quality filter
    * @returns {{ price: number, avgQuality: number|null, qualityMatched: boolean } | null}
    */
-  function getTornW3BComp(armorName, armorSet, rarity, bonusPct, qualityPct = null) {
+  // strict=true: return null if no bonus-matched listings exist (no fallback).
+  // Used when computing King's cap anchor — we must find a true base-stat price.
+  function getTornW3BComp(armorName, armorSet, rarity, bonusPct, qualityPct = null, { strict = false } = {}) {
     const cacheKey = `${armorSet}_${rarity}`;
     const all      = MEM.tornw3bComps[cacheKey];
     if (!all?.length) return null;
@@ -1283,7 +1294,7 @@
       const capColor      = tier === 'exceptional' ? '#e060e0' : '#60a0f0';
       const capMult       = tier === 'exceptional' ? EXCEPTIONAL_MULTIPLIER : HQ_MULTIPLIER;
       const offerBadge    = kingCapActive
-        ? `&thinsp;<span style="color:${capColor};font-size:10px;font-weight:700" title="King's guide cap: ${fmtM(l.baseCompPrice)} × ${capMult} — formula would allow ${fmtM(formulaOffer)} but market price for HQ may be inflated">cap</span>`
+        ? `&thinsp;<span style="color:${capColor};font-size:10px;font-weight:700" title="King's cap: base-stat price ${fmtM(l.baseCompPrice)} × ${capMult} = ${fmtM(l.kingCap)} (HQ market prices run 3–4× base; formula gave ${fmtM(formulaOffer)})">cap</span>`
         : offerRiskFlag
           ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical auction median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
           : '';
@@ -1585,13 +1596,14 @@
       }
 
       // ── King's cap for HQ/exceptional (ceiling on maxOffer, not on refPrice) ─
-      // Cheapest bonus-matched listing regardless of quality = base stat anchor.
+      // Anchor = cheapest near-baseBonusPct listing (quality-agnostic), strict match only.
+      // strict=true prevents fallback to all listings — if no base-stat comps exist, cap is null.
       // Cap = anchor × tier multiplier. Applied in render(), not here.
       let kingCap       = null;
       let baseCompPrice = null;
       if (tier === 'hq' || tier === 'exceptional') {
-        const imBase  = getItemMarketComp(itemId, listing.bonusPct, null);
-        const w3bBase = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, null);
+        const imBase  = getItemMarketComp(itemId, baseBonusPct, null, { strict: true });
+        const w3bBase = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, baseBonusPct, null, { strict: true });
         const basePrice = Math.min(imBase?.price ?? Infinity, w3bBase?.price ?? Infinity);
         if (basePrice < Infinity) {
           baseCompPrice = basePrice;
