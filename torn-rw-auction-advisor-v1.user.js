@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.4
+// @version      1.9.5
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.4';
+  const SCRIPT_VERSION = '1.9.5';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -440,10 +440,15 @@
       // Skip structural spacers
       if (li.classList.contains('last') || li.classList.contains('clear')) continue;
 
-      // ── Item name ────────────────────────────────────────────────────────
-      const nameEl = li.querySelector('span.title');
+      // ── Item name and per-instance UID ───────────────────────────────────
+      const nameEl  = li.querySelector('span.title');
       if (!nameEl) continue;
-      const name = nameEl.textContent.trim();
+      const rawTitle = nameEl.textContent;
+      const name     = rawTitle.trim().split('\n')[0].trim();
+
+      // UID appears as "(Common XXXX)" in the title text; matches item_details.uid in the API
+      const uidM = rawTitle.match(/\(\w+\s+(\d+)\)/);
+      const uid  = uidM ? parseInt(uidM[1], 10) : null;
 
       // ── Filter: Riot and Assault only ────────────────────────────────────
       const armorSet = name.startsWith('Riot')    ? 'Riot'
@@ -507,7 +512,7 @@
         if (timeM) timeRemaining = timeM[0].trim();
       }
 
-      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, currentBid, timeRemaining });
+      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, uid, currentBid, timeRemaining });
     }
 
     MEM.listings = results;
@@ -1042,28 +1047,28 @@
     }
   }
 
+  // Populates qualityPct on each listing by matching the per-item UID extracted
+  // from the DOM against item_details.uid in the already-fetched itemmarket data.
+  // quality in the API is a 0–1 decimal; multiply by 100 for percentage.
+  function enrichListingsFromMarketData() {
+    for (const listing of MEM.listings) {
+      if (listing.qualityPct != null || !listing.uid) continue;
+      const itemId = armorItemIds[listing.name];
+      const comp   = itemId ? MEM.itemMarketComps[itemId] : null;
+      if (!comp?.listings) continue;
+      const match = comp.listings.find(ml => ml.item_details?.uid === listing.uid);
+      if (match?.item_details?.stats?.quality != null) {
+        listing.qualityPct = match.item_details.stats.quality * 100;
+      }
+    }
+  }
+
   // Orchestrates page-load data pipeline:
   //   1. parse DOM → immediate render
   //   2. fetch BB rate → render with floor data
-  //   3. resolve armor item IDs → fetch all market comps in parallel → final render
+  //   3. resolve armor item IDs → fetch all market comps → enrich listings → final render
   async function init() {
     parseAuctionListings();
-
-    // Step 1 diagnostic — temporary, remove after confirmation
-    MEM.listings.forEach((l, i) => {
-      console.log(
-        `[RW Advisor] Step1 listing #${i + 1}:` +
-        ` armorName="${l.name}"` +
-        ` pieceType="${l.pieceType}"` +
-        ` rarity="${l.rarity}"` +
-        ` bonusType="${l.bonusType}"` +
-        ` bonusPct=${l.bonusPct}` +
-        ` qualityPct=${l.qualityPct}` +
-        ` currentBid=${l.currentBid}` +
-        ` timeRemaining="${l.timeRemaining}"`
-      );
-    });
-
     render();
 
     if (!MEM.listings.length) return;
@@ -1084,6 +1089,20 @@
       MEM.listings.map(l => armorItemIds[l.name]).filter(Boolean)
     )];
     await Promise.all(uniqueIds.map(id => fetchItemMarketComp(id)));
+
+    enrichListingsFromMarketData();
+
+    // Step 2 diagnostic — temporary, remove after confirmation
+    MEM.listings.forEach((l, i) => {
+      console.log(
+        `[RW Advisor] Step2 listing #${i + 1}:` +
+        ` armorName="${l.name}"` +
+        ` uid=${l.uid}` +
+        ` bonusPct=${l.bonusPct}` +
+        ` qualityPct=${l.qualityPct}` +
+        ` rarity="${l.rarity}"`
+      );
+    });
 
     render();
   }
