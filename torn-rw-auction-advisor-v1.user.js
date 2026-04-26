@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.11.1
+// @version      1.12.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.11.1';
+  const SCRIPT_VERSION = '1.12.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -174,6 +174,57 @@
         `[RW Advisor] scoreArmorPiece(${q}, ${b}) [${label}] =`,
         result,
         pass ? '✓' : `✗ expected ${expect}`
+      );
+    });
+  })();
+
+  // ── Quality premium multiplier ─────────────────────────────────────────────
+
+  /**
+   * Returns a price multiplier for pieces whose quality exceeds the market comp
+   * average. Based on rw-pricing-logic.md §4 (high quality / high bonus % armor):
+   *   - Exceptional (quality ≥20 pts above comp avg AND high bonus tier): 2.5×
+   *   - Good (quality ≥15 pts above comp avg OR ≥10 pts above with high bonus): 2.0×
+   *   - Base: 1.0×
+   *
+   * The comp avg quality is already filtered to matching-bonus listings, so the
+   * delta is a clean quality-only comparison within the same bonus tier.
+   *
+   * Returns 1.0 when either quality value is unknown.
+   *
+   * @param {number|null} listingQualityPct
+   * @param {number|null} compAvgQuality      - average quality of matched comp listings
+   * @param {number|null} bonusPct
+   * @param {number}      highTierThreshold   - e.g. 26 for Riot/Assault
+   * @returns {number}
+   */
+  function getQualityMultiplier(listingQualityPct, compAvgQuality, bonusPct, highTierThreshold) {
+    if (listingQualityPct == null || compAvgQuality == null) return 1.0;
+    const delta      = listingQualityPct - compAvgQuality;
+    const isHighBonus = bonusPct != null && bonusPct >= highTierThreshold;
+    if (delta >= 20 && isHighBonus) return 2.5;
+    if (delta >= 15 || (delta >= 10 && isHighBonus)) return 2.0;
+    return 1.0;
+  }
+
+  // Self-test
+  (() => {
+    const cases = [
+      { lq: 70,   cq: 30,   b: 27, thr: 26, expect: 2.5, label: 'exceptional (delta=40, high bonus)' },
+      { lq: 55,   cq: 30,   b: 27, thr: 26, expect: 2.0, label: 'good (delta=25, high bonus)' },
+      { lq: 50,   cq: 35,   b: 21, thr: 26, expect: 2.0, label: 'good (delta=15, base bonus)' },
+      { lq: 45,   cq: 33,   b: 27, thr: 26, expect: 2.0, label: 'good (delta=12, high bonus)' },
+      { lq: 40,   cq: 33,   b: 21, thr: 26, expect: 1.0, label: 'base (delta=7, no high bonus)' },
+      { lq: 30,   cq: 35,   b: 27, thr: 26, expect: 1.0, label: 'base (listing below comp avg)' },
+      { lq: null, cq: 30,   b: 27, thr: 26, expect: 1.0, label: 'unknown listing quality' },
+      { lq: 50,   cq: null, b: 27, thr: 26, expect: 1.0, label: 'unknown comp avg quality' },
+    ];
+    cases.forEach(({ lq, cq, b, thr, expect, label }) => {
+      const result = getQualityMultiplier(lq, cq, b, thr);
+      const pass   = result === expect;
+      console.log(
+        `[RW Advisor] getQualityMultiplier(lq=${lq}, cq=${cq}, b=${b}) [${label}] =`,
+        result, pass ? '✓' : `✗ expected ${expect}`
       );
     });
   })();
@@ -927,13 +978,22 @@
       // Net Profit / ROI cells: green = positive, red = negative
       const profitColor = netProfit != null ? (netProfit > 0 ? '#00cc66' : '#ff4444') : '';
 
+      // Show base comp price; append multiplier badge when quality premium applies
+      const qualMult      = l.qualityMultiplier ?? 1.0;
+      const baseComp      = l.baseCompPrice ?? refPrice;
+      const compCellInner = baseComp != null
+        ? (qualMult > 1.0
+            ? `${fmtM(baseComp)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700">×${qualMult.toFixed(1)}</span>`
+            : fmtM(baseComp))
+        : '—';
+
       return `<tr>
         <td>${escHtml(l.name)}</td>
         <td>${escHtml(l.rarity ?? '—')}</td>
         <td>${escHtml(l.bonusType ?? '—')}</td>
         <td>${qualityScore != null ? qualityScore.toFixed(1) : '—'}</td>
         <td>${fmtM(bbFloor)}</td>
-        <td>${fmtM(refPrice)}</td>
+        <td>${compCellInner}</td>
         <td>${fmtM(bid)}</td>
         <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}</td>
         <td style="color:${profitColor}">${fmtM(netProfit)}</td>
@@ -1139,14 +1199,22 @@
 
       if (imPrice === Infinity && w3bPrice === Infinity) continue;
 
-      listing.refPrice   = Math.min(imPrice, w3bPrice);
-      listing.imPrice    = imPrice  === Infinity ? null : imPrice;
-      listing.w3bPrice   = w3bPrice === Infinity ? null : w3bPrice;
+      const baseCompPrice  = Math.min(imPrice, w3bPrice);
+      const winner         = w3bPrice <= imPrice ? w3bComp : imComp;
+      const compAvgQuality = winner?.avgQuality ?? null;
 
-      if (listing.qualityPct == null) {
-        const winner = w3bPrice <= imPrice ? w3bComp : imComp;
-        listing.qualityPct = winner?.avgQuality ?? null;
-      }
+      // Fill DOM-missing quality from comp avg before multiplier calc.
+      // When quality was unknown, delta will be 0 → multiplier stays 1.0.
+      if (listing.qualityPct == null) listing.qualityPct = compAvgQuality;
+
+      const { highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
+      const qualMult = getQualityMultiplier(listing.qualityPct, compAvgQuality, listing.bonusPct, highTierThreshold);
+
+      listing.baseCompPrice     = baseCompPrice;
+      listing.qualityMultiplier = qualMult;
+      listing.refPrice          = Math.round(baseCompPrice * qualMult);
+      listing.imPrice           = imPrice  === Infinity ? null : imPrice;
+      listing.w3bPrice          = w3bPrice === Infinity ? null : w3bPrice;
     }
   }
 
