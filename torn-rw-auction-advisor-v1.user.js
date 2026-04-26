@@ -1568,13 +1568,13 @@
 
     isIniting        = true;
     lastAutoInitTime = now;
-    refreshBtn.classList.add('rw-spinning');
+    rwaRefreshBtn.classList.add('rwa-spinning');
     listObserver.disconnect();
     try {
       await init();
     } finally {
       isIniting = false;
-      refreshBtn.classList.remove('rw-spinning');
+      rwaRefreshBtn.classList.remove('rwa-spinning');
       attachObserver();
     }
   }
@@ -1594,7 +1594,7 @@
   const listObserver = new MutationObserver(scheduleReinit);
 
   // Manual refresh — always runs, bypasses cooldown.
-  refreshBtn.addEventListener('click', () => {
+  rwaRefreshBtn.addEventListener('click', () => {
     MEM.historicalSales = {};
     safeInit(true);
   });
