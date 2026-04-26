@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.6.0
+// @version      1.7.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.6.0';
+  const SCRIPT_VERSION = '1.7.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -505,5 +505,422 @@
     );
     return results;
   }
+
+  // ── Panel UI ────────────────────────────────────────────────────────────────
+
+  // Guard against double-injection (e.g. Tampermonkey re-runs on AJAX nav)
+  if (document.getElementById('rw-panel')) return;
+
+  // ── Styles ──────────────────────────────────────────────────────────────────
+
+  const rwStyle = document.createElement('style');
+  rwStyle.textContent = `
+    #rw-panel {
+      position: fixed;
+      top: 80px;
+      right: 20px;
+      z-index: 999999;
+      width: 740px;
+      max-width: calc(100vw - 24px);
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      background: #080e18;
+      border: 1px solid #1a2a3a;
+      border-radius: 8px;
+      box-shadow: 0 4px 32px rgba(0,0,0,0.7);
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 13px;
+      color: #c0d0c8;
+      user-select: none;
+    }
+
+    /* ── Header ── */
+    #rw-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: #0c1622;
+      border-radius: 8px 8px 0 0;
+      cursor: grab;
+      border-bottom: 1px solid #1a2a3a;
+      flex-shrink: 0;
+    }
+    #rw-header:active { cursor: grabbing; }
+
+    #rw-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: #00ff88;
+      text-transform: uppercase;
+      text-shadow: 0 0 12px rgba(0,255,136,0.5);
+    }
+
+    #rw-collapse-btn {
+      background: none;
+      border: 1px solid #2a3a4a;
+      border-radius: 4px;
+      color: #c0d0c8;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 8px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #rw-collapse-btn:hover { border-color: #00ff88; color: #00ff88; }
+
+    /* ── Body ── */
+    #rw-body {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+      flex: 1;
+    }
+    #rw-panel.rw-collapsed #rw-body  { display: none; }
+    #rw-panel.rw-collapsed            { border-radius: 8px; }
+    #rw-panel.rw-collapsed #rw-header { border-bottom: none; border-radius: 8px; }
+
+    /* ── Tabs ── */
+    #rw-tabs {
+      display: flex;
+      border-bottom: 1px solid #1a2a3a;
+      flex-shrink: 0;
+    }
+    .rw-tab {
+      padding: 8px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #4a7060;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .rw-tab:hover        { color: #c0d0c8; }
+    .rw-tab.rw-active    { color: #00ff88; border-bottom-color: #00ff88; }
+
+    /* ── Panes ── */
+    .rw-pane          { display: none; overflow-y: auto; padding: 12px 14px; flex: 1; min-height: 0; }
+    .rw-pane.rw-active { display: flex; flex-direction: column; }
+
+    /* ── Listings table ── */
+    .rw-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .rw-table th {
+      text-align: left;
+      padding: 6px 8px;
+      background: #0c1622;
+      color: #4a7060;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid #1a2a3a;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+    }
+    .rw-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #0f1e2e;
+      vertical-align: middle;
+    }
+    .rw-table tr:hover td      { background: #0a1520; }
+    .rw-table tr:last-child td { border-bottom: none; }
+
+    .rw-empty {
+      text-align: center;
+      color: #4a7060;
+      padding: 28px 0;
+      font-size: 12px;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Settings pane ── */
+    .rw-settings-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #4a7060;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .rw-field       { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    .rw-field label { font-size: 12px; color: #8aa898; }
+    .rw-input {
+      background: #0a1220;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #c0d0c8;
+      font-size: 13px;
+      padding: 5px 8px;
+      width: 110px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .rw-input:focus { border-color: #00ff88; }
+
+    /* Toggle switch */
+    .rw-toggle-row { display: flex; align-items: center; gap: 10px; }
+    .rw-toggle {
+      width: 36px; height: 20px;
+      background: #1a2a3a;
+      border-radius: 10px;
+      position: relative;
+      cursor: pointer;
+      border: none;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .rw-toggle.rw-on { background: #00aa66; }
+    .rw-toggle::after {
+      content: '';
+      width: 14px; height: 14px;
+      background: #c0d0c8;
+      border-radius: 50%;
+      position: absolute;
+      top: 3px; left: 3px;
+      transition: left 0.2s;
+    }
+    .rw-toggle.rw-on::after { left: 19px; }
+    .rw-toggle-label { font-size: 12px; color: #8aa898; }
+
+    /* ── Footer ── */
+    #rw-footer {
+      padding: 5px 14px;
+      font-size: 11px;
+      color: #2a4a3a;
+      border-top: 1px solid #1a2a3a;
+      text-align: right;
+      flex-shrink: 0;
+    }
+  `;
+  document.head.appendChild(rwStyle);
+
+  // ── Panel HTML ───────────────────────────────────────────────────────────────
+
+  const panel = document.createElement('div');
+  panel.id = 'rw-panel';
+  panel.innerHTML = `
+    <div id="rw-header">
+      <span id="rw-title">RW Auction Advisor v${SCRIPT_VERSION}</span>
+      <button id="rw-collapse-btn" title="Toggle panel">&minus;</button>
+    </div>
+
+    <div id="rw-body">
+      <div id="rw-tabs">
+        <div class="rw-tab rw-active" data-tab="listings">Listings</div>
+        <div class="rw-tab"           data-tab="settings">Settings</div>
+      </div>
+
+      <!-- Listings pane -->
+      <div id="rw-pane-listings" class="rw-pane rw-active">
+        <div id="rw-listings-content" style="overflow-y:auto;flex:1">
+          <div class="rw-empty">Scanning page…</div>
+        </div>
+      </div>
+
+      <!-- Settings pane -->
+      <div id="rw-pane-settings" class="rw-pane">
+        <div class="rw-settings-label">Pricing</div>
+
+        <div class="rw-field">
+          <label for="rw-input-profit">Target profit %</label>
+          <input id="rw-input-profit" class="rw-input" type="number" min="1" max="99" step="1">
+        </div>
+
+        <div class="rw-field">
+          <label for="rw-input-mug">Mug buffer %</label>
+          <input id="rw-input-mug" class="rw-input" type="number" min="0" max="30" step="1">
+        </div>
+
+        <div class="rw-field">
+          <label>Sell via trade <span style="font-weight:400;color:#4a6070">(skips 5% market fee)</span></label>
+          <div class="rw-toggle-row">
+            <button id="rw-toggle-trade" class="rw-toggle" aria-label="Sell via trade"></button>
+            <span id="rw-toggle-trade-label" class="rw-toggle-label">Off</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="rw-footer">RW Auction Advisor v${SCRIPT_VERSION}</div>
+  `;
+  document.body.appendChild(panel);
+
+  // ── Element refs ─────────────────────────────────────────────────────────────
+
+  const collapseBtn     = panel.querySelector('#rw-collapse-btn');
+  const rwHeader        = panel.querySelector('#rw-header');
+  const listingsContent = panel.querySelector('#rw-listings-content');
+  const profitInput     = panel.querySelector('#rw-input-profit');
+  const mugInput        = panel.querySelector('#rw-input-mug');
+  const tradeToggle     = panel.querySelector('#rw-toggle-trade');
+  const tradeLabel      = panel.querySelector('#rw-toggle-trade-label');
+
+  // ── render() — full wiring in Step 10 ────────────────────────────────────────
+
+  function render() {
+    if (!MEM.listings.length) {
+      listingsContent.innerHTML = '<div class="rw-empty">No Riot or Assault armor found on this page.</div>';
+      return;
+    }
+    listingsContent.innerHTML = `
+      <table class="rw-table">
+        <thead>
+          <tr>
+            <th>Item</th><th>Rarity</th><th>Bonus</th>
+            <th>Score</th><th>BB Floor</th><th>Mkt Comp</th>
+            <th>Max Offer</th><th>Net Profit</th><th>ROI %</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${MEM.listings.map(l => `
+            <tr>
+              <td>${l.name}</td>
+              <td>${l.rarity ?? '—'}</td>
+              <td>${l.bonusType ?? '—'}</td>
+              <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  // ── Tab switching ─────────────────────────────────────────────────────────────
+
+  panel.querySelector('#rw-tabs').addEventListener('click', e => {
+    const tab = e.target.closest('.rw-tab');
+    if (!tab) return;
+    const id = tab.dataset.tab;
+    panel.querySelectorAll('.rw-tab').forEach(t  => t.classList.toggle('rw-active', t.dataset.tab === id));
+    panel.querySelectorAll('.rw-pane').forEach(p => p.classList.toggle('rw-active', p.id === `rw-pane-${id}`));
+  });
+
+  // ── Collapse ──────────────────────────────────────────────────────────────────
+
+  collapseBtn.addEventListener('click', () => {
+    MEM.collapsed = !MEM.collapsed;
+    panel.classList.toggle('rw-collapsed', MEM.collapsed);
+    collapseBtn.textContent = MEM.collapsed ? '+' : '−';
+    Store.set(KEYS.COLLAPSED, String(MEM.collapsed));
+  });
+
+  // ── Settings inputs ───────────────────────────────────────────────────────────
+
+  profitInput.value = MEM.settings.targetProfitPct;
+  mugInput.value    = MEM.settings.mugBufferPct;
+  if (MEM.settings.sellViaTrade) {
+    tradeToggle.classList.add('rw-on');
+    tradeLabel.textContent = 'On';
+  }
+
+  profitInput.addEventListener('change', () => {
+    const v = parseFloat(profitInput.value);
+    if (isNaN(v) || v < 1 || v > 99) return;
+    MEM.settings.targetProfitPct = v;
+    Store.set(KEYS.TARGET_PROFIT_PCT, String(v));
+    render();
+  });
+
+  mugInput.addEventListener('change', () => {
+    const v = parseFloat(mugInput.value);
+    if (isNaN(v) || v < 0 || v > 30) return;
+    MEM.settings.mugBufferPct = v;
+    Store.set(KEYS.MUG_BUFFER_PCT, String(v));
+    render();
+  });
+
+  tradeToggle.addEventListener('click', () => {
+    MEM.settings.sellViaTrade = !MEM.settings.sellViaTrade;
+    tradeToggle.classList.toggle('rw-on', MEM.settings.sellViaTrade);
+    tradeLabel.textContent = MEM.settings.sellViaTrade ? 'On' : 'Off';
+    Store.set(KEYS.SELL_VIA_TRADE, String(MEM.settings.sellViaTrade));
+    render();
+  });
+
+  // ── Restore panel state ───────────────────────────────────────────────────────
+
+  if (MEM.collapsed) {
+    panel.classList.add('rw-collapsed');
+    collapseBtn.textContent = '+';
+  }
+
+  // Apply saved drag position (left+top); CSS default (top:80px right:20px) used before first drag
+  if (MEM.position?.left != null) {
+    panel.style.right  = 'auto';
+    panel.style.left   = typeof MEM.position.left === 'number' ? MEM.position.left + 'px' : MEM.position.left;
+    panel.style.top    = typeof MEM.position.top  === 'number' ? MEM.position.top  + 'px' : MEM.position.top;
+  }
+
+  // ── Drag ──────────────────────────────────────────────────────────────────────
+
+  const DRAG_MARGIN = 60;
+  let dragging = false, dragOffX = 0, dragOffY = 0;
+
+  function clampPos(x, y) {
+    return [
+      Math.max(DRAG_MARGIN - panel.offsetWidth,  Math.min(x, window.innerWidth  - DRAG_MARGIN)),
+      Math.max(DRAG_MARGIN - panel.offsetHeight, Math.min(y, window.innerHeight - DRAG_MARGIN)),
+    ];
+  }
+
+  function applyPos(x, y) {
+    const [cx, cy] = clampPos(x, y);
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.left   = cx + 'px';
+    panel.style.top    = cy + 'px';
+  }
+
+  function savePos() {
+    MEM.position = { left: panel.style.left, top: panel.style.top };
+    Store.set(KEYS.POSITION, JSON.stringify(MEM.position));
+  }
+
+  rwHeader.addEventListener('mousedown', e => {
+    if (e.target === collapseBtn) return;
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    dragOffX = e.clientX - rect.left;
+    dragOffY = e.clientY - rect.top;
+    panel.style.transition = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => { if (dragging) applyPos(e.clientX - dragOffX, e.clientY - dragOffY); });
+  document.addEventListener('mouseup',   () => { if (dragging) savePos(); dragging = false; });
+
+  rwHeader.addEventListener('touchstart', e => {
+    if (e.target === collapseBtn) return;
+    const t = e.touches[0];
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    dragOffX = t.clientX - rect.left;
+    dragOffY = t.clientY - rect.top;
+    e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    applyPos(t.clientX - dragOffX, t.clientY - dragOffY);
+  }, { passive: false });
+
+  document.addEventListener('touchend', () => { if (dragging) savePos(); dragging = false; });
+
+  window.addEventListener('resize', () => {
+    if (!MEM.position?.left) return;
+    applyPos(parseInt(panel.style.left, 10), parseInt(panel.style.top, 10));
+  });
+
+  // Initial render
+  render();
 
 })();
