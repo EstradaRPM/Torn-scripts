@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.7.0
+// @version      1.8.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.7.0';
+  const SCRIPT_VERSION = '1.8.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -31,6 +31,7 @@
     SELL_VIA_TRADE    : 'rw_sellViaTrade',
     BB_RATE           : 'rw_bbRate',
     CACHE_ITEM_ID     : 'rw_cacheItemId',
+    ARMOR_ITEM_IDS    : 'rw_armorItemIds',
     COLLAPSED         : 'rw_collapsed',
     POSITION          : 'rw_position',
   };
@@ -68,6 +69,12 @@
     // Last fetch error message, surfaced in UI
     fetchError: null,
   };
+
+  // Armor name → Torn item ID map. Resolved at runtime from the items catalog
+  // and persisted so only one catalog call is needed after first run.
+  let armorItemIds = (() => {
+    try { return JSON.parse(Store.get(KEYS.ARMOR_ITEM_IDS)) || {}; } catch { return {}; }
+  })();
 
   // ── BB floor calculation ────────────────────────────────────────────────────
 
@@ -506,6 +513,19 @@
     return results;
   }
 
+  // ── Formatting helpers ───────────────────────────────────────────────────────
+
+  function fmtM(n) {
+    if (n == null || isNaN(n)) return '—';
+    if (Math.abs(n) >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'b';
+    if (Math.abs(n) >= 1_000_000)     return (n / 1_000_000).toFixed(1) + 'm';
+    return n.toLocaleString();
+  }
+
+  function escHtml(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
   // ── Panel UI ────────────────────────────────────────────────────────────────
 
   // Guard against double-injection (e.g. Tampermonkey re-runs on AJAX nav)
@@ -764,32 +784,79 @@
   const tradeToggle     = panel.querySelector('#rw-toggle-trade');
   const tradeLabel      = panel.querySelector('#rw-toggle-trade-label');
 
-  // ── render() — full wiring in Step 10 ────────────────────────────────────────
+  // ── render() ─────────────────────────────────────────────────────────────────
 
   function render() {
     if (!MEM.listings.length) {
       listingsContent.innerHTML = '<div class="rw-empty">No Riot or Assault armor found on this page.</div>';
       return;
     }
-    listingsContent.innerHTML = `
+
+    const bbRate = MEM.bbRate?.rate ?? null;
+
+    const rows = MEM.listings.map(l => {
+      const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
+
+      // Quality score (null when DOM couldn't extract quality or bonus %)
+      const qualityScore = (l.qualityPct != null && l.bonusPct != null)
+        ? scoreArmorPiece(l.qualityPct, l.bonusPct, baseBonusPct, highTierThreshold)
+        : null;
+
+      // BB floor — only meaningful for Riot; Assault does not approach BB
+      const bbFloor = (l.armorSet === 'Riot' && bbRate && l.rarity)
+        ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
+        : null;
+
+      // Item market comp from fetched data
+      const itemId  = armorItemIds[l.name];
+      const comp    = itemId ? MEM.itemMarketComps[itemId] : null;
+      const mktComp = comp?.lowestPrice ?? null;
+
+      // Max offer calculation
+      let maxOffer = null, netProfit = null, roi = null;
+      if (mktComp) {
+        ({ maxOffer, projectedNetProfit: netProfit, projectedROI: roi } = calcMaxOffer({
+          itemMarketComp : mktComp,
+          bbFloor        : l.armorSet === 'Riot' ? bbFloor : null,
+          targetProfitPct: MEM.settings.targetProfitPct,
+          mugBufferPct   : MEM.settings.mugBufferPct,
+          sellViaTrade   : MEM.settings.sellViaTrade,
+        }));
+      }
+
+      // Color code: green = current bid below max offer (opportunity)
+      //             red   = current bid at or above max offer (overpriced)
+      const bid = l.currentBid;
+      const canColor  = bid != null && maxOffer != null;
+      const profitable = canColor && bid < maxOffer;
+      const offerColor = canColor ? (profitable ? '#00cc66' : '#ff4444') : '';
+
+      return `<tr>
+        <td>${escHtml(l.name)}</td>
+        <td>${escHtml(l.rarity ?? '—')}</td>
+        <td>${escHtml(l.bonusType ?? '—')}</td>
+        <td>${qualityScore != null ? qualityScore.toFixed(1) : '—'}</td>
+        <td>${fmtM(bbFloor)}</td>
+        <td>${fmtM(mktComp)}</td>
+        <td>${fmtM(bid)}</td>
+        <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}</td>
+        <td style="color:${offerColor}">${fmtM(netProfit)}</td>
+        <td style="color:${offerColor}">${roi != null ? roi.toFixed(1) + '%' : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    const errorBanner = MEM.fetchError
+      ? `<div style="padding:6px 14px;font-size:12px;color:#ff8844;border-bottom:1px solid #1a2a3a">${escHtml(MEM.fetchError)}</div>`
+      : '';
+
+    listingsContent.innerHTML = errorBanner + `
       <table class="rw-table">
-        <thead>
-          <tr>
-            <th>Item</th><th>Rarity</th><th>Bonus</th>
-            <th>Score</th><th>BB Floor</th><th>Mkt Comp</th>
-            <th>Max Offer</th><th>Net Profit</th><th>ROI %</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${MEM.listings.map(l => `
-            <tr>
-              <td>${l.name}</td>
-              <td>${l.rarity ?? '—'}</td>
-              <td>${l.bonusType ?? '—'}</td>
-              <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
-            </tr>
-          `).join('')}
-        </tbody>
+        <thead><tr>
+          <th>Item</th><th>Rarity</th><th>Bonus</th><th>Score</th>
+          <th>BB Floor</th><th>Mkt Comp</th><th>Current Bid</th>
+          <th>Max Offer</th><th>Net Profit</th><th>ROI %</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
       </table>`;
   }
 
@@ -920,7 +987,66 @@
     applyPos(parseInt(panel.style.left, 10), parseInt(panel.style.top, 10));
   });
 
-  // Initial render
-  render();
+  // ── Data wiring ───────────────────────────────────────────────────────────────
+
+  // Resolves armor piece names → Torn item IDs via the items catalog.
+  // Results are cached in localStorage after the first fetch.
+  async function resolveArmorItemIds() {
+    const key = getApiKey();
+    if (!key) return;
+
+    const needed = [...new Set(MEM.listings.map(l => l.name))].filter(n => !armorItemIds[n]);
+    if (!needed.length) return;
+
+    try {
+      const data = await apiFetch(
+        `https://api.torn.com/torn/?selections=items&key=${key}&comment=rw-advisor`
+      );
+      if (data.error) { handleApiError(data.error); return; }
+
+      let updated = false;
+      for (const [id, item] of Object.entries(data.items ?? {})) {
+        if (needed.includes(item.name)) {
+          armorItemIds[item.name] = parseInt(id, 10);
+          updated = true;
+        }
+      }
+      if (updated) Store.set(KEYS.ARMOR_ITEM_IDS, JSON.stringify(armorItemIds));
+    } catch (err) {
+      MEM.fetchError = `resolveArmorItemIds error: ${err.message}`;
+    }
+  }
+
+  // Orchestrates page-load data pipeline:
+  //   1. parse DOM → immediate render
+  //   2. fetch BB rate → render with floor data
+  //   3. resolve armor item IDs → fetch all market comps in parallel → final render
+  async function init() {
+    parseAuctionListings();
+    render();
+
+    if (!MEM.listings.length) return;
+
+    const key = getApiKey();
+    if (!key) {
+      MEM.fetchError = 'No API key — paste one into Settings (only needed without Torn PDA)';
+      render();
+      return;
+    }
+
+    await fetchBBRate();
+    render();
+
+    await resolveArmorItemIds();
+
+    const uniqueIds = [...new Set(
+      MEM.listings.map(l => armorItemIds[l.name]).filter(Boolean)
+    )];
+    await Promise.all(uniqueIds.map(id => fetchItemMarketComp(id)));
+
+    render();
+  }
+
+  init();
 
 })();
