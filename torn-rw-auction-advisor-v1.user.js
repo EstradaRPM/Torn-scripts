@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.9
+// @version      1.10.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
+// @connect      weav3r.dev
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-rw-auction-advisor-v1.user.js
 // @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-rw-auction-advisor-v1.user.js
 // ==/UserScript==
@@ -14,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.9';
+  const SCRIPT_VERSION = '1.10.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -50,8 +51,12 @@
     listings: [],
 
     // Cached item market comp prices keyed by Torn item ID
-    // { [itemId]: { lowestPrice, listings, cacheTimestamp } }
+    // { [itemId]: { lowestPrice, avgQuality, listings, cacheTimestamp } }
     itemMarketComps: {},
+
+    // TornW3B bazaar listings keyed by "ArmorSet_PieceType_Rarity"
+    // { [key]: weapons[] } where weapons[] is the full TornW3B response array
+    tornw3bComps: {},
 
     // Current $/BB rate derived from small arm cache price
     // { rate, cachePrice, fetchedAt }
@@ -368,6 +373,40 @@
       return comp;
     } catch (err) {
       MEM.fetchError = `fetchItemMarketComp error: ${err.message}`;
+      return null;
+    }
+  }
+
+  // Log full raw TornW3B response for the first piece only.
+  let _tornw3bLogDone = false;
+
+  /**
+   * Fetches TornW3B bazaar listings for a specific armor piece type.
+   * No API key required. Results stored in MEM.tornw3bComps.
+   *
+   * @param {string} armorSet  - 'Riot' | 'Assault'
+   * @param {string} pieceType - 'Helmet' | 'Body' | 'Pants' | 'Gloves' | 'Boots'
+   * @param {string} rarity    - 'yellow' | 'orange' | 'red'
+   * @returns {Promise<Array|null>}
+   */
+  async function fetchTornW3BComp(armorSet, pieceType, rarity) {
+    const cacheKey = `${armorSet}_${pieceType}_${rarity}`;
+    try {
+      const url  = `https://weav3r.dev/api/ranked-weapons?tab=armor&armorSet=${armorSet}&armorPiece=${pieceType}&rarity=${rarity}&sortField=price&sortDirection=asc`;
+      const data = await apiFetch(url);
+
+      if (!_tornw3bLogDone) {
+        console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) full raw:`, JSON.stringify(data));
+        _tornw3bLogDone = true;
+      }
+
+      const weapons = data?.weapons ?? null;
+      MEM.tornw3bComps[cacheKey] = weapons;
+      console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}): ${weapons?.length ?? 0} listings`);
+      return weapons;
+    } catch (err) {
+      console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) error: ${err.message}`);
+      MEM.tornw3bComps[cacheKey] = null;
       return null;
     }
   }
@@ -1109,6 +1148,16 @@
       MEM.listings.map(l => armorItemIds[l.name]).filter(Boolean)
     )];
     await Promise.all(uniqueIds.map(id => fetchItemMarketComp(id)));
+
+    // Fetch TornW3B bazaar listings for each unique (armorSet, pieceType, rarity) combination
+    const uniquePieces = [...new Map(
+      MEM.listings.map(l => [`${l.armorSet}_${l.pieceType}_${l.rarity}`, l])
+    ).values()];
+    await Promise.all(
+      uniquePieces
+        .filter(l => l.armorSet && l.pieceType && l.rarity)
+        .map(l => fetchTornW3BComp(l.armorSet, l.pieceType, l.rarity))
+    );
 
     enrichListingsFromMarketData();
 

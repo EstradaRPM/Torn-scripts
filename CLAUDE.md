@@ -194,21 +194,20 @@ below apply in full. Specific constraints most relevant to this script:
 
 - **Key placeholder:** `###PDA-APIKEY###` — PDA injects the real key at
   install time; never prompt for a key unless PDA injection is unavailable
-- **Permitted data sources:** Torn official API (`api.torn.com/v2`) and the
-  DOM of `amarket.php` only. TornW3B (`weav3r.dev/api`) is an opt-in
-  external source — requires an explicit user toggle and the ToS disclosure
-  table shown in the UI at opt-in
+- **Permitted data sources:** Torn official API (`api.torn.com/v2`), the
+  DOM of `amarket.php`, and **TornW3B (`weav3r.dev/api`)**.
+  TornW3B is a standard unconditional API call — no opt-in toggle, no
+  disclosure table, no compliance concern. It is a community-maintained
+  bazaar data API that users contribute to voluntarily. The Torn "item
+  market" is only one part of the full market; bazaar listings (via
+  TornW3B) are equally valid pricing data. Both sources must be queried
+  together to form an accurate market comp. Do not ever treat TornW3B as
+  optional, gated, or a compliance issue in this script.
 - **API polling:** Only on user action or page load; no background timers
   that fire while the user is away from the page. Item market endpoint is
   globally cached — do not hammer it
 - **No automation:** The script displays pricing information only. It must
   never place bids, click buttons, or submit any form on behalf of the user
-- **Disclosure (default config):** `Only locally | Nobody | Competitive
-  advantage (auction flip evaluation) | Not stored/Not shared | Public key —
-  market/auctionhouse, market/itemmarket`
-- **Disclosure (TornW3B opt-in):** `Only locally | Service owners |
-  Competitive advantage (auction flip evaluation) | Not stored/Not shared |
-  N/A (no Torn key sent to weav3r.dev)`
 
 ---
 
@@ -239,10 +238,11 @@ below apply in full. Specific constraints most relevant to this script:
 
 ### Permitted data sources — hard gate
 
-A script may only consume data from exactly two sources:
+A script may only consume data from these sources:
 
 1. **Torn's official API** (`https://api.torn.com/`) — using the player's own key
 2. **The DOM of the page currently loaded and actively viewed** by the user in their browser tab
+3. **TornW3B** (`https://weav3r.dev/api`) — community bazaar data API. Unconditional, no opt-in required. See the RW Auction Advisor section above.
 
 Any other data source is prohibited. This means:
 
@@ -299,7 +299,7 @@ If a script stores API data or keys beyond the user's own `localStorage`, or sha
 
 ### Summary checklist — verify before every commit
 
-- [ ] Script only reads from the official API or the currently viewed page DOM
+- [ ] Script only reads from the official API, TornW3B, or the currently viewed page DOM
 - [ ] No background scraping, no unfocused-tab reads, no non-API Torn requests
 - [ ] No automated game actions (clicks, submissions, etc.)
 - [ ] API polling interval ≥ 5 minutes; total requests stay well under 100/min
