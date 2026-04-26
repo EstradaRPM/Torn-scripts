@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.16.0
+// @version      1.16.2
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.16.0';
+  const SCRIPT_VERSION = '1.16.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -708,22 +708,26 @@
     return { price, avgQuality, qualityMatched, bonusMatchedPoints };
   }
 
-  // All 5 combat caches. Each costs 20 BB — same divisor for all.
+  // All 5 combat caches with their correct BB yields per cache.
+  // $/BB rate per cache = price / bb. Medium/Heavy caches typically give
+  // cheaper $/BB than Small Arms, pulling the weighted rate down.
   const COMBAT_CACHES = [
-    'Small Arms Cache',
-    'Melee Cache',
-    'Medium Arms Cache',
-    'Armor Cache',
-    'Heavy Arms Cache',
+    { name: 'Small Arms Cache', bb: 20 },
+    { name: 'Melee Cache',      bb: 30 },
+    { name: 'Medium Arms Cache',bb: 50 },
+    { name: 'Armor Cache',      bb: 60 },
+    { name: 'Heavy Arms Cache', bb: 70 },
   ];
-  const BB_PER_CACHE = 20;
 
   /**
-   * Fetches the weighted $/BB rate from all 5 combat caches.
+   * Fetches the $/BB rate as a harmonic-mean weighted average across all 5
+   * combat caches, using each cache's correct BB yield.
    *
-   * Weight formula: weight_i = (1/price_i) / sum(1/price_j)
-   * Cheaper caches automatically receive higher weight, making the
-   * resulting rate more conservative (pulled toward the cheapest cache).
+   * Per-cache rate = price / bb_count. Inverse-rate weighting gives the
+   * highest weight to whichever cache is cheapest per BB. The harmonic mean
+   * of the individual rates is always ≤ the arithmetic mean, and with
+   * medium/heavy caches typically providing cheaper $/BB than small arms,
+   * the result lands below the old small-arms-only rate.
    *
    * Item IDs are resolved once from the Torn catalog and persisted as a
    * name→id map in localStorage. Only missing IDs trigger a catalog fetch.
@@ -737,11 +741,12 @@
 
     try {
       // Load persisted cache ID map; resolve any missing IDs via catalog
+      const cacheNames = COMBAT_CACHES.map(c => c.name);
       let cacheItemIds = (() => {
         try { return JSON.parse(Store.get(KEYS.CACHE_ITEM_IDS)) || {}; } catch { return {}; }
       })();
 
-      const missing = COMBAT_CACHES.filter(name => !cacheItemIds[name]);
+      const missing = cacheNames.filter(name => !cacheItemIds[name]);
       if (missing.length) {
         const catalogData = await apiFetch(
           `https://api.torn.com/torn/?selections=items&key=${key}&comment=rw-advisor`
@@ -749,12 +754,12 @@
         if (catalogData.error) { handleApiError(catalogData.error); return null; }
 
         for (const [id, item] of Object.entries(catalogData.items ?? {})) {
-          if (COMBAT_CACHES.includes(item.name)) {
+          if (cacheNames.includes(item.name)) {
             cacheItemIds[item.name] = parseInt(id, 10);
           }
         }
 
-        const stillMissing = COMBAT_CACHES.filter(name => !cacheItemIds[name]);
+        const stillMissing = cacheNames.filter(name => !cacheItemIds[name]);
         if (stillMissing.length) {
           MEM.fetchError = `Cache IDs not found: ${stillMissing.join(', ')}`;
           return null;
@@ -765,30 +770,28 @@
 
       // Fetch cheapest listing for each cache in parallel
       const results = await Promise.all(
-        COMBAT_CACHES.map(async name => {
+        COMBAT_CACHES.map(async ({ name, bb }) => {
           const id   = cacheItemIds[name];
           const data = await apiFetch(
             `https://api.torn.com/v2/market/${id}/itemmarket?limit=1&key=${key}&comment=rw-advisor`
           );
           if (data.error) { handleApiError(data.error); return null; }
           const price = data.itemmarket?.listings?.[0]?.price ?? null;
-          return { name, price };
+          return price != null && price > 0 ? { name, price, bb, rate: price / bb } : null;
         })
       );
 
-      // Require at least one valid price to proceed
-      const valid = results.filter(r => r?.price != null && r.price > 0);
+      const valid = results.filter(Boolean);
       if (!valid.length) {
         MEM.fetchError = 'No cache listings found for BB rate calculation';
         return null;
       }
 
-      // Inverse-price weighted average: cheaper cache → higher weight
-      const invSum = valid.reduce((s, r) => s + 1 / r.price, 0);
-      const weightedRate = valid.reduce((s, r) => {
-        const weight = (1 / r.price) / invSum;
-        return s + weight * (r.price / BB_PER_CACHE);
-      }, 0);
+      // Harmonic mean of per-cache $/BB rates, weighted by inverse rate.
+      // Caches with cheaper $/BB receive higher weight, pulling the result
+      // down toward the best-value option.
+      const invSum      = valid.reduce((s, r) => s + 1 / r.rate, 0);
+      const weightedRate = valid.length / invSum;
 
       const cachePrices = Object.fromEntries(valid.map(r => [r.name, r.price]));
       const bbRateData  = { rate: weightedRate, cachePrices, fetchedAt: Date.now() };
