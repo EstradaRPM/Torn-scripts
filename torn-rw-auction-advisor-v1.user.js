@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.14.0
+// @version      1.15.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.14.0';
+  const SCRIPT_VERSION = '1.15.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -27,14 +27,16 @@
   };
 
   const KEYS = {
-    TARGET_PROFIT_PCT : 'rw_targetProfitPct',
-    MUG_BUFFER_PCT    : 'rw_mugBufferPct',
-    SELL_VIA_TRADE    : 'rw_sellViaTrade',
-    BB_RATE           : 'rw_bbRate',
-    CACHE_ITEM_ID     : 'rw_cacheItemId',
-    ARMOR_ITEM_IDS    : 'rw_armorItemIds',
-    COLLAPSED         : 'rw_collapsed',
-    POSITION          : 'rw_position',
+    TARGET_PROFIT_PCT  : 'rw_targetProfitPct',
+    MUG_BUFFER_PCT     : 'rw_mugBufferPct',
+    SELL_VIA_TRADE     : 'rw_sellViaTrade',
+    BB_RATE            : 'rw_bbRate',
+    CACHE_ITEM_ID      : 'rw_cacheItemId',
+    ARMOR_ITEM_IDS     : 'rw_armorItemIds',
+    COLLAPSED          : 'rw_collapsed',
+    POSITION           : 'rw_position',
+    QUALITY_MATCH_RANGE: 'rw_qualityMatchRange',
+    BONUS_MATCH_RANGE  : 'rw_bonusMatchRange',
   };
 
   // ── Runtime state ───────────────────────────────────────────────────────────
@@ -42,12 +44,14 @@
   const MEM = {
     // User-configurable settings (loaded from localStorage, safe fallbacks)
     settings: {
-      targetProfitPct : parseFloat(Store.get(KEYS.TARGET_PROFIT_PCT)) || 15,
-      mugBufferPct    : parseFloat(Store.get(KEYS.MUG_BUFFER_PCT))    || 10,
-      sellViaTrade    : Store.get(KEYS.SELL_VIA_TRADE) === 'true',
+      targetProfitPct  : parseFloat(Store.get(KEYS.TARGET_PROFIT_PCT))   || 15,
+      mugBufferPct     : parseFloat(Store.get(KEYS.MUG_BUFFER_PCT))      || 10,
+      sellViaTrade     : Store.get(KEYS.SELL_VIA_TRADE) === 'true',
+      qualityMatchRange: parseFloat(Store.get(KEYS.QUALITY_MATCH_RANGE)) || 10,
+      bonusMatchRange  : parseFloat(Store.get(KEYS.BONUS_MATCH_RANGE))   || 2,
     },
 
-    // Current parsed auction house listings (Riot and Assault only)
+    // Current parsed auction house listings (supported RW armor sets)
     listings: [],
 
     // Cached item market comp prices keyed by Torn item ID
@@ -70,6 +74,10 @@
       try { return JSON.parse(Store.get(KEYS.POSITION)) || { top: 80, right: 20 }; }
       catch { return { top: 80, right: 20 }; }
     })(),
+
+    // Historical auction sale stats keyed by composite listing search key.
+    // { [key]: { count, median, spread, daysOld } | null }
+    historicalSales: {},
 
     // Last fetch error message, surfaced in UI
     fetchError: null,
@@ -142,6 +150,30 @@
   // Sets that trade at or near BB floor; all others (Assault and above) trade
   // significantly above BB and use the formula result without a floor guard.
   const BB_FLOOR_SETS = new Set(['Riot', 'Dune']);
+
+  // ── Historical sale data (Supabase) ────────────────────────────────────────
+
+  // Endpoint and anon key from WinterValor's TORN Auction Price Checker (MIT license).
+  // The anon key is intentionally public — it is designed for client-side use with
+  // Supabase row-level security and is embedded in a publicly distributed script.
+  const SUPABASE_URL      = 'https://btrmmuuoofbonmuwrkzg.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY';
+  const HIST_WINDOW_DAYS  = 90;
+
+  // Armor bonus name → Supabase integer ID map.
+  // IDs sourced from WinterValor's TORN Auction Price Checker (MIT license).
+  // Lookup is done by scanning for the normalized keyword in the bonusType string,
+  // so partial or variant spellings still resolve correctly.
+  const ARMOR_BONUS_ID_MAP = {
+    impregnable    : 15,   // Riot
+    impenetrable   : 17,   // Assault
+    impassable     : 26,
+    imperviable    : 22,
+    insurmountable : 92,
+    invulnerable   : 91,
+    irrepressible  : 121,
+    kinetokinesis  : 112,
+  };
 
   /**
    * Returns King's quality score for a single armor piece.
@@ -333,6 +365,21 @@
     });
   }
 
+  // POST variant of gmFetch for JSON APIs that require a request body.
+  function gmPost(url, body, headers) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method   : 'POST',
+        url,
+        headers  : headers || {},
+        data     : typeof body === 'string' ? body : JSON.stringify(body),
+        onload   : r  => resolve(r.responseText),
+        onerror  : () => reject(new Error('GM_xmlhttpRequest network error')),
+        ontimeout: () => reject(new Error('GM_xmlhttpRequest timeout')),
+      });
+    });
+  }
+
   // Tries native fetch first (works in some environments); falls back to
   // GM_xmlhttpRequest when CORS or a network error is thrown.
   async function apiFetch(url) {
@@ -357,6 +404,100 @@
   }
 
   // ── Torn API fetch functions ────────────────────────────────────────────────
+
+  // ── Historical sale helpers ─────────────────────────────────────────────────
+
+  // Resolves an armor bonusType string to a Supabase integer bonus ID.
+  // Normalises the string to lowercase alpha then scans ARMOR_BONUS_ID_MAP keys.
+  function resolveBonusId(bonusType) {
+    if (!bonusType) return null;
+    const norm = bonusType.toLowerCase().replace(/[^a-z]/g, '');
+    for (const [name, id] of Object.entries(ARMOR_BONUS_ID_MAP)) {
+      if (norm.includes(name)) return id;
+    }
+    return null;
+  }
+
+  // Derives median, spread, count, and age from a raw array of sale records.
+  // Filters to the last HIST_WINDOW_DAYS days before computing statistics.
+  function computeHistoricalStats(records) {
+    const cutoff = Date.now() / 1000 - HIST_WINDOW_DAYS * 86400;
+    const recent = records.filter(r => r.timestamp >= cutoff && r.price > 0);
+    if (!recent.length) return { count: 0, median: null, spread: null, daysOld: null };
+
+    const prices  = recent.map(r => r.price).sort((a, b) => a - b);
+    const mid     = Math.floor(prices.length / 2);
+    const median  = prices.length % 2 === 0
+      ? Math.round((prices[mid - 1] + prices[mid]) / 2)
+      : prices[mid];
+    const spread  = prices[prices.length - 1] - prices[0];
+    const daysOld = Math.floor((Date.now() / 1000 - Math.max(...recent.map(r => r.timestamp))) / 86400);
+
+    return { count: recent.length, median, spread, daysOld };
+  }
+
+  /**
+   * Queries the Supabase historical auction sale database for completed sales
+   * matching this listing's item name, bonus (within bonusMatchRange), and
+   * quality (within qualityMatchRange). Computes and caches summary stats.
+   * Sets listing.hist directly so enrichListingsFromMarketData() can read it.
+   *
+   * No Torn API key required. Uses WinterValor's public anon key (MIT license).
+   *
+   * @param {object} listing - a MEM.listings entry
+   */
+  async function fetchHistoricalSales(listing) {
+    if (!listing.name) return;
+
+    // Cache key bucketed by match ranges to allow shared cache across similar listings
+    const bonusId  = resolveBonusId(listing.bonusType);
+    const bonusBkt = listing.bonusPct   != null ? Math.round(listing.bonusPct   / MEM.settings.bonusMatchRange)   : 'x';
+    const qualBkt  = listing.qualityPct != null ? Math.round(listing.qualityPct / MEM.settings.qualityMatchRange) : 'x';
+    const cacheKey = `hist_${listing.name}_${bonusBkt}_${qualBkt}`;
+
+    if (cacheKey in MEM.historicalSales) {
+      listing.hist = MEM.historicalSales[cacheKey];
+      return;
+    }
+
+    const body = {
+      item_name  : listing.name,
+      limit      : 20,
+      offset     : 0,
+      sort_by    : 'timestamp',
+      sort_order : 'desc',
+    };
+
+    if (bonusId != null && listing.bonusPct != null) {
+      body.bonus1_id        = bonusId;
+      body.bonus1_value_min = Math.max(0, listing.bonusPct - MEM.settings.bonusMatchRange);
+      body.bonus1_value_max = listing.bonusPct + MEM.settings.bonusMatchRange;
+    }
+
+    if (listing.qualityPct != null) {
+      body.quality_min = Math.max(0, listing.qualityPct - MEM.settings.qualityMatchRange);
+      body.quality_max = listing.qualityPct + MEM.settings.qualityMatchRange;
+    }
+
+    try {
+      const text = await gmPost(
+        `${SUPABASE_URL}/functions/v1/search-auctions`,
+        body,
+        {
+          'Content-Type' : 'application/json',
+          'apikey'       : SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        }
+      );
+      const data   = JSON.parse(text);
+      const result = computeHistoricalStats(data.auctions || []);
+      MEM.historicalSales[cacheKey] = result;
+      listing.hist = result;
+    } catch {
+      MEM.historicalSales[cacheKey] = null;
+      listing.hist = null;
+    }
+  }
 
   /**
    * Fetches item market listings for a specific Torn item ID.
@@ -424,7 +565,7 @@
 
     const bonusMatched = comp.listings.filter(l => {
       const bv = l.item_details?.bonuses?.[0]?.value ?? null;
-      return bv != null && Math.abs(bv - bonusPct) <= BONUS_MATCH_RANGE;
+      return bv != null && Math.abs(bv - bonusPct) <= MEM.settings.bonusMatchRange;
     });
     const bonusSrc = bonusMatched.length ? bonusMatched : comp.listings;
 
@@ -434,7 +575,7 @@
     if (qualityPct != null) {
       const qualFiltered = bonusSrc.filter(l => {
         const q = l.item_details?.stats?.quality ?? null;
-        return q != null && Math.abs(q - qualityPct) <= QUALITY_MATCH_RANGE;
+        return q != null && Math.abs(q - qualityPct) <= MEM.settings.qualityMatchRange;
       });
       if (qualFiltered.length) { src = qualFiltered; qualityMatched = true; }
     }
@@ -470,8 +611,8 @@
     }
   }
 
-  const BONUS_MATCH_RANGE   = 2;
-  const QUALITY_MATCH_RANGE = 10;
+  // BONUS_MATCH_RANGE and QUALITY_MATCH_RANGE are user-configurable.
+  // Read from MEM.settings.bonusMatchRange / MEM.settings.qualityMatchRange.
 
   /**
    * Returns the lowest TornW3B bazaar price for an armor piece matching bonus
@@ -494,7 +635,7 @@
     const itemId = armorItemIds[armorName];
     const bonusMatched = all.filter(w =>
       w.itemId === itemId &&
-      Math.abs((Object.values(w.bonuses ?? {})[0]?.value ?? 0) - bonusPct) <= BONUS_MATCH_RANGE
+      Math.abs((Object.values(w.bonuses ?? {})[0]?.value ?? 0) - bonusPct) <= MEM.settings.bonusMatchRange
     );
     if (!bonusMatched.length) return null;
 
@@ -504,7 +645,7 @@
     if (qualityPct != null) {
       const qualFiltered = bonusMatched.filter(w => {
         const q = parseFloat(w.quality);
-        return !isNaN(q) && Math.abs(q - qualityPct) <= QUALITY_MATCH_RANGE;
+        return !isNaN(q) && Math.abs(q - qualityPct) <= MEM.settings.qualityMatchRange;
       });
       if (qualFiltered.length) { src = qualFiltered; qualityMatched = true; }
     }
@@ -939,6 +1080,18 @@
             <span id="rw-toggle-trade-label" class="rw-toggle-label">Off</span>
           </div>
         </div>
+
+        <div class="rw-settings-label">Comp Tolerances</div>
+
+        <div class="rw-field">
+          <label for="rw-input-quality-range">Quality match range ±&thinsp;%</label>
+          <input id="rw-input-quality-range" class="rw-input" type="number" min="1" max="30" step="1">
+        </div>
+
+        <div class="rw-field">
+          <label for="rw-input-bonus-range">Bonus match range ±&thinsp;%</label>
+          <input id="rw-input-bonus-range" class="rw-input" type="number" min="1" max="10" step="1">
+        </div>
       </div>
     </div>
 
@@ -948,14 +1101,16 @@
 
   // ── Element refs ─────────────────────────────────────────────────────────────
 
-  const collapseBtn     = panel.querySelector('#rw-collapse-btn');
-  const rwHeader        = panel.querySelector('#rw-header');
-  const listingsContent = panel.querySelector('#rw-listings-content');
-  const profitInput     = panel.querySelector('#rw-input-profit');
-  const mugInput        = panel.querySelector('#rw-input-mug');
-  const tradeToggle     = panel.querySelector('#rw-toggle-trade');
-  const tradeLabel      = panel.querySelector('#rw-toggle-trade-label');
-  const apikeyInput     = panel.querySelector('#rw-input-apikey');
+  const collapseBtn      = panel.querySelector('#rw-collapse-btn');
+  const rwHeader         = panel.querySelector('#rw-header');
+  const listingsContent  = panel.querySelector('#rw-listings-content');
+  const profitInput      = panel.querySelector('#rw-input-profit');
+  const mugInput         = panel.querySelector('#rw-input-mug');
+  const tradeToggle      = panel.querySelector('#rw-toggle-trade');
+  const tradeLabel       = panel.querySelector('#rw-toggle-trade-label');
+  const apikeyInput      = panel.querySelector('#rw-input-apikey');
+  const qualRangeInput   = panel.querySelector('#rw-input-quality-range');
+  const bonusRangeInput  = panel.querySelector('#rw-input-bonus-range');
 
   // ── render() ─────────────────────────────────────────────────────────────────
 
@@ -1006,24 +1161,38 @@
         roi               = bid > 0 ? (netProfit / bid) * 100 : null;
       }
 
-      // Max Offer cell: green = bid below max (room to win profitably), red = at/above max
-      const canColor   = bid != null && maxOffer != null;
-      const isBuyZone  = canColor && bid < maxOffer;
-      const offerColor = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
+      // Mkt Comp cell:
+      //   quality-matched live comp  → plain price (direct market evidence)
+      //   historical median used     → amber "hist (N)" badge
+      //   multiplier fallback        → amber "×N est" badge on base comp
+      const qualMult = l.qualityMultiplier ?? 1.0;
+      const baseComp = l.baseCompPrice ?? refPrice;
+      let compCellInner;
+      if (refPrice == null) {
+        compCellInner = '—';
+      } else if (l.histUsedAsRef) {
+        const n = l.hist?.count ?? 0;
+        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality-matched live comps — using historical median (${n} sales, last ${HIST_WINDOW_DAYS} days)">hist&thinsp;(${n})</span>`;
+      } else if (qualMult > 1.0) {
+        compCellInner = `${fmtM(baseComp)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality-matched comps — estimated from cheapest bonus comp">×${qualMult.toFixed(1)} est</span>`;
+      } else {
+        compCellInner = fmtM(refPrice);
+      }
+
+      // Max Offer cell: green = bid below max, red = at/above max
+      // Amber warning when no quality-matched live comp exists but hist median is available
+      // and the calculated max offer exceeds it (possible overvaluation).
+      const canColor      = bid != null && maxOffer != null;
+      const isBuyZone     = canColor && bid < maxOffer;
+      const offerColor    = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
+      const histMedian    = l.hist?.median ?? null;
+      const offerRiskFlag = !l.histUsedAsRef && !l.qualityMatched && histMedian != null && maxOffer != null && maxOffer > histMedian;
+      const offerWarn     = offerRiskFlag
+        ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
+        : '';
 
       // Net Profit / ROI cells: green = positive, red = negative
       const profitColor = netProfit != null ? (netProfit > 0 ? '#00cc66' : '#ff4444') : '';
-
-      // Mkt Comp cell:
-      //   quality-matched → show refPrice as-is (direct market evidence)
-      //   fallback estimate → show base comp + amber ×N badge (multiplier applied)
-      const qualMult      = l.qualityMultiplier ?? 1.0;
-      const baseComp      = l.baseCompPrice ?? refPrice;
-      const compCellInner = refPrice != null
-        ? (qualMult > 1.0
-            ? `${fmtM(baseComp)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality-matched comps — estimated from cheapest bonus comp">×${qualMult.toFixed(1)} est</span>`
-            : fmtM(refPrice))
-        : '—';
 
       return `<tr>
         <td>${escHtml(l.name)}</td>
@@ -1033,7 +1202,7 @@
         <td>${fmtM(bbFloor)}</td>
         <td>${compCellInner}</td>
         <td>${fmtM(bid)}</td>
-        <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}</td>
+        <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}${offerWarn}</td>
         <td style="color:${profitColor}">${fmtM(netProfit)}</td>
         <td style="color:${profitColor}">${roi != null ? roi.toFixed(1) + '%' : '—'}</td>
       </tr>`;
@@ -1077,8 +1246,10 @@
 
   if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
 
-  profitInput.value = MEM.settings.targetProfitPct;
-  mugInput.value    = MEM.settings.mugBufferPct;
+  profitInput.value     = MEM.settings.targetProfitPct;
+  mugInput.value        = MEM.settings.mugBufferPct;
+  qualRangeInput.value  = MEM.settings.qualityMatchRange;
+  bonusRangeInput.value = MEM.settings.bonusMatchRange;
   if (MEM.settings.sellViaTrade) {
     tradeToggle.classList.add('rw-on');
     tradeLabel.textContent = 'On';
@@ -1114,6 +1285,24 @@
     tradeToggle.classList.toggle('rw-on', MEM.settings.sellViaTrade);
     tradeLabel.textContent = MEM.settings.sellViaTrade ? 'On' : 'Off';
     Store.set(KEYS.SELL_VIA_TRADE, String(MEM.settings.sellViaTrade));
+    render();
+  });
+
+  qualRangeInput.addEventListener('change', () => {
+    const v = parseFloat(qualRangeInput.value);
+    if (isNaN(v) || v < 1 || v > 30) return;
+    MEM.settings.qualityMatchRange = v;
+    Store.set(KEYS.QUALITY_MATCH_RANGE, String(v));
+    MEM.historicalSales = {};
+    render();
+  });
+
+  bonusRangeInput.addEventListener('change', () => {
+    const v = parseFloat(bonusRangeInput.value);
+    if (isNaN(v) || v < 1 || v > 10) return;
+    MEM.settings.bonusMatchRange = v;
+    Store.set(KEYS.BONUS_MATCH_RANGE, String(v));
+    MEM.historicalSales = {};
     render();
   });
 
@@ -1222,14 +1411,14 @@
     }
   }
 
-  // Enriches each listing with refPrice derived from item market + TornW3B data.
+  // Enriches each listing with refPrice derived from item market, TornW3B, and
+  // historical sale data. Priority order for refPrice:
+  //   1. Lowest quality-matched comp (bonus ±range, quality ±range) — direct live market
+  //   2. Historical auction median (N ≥ 3 sales, last 90 days) — real cleared prices
+  //   3. Cheapest bonus-matched comp × quality multiplier — last-resort estimate
   //
-  // Priority order for refPrice:
-  //   1. Lowest price among quality-matched comps (bonus ±2%, quality ±10pts) — direct market evidence
-  //   2. Cheapest bonus-matched comp × quality multiplier — fallback for pieces with no quality comps
-  //
-  // When quality-matched comps exist we use their price directly; the multiplier is
-  // only needed for pieces so rare/high-quality that the market has no similar listings.
+  // Historical median replaces the multiplier fallback because it represents
+  // actual cleared prices rather than arithmetic applied to an unrelated listing.
   function enrichListingsFromMarketData() {
     for (const listing of MEM.listings) {
       const itemId  = armorItemIds[listing.name];
@@ -1245,8 +1434,7 @@
       const w3bQM = w3bComp?.qualityMatched ?? false;
       const anyQualityMatched = imQM || w3bQM;
 
-      // When quality-matched comps exist, prefer them over a cheaper non-quality-matched
-      // comp — a lower-quality listing is not a valid resale reference for this piece.
+      // Prefer quality-matched sources; fall back to cheapest bonus-matched
       let baseCompPrice, winner;
       if (anyQualityMatched) {
         const candidates = [];
@@ -1261,22 +1449,32 @@
       }
 
       const compAvgQuality = winner?.avgQuality ?? null;
-
-      // Fill DOM-missing quality from comp avg.
-      // When quality was unknown the delta will be 0 → multiplier stays 1.0.
       if (listing.qualityPct == null) listing.qualityPct = compAvgQuality;
 
-      // Multiplier is a fallback only — not applied when we have quality-matched comps.
-      let qualMult = 1.0;
+      // Determine effective ref price and its source
+      let refPriceBase  = baseCompPrice;
+      let qualMult      = 1.0;
+      let histUsedAsRef = false;
+
       if (!anyQualityMatched) {
-        const { highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
-        qualMult = getQualityMultiplier(listing.qualityPct, compAvgQuality, listing.bonusPct, highTierThreshold);
+        const histMedian = listing.hist?.median ?? null;
+        const histCount  = listing.hist?.count  ?? 0;
+
+        if (histMedian != null && histCount >= 3) {
+          // Historical median (actual cleared auction prices) beats the multiplier estimate
+          refPriceBase  = histMedian;
+          histUsedAsRef = true;
+        } else {
+          const { highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
+          qualMult = getQualityMultiplier(listing.qualityPct, compAvgQuality, listing.bonusPct, highTierThreshold);
+        }
       }
 
       listing.baseCompPrice     = baseCompPrice;
       listing.qualityMultiplier = qualMult;
       listing.qualityMatched    = anyQualityMatched;
-      listing.refPrice          = Math.round(baseCompPrice * qualMult);
+      listing.histUsedAsRef     = histUsedAsRef;
+      listing.refPrice          = Math.round(refPriceBase * qualMult);
       listing.imPrice           = imPrice  === Infinity ? null : imPrice;
       listing.w3bPrice          = w3bPrice === Infinity ? null : w3bPrice;
     }
@@ -1307,17 +1505,21 @@
     const uniqueIds = [...new Set(
       MEM.listings.map(l => armorItemIds[l.name]).filter(Boolean)
     )];
-    await Promise.all(uniqueIds.map(id => fetchItemMarketComp(id)));
 
     // Fetch TornW3B bazaar listings — one call per unique armorSet+rarity covers all piece types
     const uniqueSetRarities = [...new Map(
       MEM.listings.map(l => [`${l.armorSet}_${l.rarity}`, l])
     ).values()];
-    await Promise.all(
-      uniqueSetRarities
-        .filter(l => l.armorSet && l.rarity)
-        .map(l => fetchTornW3BComp(l.armorSet, l.rarity))
-    );
+
+    // All three external sources fetched in parallel:
+    //   item market (Torn API) + TornW3B bazaar + Supabase historical sales
+    await Promise.all([
+      ...uniqueIds.map(id => fetchItemMarketComp(id)),
+      ...uniqueSetRarities
+          .filter(l => l.armorSet && l.rarity)
+          .map(l => fetchTornW3BComp(l.armorSet, l.rarity)),
+      ...MEM.listings.map(l => fetchHistoricalSales(l)),
+    ]);
 
     enrichListingsFromMarketData();
     render();
