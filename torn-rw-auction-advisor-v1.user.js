@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.10.2
+// @version      1.11.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.10.2';
+  const SCRIPT_VERSION = '1.11.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -189,34 +189,22 @@
    * For Riot armor: max_offer is floored at bbFloor (pass null for Assault).
    *
    * @param {object} params
-   * @param {number}       params.itemMarketComp  - cheapest comparable item market listing ($)
+   * @param {number}       params.refPrice        - cheapest comparable market/bazaar price ($)
    * @param {number|null}  params.bbFloor         - BB floor price; null skips the floor guard
    * @param {number}       params.targetProfitPct - user-defined profit margin target (e.g. 15)
    * @param {number}       params.mugBufferPct    - mug loss buffer (e.g. 10)
    * @param {boolean}      params.sellViaTrade    - true = no market fee; false = 5% fee applies
-   * @returns {{ maxOffer: number, projectedNetProfit: number, projectedROI: number }}
+   * @returns {number}
    */
-  function calcMaxOffer({ itemMarketComp, bbFloor, targetProfitPct, mugBufferPct, sellViaTrade }) {
+  function calcMaxOffer({ refPrice, bbFloor, targetProfitPct, mugBufferPct, sellViaTrade }) {
     const marketFee    = sellViaTrade ? 0 : 0.05;
     const mugBuffer    = mugBufferPct  / 100;
     const targetMargin = targetProfitPct / 100;
 
-    // Net received per dollar listed, after sell fee and mug loss
     const sellSideFactor = (1 - marketFee) * (1 - mugBuffer);
+    const formulaResult  = refPrice * sellSideFactor * (1 - targetMargin);
 
-    // Core formula result
-    const formulaResult = itemMarketComp * sellSideFactor * (1 - targetMargin);
-
-    // Riot/Dune: floor at bbFloor if provided; Assault: pass null to skip
-    const maxOffer = (bbFloor != null)
-      ? Math.max(formulaResult, bbFloor)
-      : formulaResult;
-
-    // Projected outcome if bought at maxOffer and sold at itemMarketComp
-    const projectedNetProfit = (itemMarketComp * sellSideFactor) - maxOffer;
-    const projectedROI       = maxOffer > 0 ? (projectedNetProfit / maxOffer) * 100 : 0;
-
-    return { maxOffer, projectedNetProfit, projectedROI };
+    return (bbFloor != null) ? Math.max(formulaResult, bbFloor) : formulaResult;
   }
 
   // Self-test
@@ -226,44 +214,37 @@
     const cases = [
       {
         label  : 'standard (10% mug, 15% margin, market sell)',
-        params : { itemMarketComp: m, bbFloor: null, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: false },
+        params : { refPrice: m, bbFloor: null, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: false },
         // sellSideFactor = 0.95 × 0.90 = 0.855; formulaResult = 100m × 0.855 × 0.85 = 72,675,000
         expectMaxOffer : 72_675_000,
-        // netProfit = 100m × 0.855 - 72,675,000 = 85,500,000 - 72,675,000 = 12,825,000
-        expectProfit   : 12_825_000,
       },
       {
         label  : 'sell via trade (no market fee)',
-        params : { itemMarketComp: m, bbFloor: null, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: true },
+        params : { refPrice: m, bbFloor: null, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: true },
         // sellSideFactor = 1.00 × 0.90 = 0.90; formulaResult = 100m × 0.90 × 0.85 = 76,500,000
         expectMaxOffer : 76_500_000,
-        expectProfit   : 13_500_000,
       },
       {
         label  : 'BB floor guard kicks in (Riot)',
-        params : { itemMarketComp: m, bbFloor: 80_000_000, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: false },
+        params : { refPrice: m, bbFloor: 80_000_000, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: false },
         // formulaResult = 72,675,000 < bbFloor 80m → maxOffer = 80m
         expectMaxOffer : 80_000_000,
-        expectProfit   : 5_500_000,
       },
       {
         label  : 'BB floor guard does not kick in (formula above floor)',
-        params : { itemMarketComp: m, bbFloor: 60_000_000, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: false },
+        params : { refPrice: m, bbFloor: 60_000_000, targetProfitPct: 15, mugBufferPct: 10, sellViaTrade: false },
         // formulaResult = 72,675,000 > bbFloor 60m → maxOffer = 72,675,000
         expectMaxOffer : 72_675_000,
-        expectProfit   : 12_825_000,
       },
     ];
 
-    cases.forEach(({ label, params, expectMaxOffer, expectProfit }) => {
-      const { maxOffer, projectedNetProfit, projectedROI } = calcMaxOffer(params);
-      const passOffer  = Math.abs(maxOffer          - expectMaxOffer) < 1;
-      const passProfit = Math.abs(projectedNetProfit - expectProfit)  < 1;
+    cases.forEach(({ label, params, expectMaxOffer }) => {
+      const result = calcMaxOffer(params);
+      const pass   = Math.abs(result - expectMaxOffer) < 1;
       console.log(
         `[RW Advisor] calcMaxOffer [${label}]`,
-        `maxOffer=${maxOffer}`, passOffer  ? '✓' : `✗ expected ${expectMaxOffer}`,
-        `profit=${projectedNetProfit}`,     passProfit ? '✓' : `✗ expected ${expectProfit}`,
-        `ROI=${projectedROI.toFixed(2)}%`
+        result,
+        pass ? '✓' : `✗ expected ${expectMaxOffer}`
       );
     });
   })();
@@ -944,29 +925,38 @@
         ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
         : null;
 
-      // Item market comp from fetched data
-      const itemId  = armorItemIds[l.name];
-      const comp    = itemId ? MEM.itemMarketComps[itemId] : null;
-      const mktComp = comp?.lowestPrice ?? null;
+      // Reference price: bonus-filtered min across item market + TornW3B bazaar
+      const refPrice = l.refPrice ?? null;
 
-      // Max offer calculation
-      let maxOffer = null, netProfit = null, roi = null;
-      if (mktComp) {
-        ({ maxOffer, projectedNetProfit: netProfit, projectedROI: roi } = calcMaxOffer({
-          itemMarketComp : mktComp,
-          bbFloor        : l.armorSet === 'Riot' ? bbFloor : null,
-          targetProfitPct: MEM.settings.targetProfitPct,
-          mugBufferPct   : MEM.settings.mugBufferPct,
-          sellViaTrade   : MEM.settings.sellViaTrade,
-        }));
+      // Max offer: highest price at which target margin is still achievable
+      const maxOffer = refPrice != null
+        ? calcMaxOffer({
+            refPrice,
+            bbFloor        : l.armorSet === 'Riot' ? bbFloor : null,
+            targetProfitPct: MEM.settings.targetProfitPct,
+            mugBufferPct   : MEM.settings.mugBufferPct,
+            sellViaTrade   : MEM.settings.sellViaTrade,
+          })
+        : null;
+
+      // Net profit and ROI at the current bid price
+      const bid = l.currentBid;
+      let netProfit = null, roi = null;
+      if (bid != null && refPrice != null) {
+        const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
+        const mugBuffer   = MEM.settings.mugBufferPct / 100;
+        const netReceived = refPrice * (1 - marketFee) * (1 - mugBuffer);
+        netProfit         = Math.round(netReceived - bid);
+        roi               = bid > 0 ? (netProfit / bid) * 100 : null;
       }
 
-      // Color code: green = current bid below max offer (opportunity)
-      //             red   = current bid at or above max offer (overpriced)
-      const bid = l.currentBid;
-      const canColor  = bid != null && maxOffer != null;
-      const profitable = canColor && bid < maxOffer;
-      const offerColor = canColor ? (profitable ? '#00cc66' : '#ff4444') : '';
+      // Max Offer cell: green = bid below max (room to win profitably), red = at/above max
+      const canColor   = bid != null && maxOffer != null;
+      const isBuyZone  = canColor && bid < maxOffer;
+      const offerColor = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
+
+      // Net Profit / ROI cells: green = positive, red = negative
+      const profitColor = netProfit != null ? (netProfit > 0 ? '#00cc66' : '#ff4444') : '';
 
       return `<tr>
         <td>${escHtml(l.name)}</td>
@@ -974,11 +964,11 @@
         <td>${escHtml(l.bonusType ?? '—')}</td>
         <td>${qualityScore != null ? qualityScore.toFixed(1) : '—'}</td>
         <td>${fmtM(bbFloor)}</td>
-        <td>${fmtM(mktComp)}</td>
+        <td>${fmtM(refPrice)}</td>
         <td>${fmtM(bid)}</td>
         <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}</td>
-        <td style="color:${offerColor}">${fmtM(netProfit)}</td>
-        <td style="color:${offerColor}">${roi != null ? roi.toFixed(1) + '%' : '—'}</td>
+        <td style="color:${profitColor}">${fmtM(netProfit)}</td>
+        <td style="color:${profitColor}">${roi != null ? roi.toFixed(1) + '%' : '—'}</td>
       </tr>`;
     }).join('');
 
