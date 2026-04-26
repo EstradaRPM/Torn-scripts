@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.2
+// @version      1.15.3
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.2';
+  const SCRIPT_VERSION = '1.15.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -219,56 +219,52 @@
     });
   })();
 
-  // ── Quality premium multiplier ─────────────────────────────────────────────
+  // ── Quality interpolation ──────────────────────────────────────────────────
 
   /**
-   * Returns a price multiplier for pieces whose quality exceeds the market comp
-   * average. Based on rw-pricing-logic.md §4 (high quality / high bonus % armor):
-   *   - Exceptional (quality ≥20 pts above comp avg AND high bonus tier): 2.5×
-   *   - Good (quality ≥15 pts above comp avg OR ≥10 pts above with high bonus): 2.0×
-   *   - Base: 1.0×
+   * From a pool of { quality, price } points (bonus-matched comp listings),
+   * finds the single closest point strictly below targetQuality (lower bound)
+   * and the single closest point strictly above it (upper bound).
    *
-   * The comp avg quality is already filtered to matching-bonus listings, so the
-   * delta is a clean quality-only comparison within the same bonus tier.
-   *
-   * Returns 1.0 when either quality value is unknown.
-   *
-   * @param {number|null} listingQualityPct
-   * @param {number|null} compAvgQuality      - average quality of matched comp listings
-   * @param {number|null} bonusPct
-   * @param {number}      highTierThreshold   - e.g. 26 for Riot/Assault
-   * @returns {number}
+   * @param {Array<{quality:number,price:number}>} points
+   * @param {number} targetQuality
+   * @returns {{ lower:{quality,price}|null, upper:{quality,price}|null }}
    */
-  function getQualityMultiplier(listingQualityPct, compAvgQuality, bonusPct, highTierThreshold) {
-    if (listingQualityPct == null || compAvgQuality == null) return 1.0;
-    const delta      = listingQualityPct - compAvgQuality;
-    const isHighBonus = bonusPct != null && bonusPct >= highTierThreshold;
-    if (delta >= 20 && isHighBonus) return 2.5;
-    if (delta >= 15 || (delta >= 10 && isHighBonus)) return 2.0;
-    return 1.0;
+  function findQualityBracket(points, targetQuality) {
+    let lower = null;
+    let upper = null;
+    for (const pt of points) {
+      if (pt.quality < targetQuality) {
+        if (lower === null || pt.quality > lower.quality) lower = pt;
+      } else if (pt.quality > targetQuality) {
+        if (upper === null || pt.quality < upper.quality) upper = pt;
+      }
+    }
+    return { lower, upper };
   }
 
-  // Self-test
-  (() => {
-    const cases = [
-      { lq: 70,   cq: 30,   b: 27, thr: 26, expect: 2.5, label: 'exceptional (delta=40, high bonus)' },
-      { lq: 55,   cq: 30,   b: 27, thr: 26, expect: 2.0, label: 'good (delta=25, high bonus)' },
-      { lq: 50,   cq: 35,   b: 21, thr: 26, expect: 2.0, label: 'good (delta=15, base bonus)' },
-      { lq: 45,   cq: 33,   b: 27, thr: 26, expect: 2.0, label: 'good (delta=12, high bonus)' },
-      { lq: 40,   cq: 33,   b: 21, thr: 26, expect: 1.0, label: 'base (delta=7, no high bonus)' },
-      { lq: 30,   cq: 35,   b: 27, thr: 26, expect: 1.0, label: 'base (listing below comp avg)' },
-      { lq: null, cq: 30,   b: 27, thr: 26, expect: 1.0, label: 'unknown listing quality' },
-      { lq: 50,   cq: null, b: 27, thr: 26, expect: 1.0, label: 'unknown comp avg quality' },
-    ];
-    cases.forEach(({ lq, cq, b, thr, expect, label }) => {
-      const result = getQualityMultiplier(lq, cq, b, thr);
-      const pass   = result === expect;
-      console.log(
-        `[RW Advisor] getQualityMultiplier(lq=${lq}, cq=${cq}, b=${b}) [${label}] =`,
-        result, pass ? '✓' : `✗ expected ${expect}`
-      );
-    });
-  })();
+  /**
+   * Linear interpolation between quality brackets.
+   * Weight is proportional to proximity: a target 60% of the way from lower to
+   * upper quality maps to 60% of the way from lower to upper price.
+   * Falls back to the single bound when only one side exists.
+   *
+   * @param {number}               targetQuality
+   * @param {{quality,price}|null} lower
+   * @param {{quality,price}|null} upper
+   * @returns {number|null}
+   */
+  function interpolateQualityPrice(targetQuality, lower, upper) {
+    if (lower && upper) {
+      const range  = upper.quality - lower.quality;
+      if (range === 0) return Math.min(lower.price, upper.price);
+      const weight = (targetQuality - lower.quality) / range;
+      return Math.round(lower.price + weight * (upper.price - lower.price));
+    }
+    if (lower) return lower.price;
+    if (upper) return upper.price;
+    return null;
+  }
 
   // ── Max offer calculation ───────────────────────────────────────────────────
 
@@ -569,6 +565,11 @@
     });
     const bonusSrc = bonusMatched.length ? bonusMatched : comp.listings;
 
+    // All bonus-matched quality+price pairs — used by caller for interpolation
+    const bonusMatchedPoints = bonusSrc
+      .map(l => ({ quality: l.item_details?.stats?.quality ?? null, price: l.price }))
+      .filter(p => p.quality != null);
+
     // Refine by quality proximity when the listing quality is known
     let src = bonusSrc;
     let qualityMatched = false;
@@ -583,7 +584,7 @@
     const price      = Math.min(...src.map(l => l.price));
     const qs         = src.map(l => l.item_details?.stats?.quality).filter(q => q != null);
     const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : comp.avgQuality;
-    return { price, avgQuality, qualityMatched };
+    return { price, avgQuality, qualityMatched, bonusMatchedPoints };
   }
 
   /**
@@ -639,6 +640,11 @@
     );
     if (!bonusMatched.length) return null;
 
+    // All bonus-matched quality+price pairs — used by caller for interpolation
+    const bonusMatchedPoints = bonusMatched
+      .map(w => ({ quality: parseFloat(w.quality), price: w.price }))
+      .filter(p => !isNaN(p.quality));
+
     // Refine by quality proximity when the listing quality is known
     let src = bonusMatched;
     let qualityMatched = false;
@@ -653,7 +659,7 @@
     const price      = Math.min(...src.map(w => w.price));
     const qs         = src.map(w => parseFloat(w.quality)).filter(q => !isNaN(q));
     const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : null;
-    return { price, avgQuality, qualityMatched };
+    return { price, avgQuality, qualityMatched, bonusMatchedPoints };
   }
 
   /**
@@ -1181,34 +1187,46 @@
         roi               = bid > 0 ? (netProfit / bid) * 100 : null;
       }
 
-      // Mkt Comp cell:
-      //   quality-matched live comp  → plain price (direct market evidence)
-      //   historical median used     → amber "hist (N)" badge
-      //   multiplier fallback        → amber "×N est" badge on base comp
-      const qualMult = l.qualityMultiplier ?? 1.0;
-      const baseComp = l.baseCompPrice ?? refPrice;
+      // Mkt Comp cell — badge indicates data quality tier:
+      //   no badge   : direct quality-matched live comp (most precise)
+      //   interp     : amber — interpolated between lower/upper quality brackets
+      //   floor/ceil : amber — only one quality bracket found; conservative bound
+      //   ~          : amber — no quality data in comp pool; cheapest bonus-matched only
+      const compSource = l.compSource ?? 'bonus-only';
       let compCellInner;
       if (refPrice == null) {
         compCellInner = '—';
-      } else if (l.histUsedAsRef) {
-        const n = l.hist?.count ?? 0;
-        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality-matched live comps — using historical median (${n} sales, last ${HIST_WINDOW_DAYS} days)">hist&thinsp;(${n})</span>`;
-      } else if (qualMult > 1.0) {
-        compCellInner = `${fmtM(baseComp)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality-matched comps — estimated from cheapest bonus comp">×${qualMult.toFixed(1)} est</span>`;
-      } else {
+      } else if (compSource === 'quality-match') {
         compCellInner = fmtM(refPrice);
+      } else if (compSource === 'interpolated') {
+        const lq = l.interpLower?.quality?.toFixed(1) ?? '?';
+        const uq = l.interpUpper?.quality?.toFixed(1) ?? '?';
+        const lp = fmtM(l.interpLower?.price);
+        const up = fmtM(l.interpUpper?.price);
+        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Interpolated between ${lq}% qual (${lp}) and ${uq}% qual (${up})">interp</span>`;
+      } else if (compSource === 'single-bound') {
+        const isLower = l.interpLower != null;
+        const bound   = isLower ? l.interpLower : l.interpUpper;
+        const dir     = isLower ? '≥' : '≤';
+        const side    = isLower ? 'floor' : 'ceil';
+        const tip     = isLower
+          ? `Only lower quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality exceeds all comps`
+          : `Only upper quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality below all comps`;
+        compCellInner = `${dir}${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="${tip}">${side}</span>`;
+      } else {
+        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality data in comp listings — cheapest bonus-matched price only">~</span>`;
       }
 
-      // Max Offer cell: green = bid below max, red = at/above max
-      // Amber warning when no quality-matched live comp exists but hist median is available
-      // and the calculated max offer exceeds it (possible overvaluation).
+      // Max Offer cell: green = bid below max, red = at/above max.
+      // Amber ! when comp source is imprecise AND hist median exists AND max offer
+      // exceeds it — signals the live comp may be inflated relative to cleared prices.
       const canColor      = bid != null && maxOffer != null;
       const isBuyZone     = canColor && bid < maxOffer;
       const offerColor    = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
       const histMedian    = l.hist?.median ?? null;
-      const offerRiskFlag = !l.histUsedAsRef && !l.qualityMatched && histMedian != null && maxOffer != null && maxOffer > histMedian;
+      const offerRiskFlag = compSource !== 'quality-match' && histMedian != null && maxOffer != null && maxOffer > histMedian;
       const offerWarn     = offerRiskFlag
-        ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
+        ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical auction median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
         : '';
 
       // Net Profit / ROI cells: green = positive, red = negative
@@ -1431,14 +1449,20 @@
     }
   }
 
-  // Enriches each listing with refPrice derived from item market, TornW3B, and
-  // historical sale data. Priority order for refPrice:
-  //   1. Lowest quality-matched comp (bonus ±range, quality ±range) — direct live market
-  //   2. Historical auction median (N ≥ 3 sales, last 90 days) — real cleared prices
-  //   3. Cheapest bonus-matched comp × quality multiplier — last-resort estimate
+  // Enriches each listing with refPrice derived from live market data only.
+  // Historical auction data is intentionally excluded from refPrice — auction
+  // clearing prices are structurally below bazaar/item market resale value and
+  // using them as a resale reference creates a circular discount.
   //
-  // Historical median replaces the multiplier fallback because it represents
-  // actual cleared prices rather than arithmetic applied to an unrelated listing.
+  // Priority order for refPrice:
+  //   1. Cheapest quality-matched comp (bonus ±range, quality ±range) — exact live evidence
+  //   2. Linear interpolation between nearest lower and upper quality brackets
+  //      across all bonus-matched comps (im + w3b combined) — real data, weighted by proximity
+  //   3. Single bracket only (target quality above all comps, or below all comps) — use that
+  //      bound's price as a conservative floor or ceiling respectively
+  //   4. No quality data in any comp — cheapest bonus-matched price, flagged as approximate
+  //
+  // Historical data feeds only the risk signal (amber ! on Max Offer).
   function enrichListingsFromMarketData() {
     for (const listing of MEM.listings) {
       const itemId  = armorItemIds[listing.name];
@@ -1454,49 +1478,61 @@
       const w3bQM = w3bComp?.qualityMatched ?? false;
       const anyQualityMatched = imQM || w3bQM;
 
-      // Prefer quality-matched sources; fall back to cheapest bonus-matched
-      let baseCompPrice, winner;
+      // Fill DOM-missing quality from comp average before interpolation
+      const winner = imPrice <= w3bPrice ? imComp : w3bComp;
+      if (listing.qualityPct == null) listing.qualityPct = winner?.avgQuality ?? null;
+
+      let refPrice   = null;
+      let compSource = 'bonus-only';
+      let interpLower = null;
+      let interpUpper = null;
+
       if (anyQualityMatched) {
-        const candidates = [];
-        if (imQM)  candidates.push({ price: imPrice,  comp: imComp  });
-        if (w3bQM) candidates.push({ price: w3bPrice, comp: w3bComp });
-        const best = candidates.reduce((a, b) => a.price <= b.price ? a : b);
-        baseCompPrice = best.price;
-        winner        = best.comp;
-      } else {
-        baseCompPrice = Math.min(imPrice, w3bPrice);
-        winner        = w3bPrice <= imPrice ? w3bComp : imComp;
-      }
+        // Priority 1: direct quality-matched comp — cheapest across both sources
+        const qmPrices = [];
+        if (imQM)  qmPrices.push(imPrice);
+        if (w3bQM) qmPrices.push(w3bPrice);
+        refPrice   = Math.min(...qmPrices);
+        compSource = 'quality-match';
 
-      const compAvgQuality = winner?.avgQuality ?? null;
-      if (listing.qualityPct == null) listing.qualityPct = compAvgQuality;
+      } else if (listing.qualityPct != null) {
+        // Priority 2 & 3: interpolate across all bonus-matched quality points
+        const allPoints = [
+          ...(imComp?.bonusMatchedPoints  ?? []),
+          ...(w3bComp?.bonusMatchedPoints ?? []),
+        ];
 
-      // Determine effective ref price and its source
-      let refPriceBase  = baseCompPrice;
-      let qualMult      = 1.0;
-      let histUsedAsRef = false;
-
-      if (!anyQualityMatched) {
-        const histMedian = listing.hist?.median ?? null;
-        const histCount  = listing.hist?.count  ?? 0;
-
-        if (histMedian != null && histCount >= 3) {
-          // Historical median (actual cleared auction prices) beats the multiplier estimate
-          refPriceBase  = histMedian;
-          histUsedAsRef = true;
-        } else {
-          const { highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
-          qualMult = getQualityMultiplier(listing.qualityPct, compAvgQuality, listing.bonusPct, highTierThreshold);
+        if (allPoints.length) {
+          const { lower, upper } = findQualityBracket(allPoints, listing.qualityPct);
+          interpLower = lower;
+          interpUpper = upper;
+          const interpolated = interpolateQualityPrice(listing.qualityPct, lower, upper);
+          if (interpolated != null) {
+            refPrice   = interpolated;
+            compSource = (lower && upper) ? 'interpolated' : 'single-bound';
+          }
         }
+
+        // Priority 4 fallback: no quality data in comp pool at all
+        if (refPrice == null) {
+          refPrice   = Math.min(imPrice, w3bPrice);
+          compSource = 'bonus-only';
+        }
+
+      } else {
+        // No quality data on this listing — cheapest bonus-matched
+        refPrice   = Math.min(imPrice, w3bPrice);
+        compSource = 'bonus-only';
       }
 
-      listing.baseCompPrice     = baseCompPrice;
-      listing.qualityMultiplier = qualMult;
-      listing.qualityMatched    = anyQualityMatched;
-      listing.histUsedAsRef     = histUsedAsRef;
-      listing.refPrice          = Math.round(refPriceBase * qualMult);
-      listing.imPrice           = imPrice  === Infinity ? null : imPrice;
-      listing.w3bPrice          = w3bPrice === Infinity ? null : w3bPrice;
+      listing.refPrice    = Math.round(refPrice);
+      listing.compSource  = compSource;
+      listing.interpLower = interpLower;
+      listing.interpUpper = interpUpper;
+      listing.qualityMatched = anyQualityMatched;
+      listing.histUsedAsRef  = false;
+      listing.imPrice    = imPrice  === Infinity ? null : imPrice;
+      listing.w3bPrice   = w3bPrice === Infinity ? null : w3bPrice;
     }
   }
 
