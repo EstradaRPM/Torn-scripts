@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.16.0
+// @version      1.16.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.16.0';
+  const SCRIPT_VERSION = '1.16.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -719,11 +719,11 @@
   const BB_PER_CACHE = 20;
 
   /**
-   * Fetches the weighted $/BB rate from all 5 combat caches.
+   * Fetches the $/BB rate using the cheapest of all 5 combat caches.
    *
-   * Weight formula: weight_i = (1/price_i) / sum(1/price_j)
-   * Cheaper caches automatically receive higher weight, making the
-   * resulting rate more conservative (pulled toward the cheapest cache).
+   * Rate = min(cache prices) / 20. Checking all 5 caches ensures we always
+   * use the true cheapest cost to acquire one BB, regardless of which cache
+   * happens to be on sale. Result is always ≤ the small-arms-only rate.
    *
    * Item IDs are resolved once from the Torn catalog and persisted as a
    * name→id map in localStorage. Only missing IDs trigger a catalog fetch.
@@ -783,12 +783,11 @@
         return null;
       }
 
-      // Inverse-price weighted average: cheaper cache → higher weight
-      const invSum = valid.reduce((s, r) => s + 1 / r.price, 0);
-      const weightedRate = valid.reduce((s, r) => {
-        const weight = (1 / r.price) / invSum;
-        return s + weight * (r.price / BB_PER_CACHE);
-      }, 0);
+      // Use the minimum price — whichever cache is cheapest right now
+      // defines the true cost to acquire one BB. This is always ≤ the
+      // small-arms-only rate and drops further if any cache undercuts it.
+      const minPrice     = Math.min(...valid.map(r => r.price));
+      const weightedRate = minPrice / BB_PER_CACHE;
 
       const cachePrices = Object.fromEntries(valid.map(r => [r.name, r.price]));
       const bbRateData  = { rate: weightedRate, cachePrices, fetchedAt: Date.now() };
