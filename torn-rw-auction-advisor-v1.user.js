@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.5
+// @version      1.9.6
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.5';
+  const SCRIPT_VERSION = '1.9.6';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -372,13 +372,13 @@
       if (!cacheItemId) {
         const catalogUrl  = `https://api.torn.com/torn/?selections=items&key=${key}&comment=rw-advisor`;
         const catalogData = await apiFetch(catalogUrl);
-        console.log('[RW Advisor] fetchBBRate items catalog raw:', catalogData);
-
         if (catalogData.error) { handleApiError(catalogData.error); return null; }
 
         const entry = Object.entries(catalogData.items || {}).find(
           ([, item]) => item.name?.toLowerCase() === 'small arms cache'
         );
+        // Log just the matched entry — full catalog is thousands of items
+        console.log('[RW Advisor] fetchBBRate catalog match:', JSON.stringify(entry ?? null));
         if (!entry) {
           MEM.fetchError = 'Small Arms Cache not found in item catalog';
           return null;
@@ -391,7 +391,8 @@
       // Fetch the cheapest listing for the cache item
       const marketUrl  = `https://api.torn.com/v2/market/${cacheItemId}/itemmarket?limit=1&key=${key}&comment=rw-advisor`;
       const marketData = await apiFetch(marketUrl);
-      console.log('[RW Advisor] fetchBBRate market raw:', marketData);
+      // Step 3 diagnostic — log full raw response before any parsing
+      console.log('[RW Advisor] fetchBBRate market raw:', JSON.stringify(marketData));
 
       if (marketData.error) { handleApiError(marketData.error); return null; }
 
@@ -405,6 +406,7 @@
       const bbRateData = { rate: cachePrice / 20, cachePrice, fetchedAt: Date.now() };
       MEM.bbRate = bbRateData;
       Store.set(KEYS.BB_RATE, JSON.stringify(bbRateData));
+      console.log(`[RW Advisor] fetchBBRate: cachePrice=${cachePrice} rate=${bbRateData.rate} $/BB`);
       return bbRateData;
     } catch (err) {
       MEM.fetchError = `fetchBBRate error: ${err.message}`;
