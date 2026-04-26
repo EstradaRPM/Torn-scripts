@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.8
+// @version      1.15.9
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.8';
+  const SCRIPT_VERSION = '1.15.9';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1594,6 +1594,25 @@
       } else {
         refPrice   = Math.min(imPrice, w3bPrice);
         compSource = 'bonus-only';
+      }
+
+      // ── Market ceiling: prevent overpriced outlier bazaar listings from inflating refPrice ──
+      // If a bonus-matched listing exists with quality >= target piece AND price < refPrice,
+      // our piece cannot realistically sell for more (buyers will take the better piece instead).
+      if (refPrice != null && listing.qualityPct != null) {
+        const allPoints = [
+          ...(imComp?.bonusMatchedPoints  ?? []),
+          ...(w3bComp?.bonusMatchedPoints ?? []),
+        ];
+        const betterCheaper = allPoints
+          .filter(p => p.quality >= listing.qualityPct && p.price < refPrice)
+          .sort((a, b) => a.price - b.price)[0];
+        if (betterCheaper) {
+          refPrice   = betterCheaper.price;
+          compSource = 'bonus-only';
+          interpLower = null;
+          interpUpper = null;
+        }
       }
 
       // ── King's cap for HQ/exceptional (ceiling on maxOffer, not on refPrice) ─
