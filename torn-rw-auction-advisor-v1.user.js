@@ -1331,26 +1331,7 @@
       </table>`;
   }
 
-  // ── Tab switching ─────────────────────────────────────────────────────────────
-
-  panel.querySelector('#rw-tabs').addEventListener('click', e => {
-    const tab = e.target.closest('.rw-tab');
-    if (!tab) return;
-    const id = tab.dataset.tab;
-    panel.querySelectorAll('.rw-tab').forEach(t  => t.classList.toggle('rw-active', t.dataset.tab === id));
-    panel.querySelectorAll('.rw-pane').forEach(p => p.classList.toggle('rw-active', p.id === `rw-pane-${id}`));
-  });
-
-  // ── Collapse ──────────────────────────────────────────────────────────────────
-
-  collapseBtn.addEventListener('click', () => {
-    MEM.collapsed = !MEM.collapsed;
-    panel.classList.toggle('rw-collapsed', MEM.collapsed);
-    collapseBtn.textContent = MEM.collapsed ? '+' : '−';
-    Store.set(KEYS.COLLAPSED, String(MEM.collapsed));
-  });
-
-  // ── Settings inputs ───────────────────────────────────────────────────────────
+  // ── Settings event wiring ────────────────────────────────────────────────────
 
   if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
 
@@ -1359,7 +1340,7 @@
   qualRangeInput.value  = MEM.settings.qualityMatchRange;
   bonusRangeInput.value = MEM.settings.bonusMatchRange;
   if (MEM.settings.sellViaTrade) {
-    tradeToggle.classList.add('rw-on');
+    tradeToggle.classList.add('rwa-on');
     tradeLabel.textContent = 'On';
   }
 
@@ -1368,7 +1349,7 @@
     if (isNaN(v) || v < 1 || v > 99) return;
     MEM.settings.targetProfitPct = v;
     Store.set(KEYS.TARGET_PROFIT_PCT, String(v));
-    render();
+    renderInline();
   });
 
   mugInput.addEventListener('change', () => {
@@ -1376,7 +1357,7 @@
     if (isNaN(v) || v < 0 || v > 30) return;
     MEM.settings.mugBufferPct = v;
     Store.set(KEYS.MUG_BUFFER_PCT, String(v));
-    render();
+    renderInline();
   });
 
   apikeyInput.addEventListener('change', () => {
@@ -1390,10 +1371,10 @@
 
   tradeToggle.addEventListener('click', () => {
     MEM.settings.sellViaTrade = !MEM.settings.sellViaTrade;
-    tradeToggle.classList.toggle('rw-on', MEM.settings.sellViaTrade);
+    tradeToggle.classList.toggle('rwa-on', MEM.settings.sellViaTrade);
     tradeLabel.textContent = MEM.settings.sellViaTrade ? 'On' : 'Off';
     Store.set(KEYS.SELL_VIA_TRADE, String(MEM.settings.sellViaTrade));
-    render();
+    renderInline();
   });
 
   qualRangeInput.addEventListener('change', () => {
@@ -1402,7 +1383,7 @@
     MEM.settings.qualityMatchRange = v;
     Store.set(KEYS.QUALITY_MATCH_RANGE, String(v));
     MEM.historicalSales = {};
-    render();
+    renderInline();
   });
 
   bonusRangeInput.addEventListener('change', () => {
@@ -1411,22 +1392,12 @@
     MEM.settings.bonusMatchRange = v;
     Store.set(KEYS.BONUS_MATCH_RANGE, String(v));
     MEM.historicalSales = {};
-    render();
+    renderInline();
   });
 
-  // ── Restore panel state ───────────────────────────────────────────────────────
-
-  if (MEM.collapsed) {
-    panel.classList.add('rw-collapsed');
-    collapseBtn.textContent = '+';
-  }
-
-  // Apply saved drag position (left+top); CSS default (top:80px right:20px) used before first drag
-  if (MEM.position?.left != null) {
-    panel.style.right  = 'auto';
-    panel.style.left   = typeof MEM.position.left === 'number' ? MEM.position.left + 'px' : MEM.position.left;
-    panel.style.top    = typeof MEM.position.top  === 'number' ? MEM.position.top  + 'px' : MEM.position.top;
-  }
+  settingsModal.querySelector('.rwa-modal-close').addEventListener('click', () => settingsModal.close());
+  settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
+  rwaGearBtn.addEventListener('click', () => settingsModal.showModal());
 
   // ── Drag ──────────────────────────────────────────────────────────────────────
 
