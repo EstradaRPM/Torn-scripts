@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.6
+// @version      1.9.7
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.6';
+  const SCRIPT_VERSION = '1.9.7';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -310,6 +310,9 @@
 
   // ── Torn API fetch functions ────────────────────────────────────────────────
 
+  // Log the full raw response only for the first armor item fetched to avoid flooding.
+  let _itemMarketLogDone = false;
+
   /**
    * Fetches item market listings for a specific Torn item ID.
    * Uses GET /v2/market/{id}/itemmarket — globally cached by Torn; poll on
@@ -326,12 +329,18 @@
     try {
       const url  = `https://api.torn.com/v2/market/${itemId}/itemmarket?limit=10&key=${key}&comment=rw-advisor`;
       const data = await apiFetch(url);
-      console.log(`[RW Advisor] fetchItemMarketComp(${itemId}) raw:`, data);
+
+      // Step 4 diagnostic: full raw JSON for the first item only; summary for all
+      if (!_itemMarketLogDone) {
+        console.log(`[RW Advisor] fetchItemMarketComp(${itemId}) full raw:`, JSON.stringify(data));
+        _itemMarketLogDone = true;
+      }
 
       if (data.error) { handleApiError(data.error); return null; }
 
       const im = data.itemmarket;
       if (!im?.listings?.length) {
+        console.log(`[RW Advisor] fetchItemMarketComp(${itemId}): no listings`);
         MEM.itemMarketComps[itemId] = null;
         return null;
       }
@@ -346,6 +355,7 @@
       };
 
       MEM.itemMarketComps[itemId] = comp;
+      console.log(`[RW Advisor] fetchItemMarketComp(${itemId}): lowestPrice=${lowestPrice} listings=${im.listings.length}`);
       return comp;
     } catch (err) {
       MEM.fetchError = `fetchItemMarketComp error: ${err.message}`;
