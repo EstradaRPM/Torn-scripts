@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.0
+// @version      1.15.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.0';
+  const SCRIPT_VERSION = '1.15.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -896,6 +896,22 @@
     }
     #rw-collapse-btn:hover { border-color: #00ff88; color: #00ff88; }
 
+    #rw-refresh-btn {
+      background: none;
+      border: 1px solid #2a3a4a;
+      border-radius: 4px;
+      color: #c0d0c8;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      padding: 2px 7px;
+      margin-right: 6px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #rw-refresh-btn:hover { border-color: #00ff88; color: #00ff88; }
+    #rw-refresh-btn.rw-spinning { animation: rwSpin 0.6s linear infinite; }
+    @keyframes rwSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
     /* ── Body ── */
     #rw-body {
       display: flex;
@@ -1036,7 +1052,10 @@
   panel.innerHTML = `
     <div id="rw-header">
       <span id="rw-title">RW Auction Advisor v${SCRIPT_VERSION}</span>
-      <button id="rw-collapse-btn" title="Toggle panel">&minus;</button>
+      <div style="display:flex;align-items:center;gap:4px">
+        <button id="rw-refresh-btn" title="Re-scan page">↻</button>
+        <button id="rw-collapse-btn" title="Toggle panel">&minus;</button>
+      </div>
     </div>
 
     <div id="rw-body">
@@ -1102,6 +1121,7 @@
   // ── Element refs ─────────────────────────────────────────────────────────────
 
   const collapseBtn      = panel.querySelector('#rw-collapse-btn');
+  const refreshBtn       = panel.querySelector('#rw-refresh-btn');
   const rwHeader         = panel.querySelector('#rw-header');
   const listingsContent  = panel.querySelector('#rw-listings-content');
   const profitInput      = panel.querySelector('#rw-input-profit');
@@ -1525,6 +1545,50 @@
     render();
   }
 
-  init();
+  // ── Init guard + re-init on AJAX page changes ─────────────────────────────
+
+  let isIniting   = false;
+  let reinitTimer = null;
+
+  async function safeInit() {
+    if (isIniting) return;
+    isIniting = true;
+    refreshBtn.classList.add('rw-spinning');
+    listObserver.disconnect();
+    try {
+      await init();
+    } finally {
+      isIniting = false;
+      refreshBtn.classList.remove('rw-spinning');
+      listObserver.observe(observeTarget, { childList: true, subtree: true });
+    }
+  }
+
+  // Debounced re-init triggered by MutationObserver.
+  // Fires when the items-list DOM changes (AJAX pagination / tab switches).
+  function scheduleReinit() {
+    clearTimeout(reinitTimer);
+    reinitTimer = setTimeout(() => {
+      if (document.querySelector('ul.items-list li:not(.last):not(.clear)')) {
+        MEM.historicalSales = {};
+        safeInit();
+      }
+    }, 600);
+  }
+
+  // Watch the main content area for listing changes caused by AJAX navigation.
+  // Observe a stable ancestor; fall back to body if the inner container isn't found.
+  const observeTarget = document.querySelector('#mainContainer, .content, .cont-wrap') ?? document.body;
+  const listObserver  = new MutationObserver(scheduleReinit);
+  listObserver.observe(observeTarget, { childList: true, subtree: true });
+
+  // Manual refresh button
+  refreshBtn.addEventListener('click', () => {
+    MEM.historicalSales = {};
+    safeInit();
+  });
+
+  // Initial parse — delayed so AJAX content has time to settle before we scan.
+  setTimeout(safeInit, 500);
 
 })();
