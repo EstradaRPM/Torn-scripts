@@ -1,5 +1,19 @@
 # Torn Scripts — Claude Guidelines
 
+## Session Memory
+
+At the **start of every session**, immediately read `.claude/memory.md`. The SessionStart hook will output its contents automatically, but if for any reason it wasn't shown, read the file explicitly before doing anything else.
+
+At the **end of any session where meaningful work was done**, update `.claude/memory.md` with:
+- What is currently WIP (be specific: file names, function names, line numbers)
+- Key decisions made this session and the reasoning
+- Any open questions or blockers
+- Concrete next steps for the following session
+
+Keep the file under 300 lines. Replace stale entries rather than appending indefinitely. Use the date in the `_Last updated_` line.
+
+---
+
 ## Repository Purpose
 
 Personal collection of scripts for the browser game **Torn City** (torn.com). Scripts range from Tampermonkey/Greasemonkey userscripts (`.user.js`) to standalone tools and utilities. All scripts are Torn-specific.
