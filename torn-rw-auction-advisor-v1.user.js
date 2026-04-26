@@ -5,7 +5,8 @@
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      api.torn.com
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-rw-auction-advisor-v1.user.js
 // @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-rw-auction-advisor-v1.user.js
 // ==/UserScript==
@@ -29,6 +30,7 @@
     MUG_BUFFER_PCT    : 'rw_mugBufferPct',
     SELL_VIA_TRADE    : 'rw_sellViaTrade',
     BB_RATE           : 'rw_bbRate',
+    CACHE_ITEM_ID     : 'rw_cacheItemId',
     COLLAPSED         : 'rw_collapsed',
     POSITION          : 'rw_position',
   };
@@ -251,5 +253,156 @@
       );
     });
   })();
+
+  // ── API key helper ──────────────────────────────────────────────────────────
+
+  // Prefer PDA-injected key; fall back to manually stored key
+  function getApiKey() {
+    if (API_KEY !== '###PDA-APIKEY###') return API_KEY;
+    return Store.get('rw_apikey') ?? '';
+  }
+
+  // ── Network helpers ─────────────────────────────────────────────────────────
+
+  // GM_xmlhttpRequest wrapper — bypasses CORS for cross-origin API calls.
+  // Resolves with raw response text; caller must JSON.parse.
+  function gmFetch(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method   : 'GET',
+        url,
+        onload   : r  => resolve(r.responseText),
+        onerror  : () => reject(new Error('GM_xmlhttpRequest network error')),
+        ontimeout: () => reject(new Error('GM_xmlhttpRequest timeout')),
+      });
+    });
+  }
+
+  // Tries native fetch first (works in some environments); falls back to
+  // GM_xmlhttpRequest when CORS or a network error is thrown.
+  async function apiFetch(url) {
+    try {
+      const r    = await fetch(url);
+      const text = await r.text();
+      return JSON.parse(text);
+    } catch {
+      const text = await gmFetch(url);
+      return JSON.parse(text);
+    }
+  }
+
+  // Centralised API error handler. Clears persisted state on fatal key errors.
+  function handleApiError(err) {
+    MEM.fetchError = `API error [${err.code}]: ${err.error}`;
+    if (err.code === 2 || err.code === 13) {
+      // Incorrect key (2) or key owner banned (13) — stop using it
+      Store.remove(KEYS.BB_RATE);
+      Store.remove(KEYS.CACHE_ITEM_ID);
+    }
+  }
+
+  // ── Torn API fetch functions ────────────────────────────────────────────────
+
+  /**
+   * Fetches item market listings for a specific Torn item ID.
+   * Uses GET /v2/market/{id}/itemmarket — globally cached by Torn; poll on
+   * user action only, not on a timer.
+   *
+   * Stores result in MEM.itemMarketComps[itemId].
+   * @param {number} itemId
+   * @returns {Promise<{itemId, lowestPrice, listings, cacheTimestamp, fetchedAt}|null>}
+   */
+  async function fetchItemMarketComp(itemId) {
+    const key = getApiKey();
+    if (!key) { MEM.fetchError = 'No API key — enter one in Settings'; return null; }
+
+    try {
+      const url  = `https://api.torn.com/v2/market/${itemId}/itemmarket?limit=10&key=${key}&comment=rw-advisor`;
+      const data = await apiFetch(url);
+      console.log(`[RW Advisor] fetchItemMarketComp(${itemId}) raw:`, data);
+
+      if (data.error) { handleApiError(data.error); return null; }
+
+      const im = data.itemmarket;
+      if (!im?.listings?.length) {
+        MEM.itemMarketComps[itemId] = null;
+        return null;
+      }
+
+      const lowestPrice = Math.min(...im.listings.map(l => l.price));
+      const comp = {
+        itemId,
+        lowestPrice,
+        listings      : im.listings,
+        cacheTimestamp: im.cache_timestamp,
+        fetchedAt     : Date.now(),
+      };
+
+      MEM.itemMarketComps[itemId] = comp;
+      return comp;
+    } catch (err) {
+      MEM.fetchError = `fetchItemMarketComp error: ${err.message}`;
+      return null;
+    }
+  }
+
+  /**
+   * Fetches the current $/BB rate by looking up the cheapest Small Arms Cache
+   * listing on the item market. Resolves the cache item ID at runtime via the
+   * Torn v1 items catalog and caches it in localStorage to avoid repeat lookups.
+   *
+   * Stores result in MEM.bbRate and persists to localStorage.
+   * @returns {Promise<{rate, cachePrice, fetchedAt}|null>}
+   */
+  async function fetchBBRate() {
+    const key = getApiKey();
+    if (!key) { MEM.fetchError = 'No API key — enter one in Settings'; return null; }
+
+    try {
+      // Resolve Small Arms Cache item ID (cached after first lookup)
+      let cacheItemId = parseInt(Store.get(KEYS.CACHE_ITEM_ID), 10) || null;
+
+      if (!cacheItemId) {
+        const catalogUrl  = `https://api.torn.com/torn/?selections=items&key=${key}&comment=rw-advisor`;
+        const catalogData = await apiFetch(catalogUrl);
+        console.log('[RW Advisor] fetchBBRate items catalog raw:', catalogData);
+
+        if (catalogData.error) { handleApiError(catalogData.error); return null; }
+
+        const entry = Object.entries(catalogData.items || {}).find(
+          ([, item]) => item.name?.toLowerCase() === 'small arms cache'
+        );
+        if (!entry) {
+          MEM.fetchError = 'Small Arms Cache not found in item catalog';
+          return null;
+        }
+
+        cacheItemId = parseInt(entry[0], 10);
+        Store.set(KEYS.CACHE_ITEM_ID, String(cacheItemId));
+      }
+
+      // Fetch the cheapest listing for the cache item
+      const marketUrl  = `https://api.torn.com/v2/market/${cacheItemId}/itemmarket?limit=1&key=${key}&comment=rw-advisor`;
+      const marketData = await apiFetch(marketUrl);
+      console.log('[RW Advisor] fetchBBRate market raw:', marketData);
+
+      if (marketData.error) { handleApiError(marketData.error); return null; }
+
+      const listings = marketData.itemmarket?.listings;
+      if (!listings?.length) {
+        MEM.fetchError = 'No listings found for Small Arms Cache';
+        return null;
+      }
+
+      const cachePrice = listings[0].price;
+      const bbRateData = { rate: cachePrice / 20, cachePrice, fetchedAt: Date.now() };
+      MEM.bbRate = bbRateData;
+      Store.set(KEYS.BB_RATE, JSON.stringify(bbRateData));
+      return bbRateData;
+    } catch (err) {
+      MEM.fetchError = `fetchBBRate error: ${err.message}`;
+      return null;
+    }
+  }
 
 })();
