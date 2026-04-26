@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.8.0
+// @version      1.9.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.8.0';
+  const SCRIPT_VERSION = '1.9.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -748,6 +748,13 @@
 
       <!-- Settings pane -->
       <div id="rw-pane-settings" class="rw-pane">
+        <div class="rw-settings-label">API</div>
+
+        <div class="rw-field">
+          <label for="rw-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
+          <input id="rw-input-apikey" class="rw-input" type="password" placeholder="paste key here" style="width:240px">
+        </div>
+
         <div class="rw-settings-label">Pricing</div>
 
         <div class="rw-field">
@@ -783,6 +790,7 @@
   const mugInput        = panel.querySelector('#rw-input-mug');
   const tradeToggle     = panel.querySelector('#rw-toggle-trade');
   const tradeLabel      = panel.querySelector('#rw-toggle-trade-label');
+  const apikeyInput     = panel.querySelector('#rw-input-apikey');
 
   // ── render() ─────────────────────────────────────────────────────────────────
 
@@ -881,6 +889,8 @@
 
   // ── Settings inputs ───────────────────────────────────────────────────────────
 
+  if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
+
   profitInput.value = MEM.settings.targetProfitPct;
   mugInput.value    = MEM.settings.mugBufferPct;
   if (MEM.settings.sellViaTrade) {
@@ -902,6 +912,15 @@
     MEM.settings.mugBufferPct = v;
     Store.set(KEYS.MUG_BUFFER_PCT, String(v));
     render();
+  });
+
+  apikeyInput.addEventListener('change', () => {
+    const val = apikeyInput.value.trim();
+    if (val) {
+      Store.set('rw_apikey', val);
+      apikeyInput.value       = '';
+      apikeyInput.placeholder = '(key saved)';
+    }
   });
 
   tradeToggle.addEventListener('click', () => {
