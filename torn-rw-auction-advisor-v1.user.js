@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.12.0
+// @version      1.13.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.12.0';
+  const SCRIPT_VERSION = '1.13.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -399,28 +399,41 @@
   }
 
   /**
-   * Returns the lowest item market price and avgQuality for listings whose
-   * bonus value is within BONUS_MATCH_RANGE of the target bonusPct.
-   * Falls back to unfiltered lowestPrice if no bonus-matched listings exist.
+   * Returns the lowest item market price for listings matching both bonus and
+   * quality proximity. Falls back to bonus-only match if no quality match exists.
+   * Returns a `qualityMatched` flag so the caller can decide whether a premium
+   * multiplier is still needed.
    *
-   * @param {number} itemId
-   * @param {number} bonusPct
-   * @returns {{ price: number, avgQuality: number|null } | null}
+   * @param {number}      itemId
+   * @param {number}      bonusPct
+   * @param {number|null} qualityPct  - auction listing quality; null = skip quality filter
+   * @returns {{ price: number, avgQuality: number|null, qualityMatched: boolean } | null}
    */
-  function getItemMarketComp(itemId, bonusPct) {
+  function getItemMarketComp(itemId, bonusPct, qualityPct = null) {
     const comp = itemId ? MEM.itemMarketComps[itemId] : null;
     if (!comp) return null;
 
-    const matched = comp.listings.filter(l => {
+    const bonusMatched = comp.listings.filter(l => {
       const bv = l.item_details?.bonuses?.[0]?.value ?? null;
       return bv != null && Math.abs(bv - bonusPct) <= BONUS_MATCH_RANGE;
     });
+    const bonusSrc = bonusMatched.length ? bonusMatched : comp.listings;
 
-    const src      = matched.length ? matched : comp.listings;
-    const price    = Math.min(...src.map(l => l.price));
-    const qs       = src.map(l => l.item_details?.stats?.quality).filter(q => q != null);
+    // Refine by quality proximity when the listing quality is known
+    let src = bonusSrc;
+    let qualityMatched = false;
+    if (qualityPct != null) {
+      const qualFiltered = bonusSrc.filter(l => {
+        const q = l.item_details?.stats?.quality ?? null;
+        return q != null && Math.abs(q - qualityPct) <= QUALITY_MATCH_RANGE;
+      });
+      if (qualFiltered.length) { src = qualFiltered; qualityMatched = true; }
+    }
+
+    const price      = Math.min(...src.map(l => l.price));
+    const qs         = src.map(l => l.item_details?.stats?.quality).filter(q => q != null);
     const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : comp.avgQuality;
-    return { price, avgQuality };
+    return { price, avgQuality, qualityMatched };
   }
 
   /**
@@ -448,35 +461,49 @@
     }
   }
 
-  /**
-   * Returns the lowest bazaar price from TornW3B for a specific armor piece
-   * with a bonus value within BONUS_MATCH_RANGE of the target bonus.
-   * quality from TornW3B is a string percentage — parse with parseFloat().
-   *
-   * @param {string} armorName - e.g. 'Riot Gloves'
-   * @param {string} armorSet  - 'Riot' | 'Assault'
-   * @param {string} rarity    - 'yellow' | 'orange' | 'red'
-   * @param {number} bonusPct  - target bonus percentage
-   * @returns {{ price: number, avgQuality: number|null } | null}
-   */
-  const BONUS_MATCH_RANGE = 2;
+  const BONUS_MATCH_RANGE   = 2;
+  const QUALITY_MATCH_RANGE = 10;
 
-  function getTornW3BComp(armorName, armorSet, rarity, bonusPct) {
+  /**
+   * Returns the lowest TornW3B bazaar price for an armor piece matching bonus
+   * and, when possible, quality proximity. Falls back to bonus-only match.
+   * Returns a `qualityMatched` flag so the caller knows whether a multiplier
+   * is still needed.
+   *
+   * @param {string}      armorName
+   * @param {string}      armorSet
+   * @param {string}      rarity
+   * @param {number}      bonusPct
+   * @param {number|null} qualityPct  - auction listing quality; null = skip quality filter
+   * @returns {{ price: number, avgQuality: number|null, qualityMatched: boolean } | null}
+   */
+  function getTornW3BComp(armorName, armorSet, rarity, bonusPct, qualityPct = null) {
     const cacheKey = `${armorSet}_${rarity}`;
     const all      = MEM.tornw3bComps[cacheKey];
     if (!all?.length) return null;
 
     const itemId = armorItemIds[armorName];
-    const matched = all.filter(w =>
+    const bonusMatched = all.filter(w =>
       w.itemId === itemId &&
       Math.abs((Object.values(w.bonuses ?? {})[0]?.value ?? 0) - bonusPct) <= BONUS_MATCH_RANGE
     );
-    if (!matched.length) return null;
+    if (!bonusMatched.length) return null;
 
-    const price      = Math.min(...matched.map(w => w.price));
-    const qs         = matched.map(w => parseFloat(w.quality)).filter(q => !isNaN(q));
+    // Refine by quality proximity when the listing quality is known
+    let src = bonusMatched;
+    let qualityMatched = false;
+    if (qualityPct != null) {
+      const qualFiltered = bonusMatched.filter(w => {
+        const q = parseFloat(w.quality);
+        return !isNaN(q) && Math.abs(q - qualityPct) <= QUALITY_MATCH_RANGE;
+      });
+      if (qualFiltered.length) { src = qualFiltered; qualityMatched = true; }
+    }
+
+    const price      = Math.min(...src.map(w => w.price));
+    const qs         = src.map(w => parseFloat(w.quality)).filter(q => !isNaN(q));
     const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : null;
-    return { price, avgQuality };
+    return { price, avgQuality, qualityMatched };
   }
 
   /**
@@ -978,13 +1005,15 @@
       // Net Profit / ROI cells: green = positive, red = negative
       const profitColor = netProfit != null ? (netProfit > 0 ? '#00cc66' : '#ff4444') : '';
 
-      // Show base comp price; append multiplier badge when quality premium applies
+      // Mkt Comp cell:
+      //   quality-matched → show refPrice as-is (direct market evidence)
+      //   fallback estimate → show base comp + amber ×N badge (multiplier applied)
       const qualMult      = l.qualityMultiplier ?? 1.0;
       const baseComp      = l.baseCompPrice ?? refPrice;
-      const compCellInner = baseComp != null
+      const compCellInner = refPrice != null
         ? (qualMult > 1.0
-            ? `${fmtM(baseComp)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700">×${qualMult.toFixed(1)}</span>`
-            : fmtM(baseComp))
+            ? `${fmtM(baseComp)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality-matched comps — estimated from cheapest bonus comp">×${qualMult.toFixed(1)} est</span>`
+            : fmtM(refPrice))
         : '—';
 
       return `<tr>
@@ -1184,34 +1213,60 @@
     }
   }
 
-  // Enriches each listing with qualityPct and refPrice derived from both
-  // itemmarket (bonus-filtered) and TornW3B bazaar (bonus-filtered) data.
-  // refPrice = lowest comparable price across both sources.
-  // qualityPct = avgQuality of whichever source produced the lower price.
+  // Enriches each listing with refPrice derived from item market + TornW3B data.
+  //
+  // Priority order for refPrice:
+  //   1. Lowest price among quality-matched comps (bonus ±2%, quality ±10pts) — direct market evidence
+  //   2. Cheapest bonus-matched comp × quality multiplier — fallback for pieces with no quality comps
+  //
+  // When quality-matched comps exist we use their price directly; the multiplier is
+  // only needed for pieces so rare/high-quality that the market has no similar listings.
   function enrichListingsFromMarketData() {
     for (const listing of MEM.listings) {
-      const itemId   = armorItemIds[listing.name];
-      const imComp   = getItemMarketComp(itemId, listing.bonusPct);
-      const w3bComp  = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct);
+      const itemId  = armorItemIds[listing.name];
+      const imComp  = getItemMarketComp(itemId, listing.bonusPct, listing.qualityPct);
+      const w3bComp = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, listing.qualityPct);
 
       const imPrice  = imComp?.price  ?? Infinity;
       const w3bPrice = w3bComp?.price ?? Infinity;
 
       if (imPrice === Infinity && w3bPrice === Infinity) continue;
 
-      const baseCompPrice  = Math.min(imPrice, w3bPrice);
-      const winner         = w3bPrice <= imPrice ? w3bComp : imComp;
+      const imQM  = imComp?.qualityMatched  ?? false;
+      const w3bQM = w3bComp?.qualityMatched ?? false;
+      const anyQualityMatched = imQM || w3bQM;
+
+      // When quality-matched comps exist, prefer them over a cheaper non-quality-matched
+      // comp — a lower-quality listing is not a valid resale reference for this piece.
+      let baseCompPrice, winner;
+      if (anyQualityMatched) {
+        const candidates = [];
+        if (imQM)  candidates.push({ price: imPrice,  comp: imComp  });
+        if (w3bQM) candidates.push({ price: w3bPrice, comp: w3bComp });
+        const best = candidates.reduce((a, b) => a.price <= b.price ? a : b);
+        baseCompPrice = best.price;
+        winner        = best.comp;
+      } else {
+        baseCompPrice = Math.min(imPrice, w3bPrice);
+        winner        = w3bPrice <= imPrice ? w3bComp : imComp;
+      }
+
       const compAvgQuality = winner?.avgQuality ?? null;
 
-      // Fill DOM-missing quality from comp avg before multiplier calc.
-      // When quality was unknown, delta will be 0 → multiplier stays 1.0.
+      // Fill DOM-missing quality from comp avg.
+      // When quality was unknown the delta will be 0 → multiplier stays 1.0.
       if (listing.qualityPct == null) listing.qualityPct = compAvgQuality;
 
-      const { highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
-      const qualMult = getQualityMultiplier(listing.qualityPct, compAvgQuality, listing.bonusPct, highTierThreshold);
+      // Multiplier is a fallback only — not applied when we have quality-matched comps.
+      let qualMult = 1.0;
+      if (!anyQualityMatched) {
+        const { highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
+        qualMult = getQualityMultiplier(listing.qualityPct, compAvgQuality, listing.bonusPct, highTierThreshold);
+      }
 
       listing.baseCompPrice     = baseCompPrice;
       listing.qualityMultiplier = qualMult;
+      listing.qualityMatched    = anyQualityMatched;
       listing.refPrice          = Math.round(baseCompPrice * qualMult);
       listing.imPrice           = imPrice  === Infinity ? null : imPrice;
       listing.w3bPrice          = w3bPrice === Infinity ? null : w3bPrice;
