@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.7
+// @version      1.9.8
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.7';
+  const SCRIPT_VERSION = '1.9.8';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -346,16 +346,23 @@
       }
 
       const lowestPrice = Math.min(...im.listings.map(l => l.price));
+
+      // stats.quality is already a percentage (e.g. 24.59), not a 0-1 decimal.
+      // Average across fetched listings as a proxy for auction listing quality.
+      const qs         = im.listings.map(l => l.item_details?.stats?.quality).filter(q => q != null);
+      const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : null;
+
       const comp = {
         itemId,
         lowestPrice,
+        avgQuality,
         listings      : im.listings,
         cacheTimestamp: im.cache_timestamp,
         fetchedAt     : Date.now(),
       };
 
       MEM.itemMarketComps[itemId] = comp;
-      console.log(`[RW Advisor] fetchItemMarketComp(${itemId}): lowestPrice=${lowestPrice} listings=${im.listings.length}`);
+      console.log(`[RW Advisor] fetchItemMarketComp(${itemId}): lowestPrice=${lowestPrice} avgQuality=${avgQuality?.toFixed(2)} listings=${im.listings.length}`);
       return comp;
     } catch (err) {
       MEM.fetchError = `fetchItemMarketComp error: ${err.message}`;
@@ -1059,18 +1066,17 @@
     }
   }
 
-  // Populates qualityPct on each listing by matching the per-item UID extracted
-  // from the DOM against item_details.uid in the already-fetched itemmarket data.
-  // quality in the API is a 0–1 decimal; multiply by 100 for percentage.
+  // Populates qualityPct on each listing from the average quality of the fetched
+  // itemmarket listings for that item type. Per-item UID matching is not possible:
+  // DOM "UIDs" (e.g. 7701) are model IDs, not the large per-instance UIDs the API
+  // returns (e.g. 18551905524). stats.quality is already a percentage — no conversion.
   function enrichListingsFromMarketData() {
     for (const listing of MEM.listings) {
-      if (listing.qualityPct != null || !listing.uid) continue;
+      if (listing.qualityPct != null) continue;
       const itemId = armorItemIds[listing.name];
       const comp   = itemId ? MEM.itemMarketComps[itemId] : null;
-      if (!comp?.listings) continue;
-      const match = comp.listings.find(ml => ml.item_details?.uid === listing.uid);
-      if (match?.item_details?.stats?.quality != null) {
-        listing.qualityPct = match.item_details.stats.quality * 100;
+      if (comp?.avgQuality != null) {
+        listing.qualityPct = comp.avgQuality;
       }
     }
   }
