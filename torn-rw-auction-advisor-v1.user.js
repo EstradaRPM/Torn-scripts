@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.3
+// @version      1.15.4
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.3';
+  const SCRIPT_VERSION = '1.15.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -266,7 +266,40 @@
     return null;
   }
 
-  // ── Max offer calculation ───────────────────────────────────────────────────
+  // ── Armor tier classification (King's RW Guide) ────────────────────────────
+
+  // King's guide defines three distinct pricing regimes:
+  //
+  //   base       — quality <25% AND bonus at lower end (≤ baseBonusPct + 1%)
+  //                Riot/Dune: buy at/near BB floor
+  //                Assault:   bid 10–20% below item market value
+  //
+  //   hq         — quality ≥25% OR bonus above base tier
+  //                Any set: bid no more than 2× the cheapest base-stat listing
+  //
+  //   exceptional — quality ≥40% AND bonus ≥ highTierThreshold (e.g. ≥26% Assault/Riot)
+  //                Any set: bid no more than 2.5× the cheapest base-stat listing
+  //
+  // "NEVER BUY DIRECTLY FROM ITEM MARKET" for hq/exceptional — market prices
+  // for high-quality pieces are 3–4× base. Quality-matched market comps are
+  // inflated and must not be used as the resale reference for these tiers.
+  // The reference is always the cheapest available listing × the tier multiplier.
+
+  const HQ_MULTIPLIER          = 2.0;
+  const EXCEPTIONAL_MULTIPLIER = 2.5;
+
+  function classifyArmorTier(qualityPct, bonusPct, baseBonusPct, highTierThreshold) {
+    const isBaseQual  = qualityPct == null || qualityPct < 25;
+    const isBaseBonus = bonusPct   == null || bonusPct <= baseBonusPct + 1;
+    if (isBaseQual && isBaseBonus) return 'base';
+
+    const isExcepQual  = qualityPct != null && qualityPct >= 40;
+    const isHighBonus  = bonusPct   != null && bonusPct  >= highTierThreshold;
+    if (isExcepQual && isHighBonus) return 'exceptional';
+
+    return 'hq';
+  }
+
 
   /**
    * Calculates the recommended max offer price for an auction listing.
@@ -1187,15 +1220,32 @@
         roi               = bid > 0 ? (netProfit / bid) * 100 : null;
       }
 
-      // Mkt Comp cell — badge indicates data quality tier:
-      //   no badge   : direct quality-matched live comp (most precise)
-      //   interp     : amber — interpolated between lower/upper quality brackets
-      //   floor/ceil : amber — only one quality bracket found; conservative bound
-      //   ~          : amber — no quality data in comp pool; cheapest bonus-matched only
+      // Bonus cell: append tier badge per King's RW Guide classification
+      const tier = l.tier ?? 'base';
+      const tierBadge = tier === 'exceptional'
+        ? `&thinsp;<span style="color:#e060e0;font-size:10px;font-weight:700" title="Exceptional: quality ≥40% AND high bonus — King's guide cap: ${EXCEPTIONAL_MULTIPLIER}× base price">EXCEP</span>`
+        : tier === 'hq'
+          ? `&thinsp;<span style="color:#60a0f0;font-size:10px;font-weight:700" title="High quality/bonus — King's guide cap: ${HQ_MULTIPLIER}× base price">HQ</span>`
+          : '';
+
+      // Mkt Comp cell — display depends on tier and comp source:
+      //   BASE tier:
+      //     no badge    — direct quality-matched comp (most precise)
+      //     interp      — amber, interpolated between quality brackets
+      //     floor/ceil  — amber, single quality bracket
+      //     ~           — amber, no quality data; cheapest bonus-matched only
+      //   HQ/EXCEPTIONAL tier:
+      //     blue "×N base" — King's guide multiplier on cheapest listing
       const compSource = l.compSource ?? 'bonus-only';
       let compCellInner;
       if (refPrice == null) {
         compCellInner = '—';
+      } else if (compSource === 'hq-2x' || compSource === 'exceptional-2.5x') {
+        const mult      = compSource === 'exceptional-2.5x' ? EXCEPTIONAL_MULTIPLIER : HQ_MULTIPLIER;
+        const basePrice = l.baseCompPrice;
+        const multColor = compSource === 'exceptional-2.5x' ? '#e060e0' : '#60a0f0';
+        const tip = `King's guide: cheapest listing (${fmtM(basePrice)}) × ${mult} — HQ pieces trade at 3–4× base on market; ×${mult} is the auction bid cap`;
+        compCellInner = `${fmtM(basePrice)}&thinsp;<span style="color:${multColor};font-size:10px;font-weight:700" title="${tip}">×${mult}→</span>&thinsp;${fmtM(refPrice)}`;
       } else if (compSource === 'quality-match') {
         compCellInner = fmtM(refPrice);
       } else if (compSource === 'interpolated') {
@@ -1218,13 +1268,15 @@
       }
 
       // Max Offer cell: green = bid below max, red = at/above max.
-      // Amber ! when comp source is imprecise AND hist median exists AND max offer
-      // exceeds it — signals the live comp may be inflated relative to cleared prices.
+      // Amber ! when comp is imprecise AND hist median exists AND max offer exceeds it.
+      // Suppressed when BB floor is driving max offer (floor guard is the correct
+      // reference for Riot/Dune — hist median below BB floor is expected, not a signal).
       const canColor      = bid != null && maxOffer != null;
       const isBuyZone     = canColor && bid < maxOffer;
       const offerColor    = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
       const histMedian    = l.hist?.median ?? null;
-      const offerRiskFlag = compSource !== 'quality-match' && histMedian != null && maxOffer != null && maxOffer > histMedian;
+      const bbFloorActive = bbFloor != null && maxOffer != null && maxOffer <= bbFloor + 1;
+      const offerRiskFlag = !bbFloorActive && compSource !== 'quality-match' && histMedian != null && maxOffer != null && maxOffer > histMedian;
       const offerWarn     = offerRiskFlag
         ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical auction median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
         : '';
@@ -1235,7 +1287,7 @@
       return `<tr>
         <td>${escHtml(l.name)}</td>
         <td>${escHtml(l.rarity ?? '—')}</td>
-        <td>${escHtml(l.bonusType ?? '—')}</td>
+        <td>${escHtml(l.bonusType ?? '—')}${tierBadge}</td>
         <td>${qualityScore != null ? qualityScore.toFixed(1) : '—'}</td>
         <td>${fmtM(bbFloor)}</td>
         <td>${compCellInner}</td>
@@ -1449,90 +1501,117 @@
     }
   }
 
-  // Enriches each listing with refPrice derived from live market data only.
-  // Historical auction data is intentionally excluded from refPrice — auction
-  // clearing prices are structurally below bazaar/item market resale value and
-  // using them as a resale reference creates a circular discount.
+  // Enriches each listing with refPrice and maxOffer inputs per King's RW Guide.
+  // The methodology differs by armor tier — see classifyArmorTier() above.
   //
-  // Priority order for refPrice:
-  //   1. Cheapest quality-matched comp (bonus ±range, quality ±range) — exact live evidence
-  //   2. Linear interpolation between nearest lower and upper quality brackets
-  //      across all bonus-matched comps (im + w3b combined) — real data, weighted by proximity
-  //   3. Single bracket only (target quality above all comps, or below all comps) — use that
-  //      bound's price as a conservative floor or ceiling respectively
-  //   4. No quality data in any comp — cheapest bonus-matched price, flagged as approximate
+  // BASE tier (Riot/Dune and base-stat Assault):
+  //   refPrice = cheapest quality-matched live comp (interp fallback if no quality match)
+  //   Riot/Dune: BB floor guard applied in calcMaxOffer
   //
-  // Historical data feeds only the risk signal (amber ! on Max Offer).
+  // HQ / EXCEPTIONAL tier (any set, quality ≥25% or high bonus):
+  //   refPrice = cheapest bonus-matched listing × tier multiplier (2.0× or 2.5×)
+  //   King: "NEVER use quality-matched market comps for HQ — those prices are unhinged
+  //          at 3–4× base. Always anchor to cheapest listing."
+  //   Quality-matched and interpolated comps are NOT used for these tiers.
+  //
+  // Historical auction data feeds only the risk signal (amber ! on Max Offer).
   function enrichListingsFromMarketData() {
     for (const listing of MEM.listings) {
       const itemId  = armorItemIds[listing.name];
-      const imComp  = getItemMarketComp(itemId, listing.bonusPct, listing.qualityPct);
-      const w3bComp = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, listing.qualityPct);
+      const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
 
-      const imPrice  = imComp?.price  ?? Infinity;
-      const w3bPrice = w3bComp?.price ?? Infinity;
+      // Classify the piece before selecting comp strategy
+      const tier = classifyArmorTier(listing.qualityPct, listing.bonusPct, baseBonusPct, highTierThreshold);
+      listing.tier = tier;
 
-      if (imPrice === Infinity && w3bPrice === Infinity) continue;
+      if (tier === 'hq' || tier === 'exceptional') {
+        // ── HQ / Exceptional: anchor to cheapest base listing × King multiplier ──
+        // Deliberately skip quality-matched comps — item market prices for HQ pieces
+        // are 3–4× inflated relative to base. Call with qualityPct = null to get
+        // the cheapest bonus-matched listing regardless of quality.
+        const imBase  = getItemMarketComp(itemId, listing.bonusPct, null);
+        const w3bBase = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, null);
 
-      const imQM  = imComp?.qualityMatched  ?? false;
-      const w3bQM = w3bComp?.qualityMatched ?? false;
-      const anyQualityMatched = imQM || w3bQM;
+        const basePrice = Math.min(imBase?.price ?? Infinity, w3bBase?.price ?? Infinity);
+        if (basePrice === Infinity) continue;
 
-      // Fill DOM-missing quality from comp average before interpolation
-      const winner = imPrice <= w3bPrice ? imComp : w3bComp;
-      if (listing.qualityPct == null) listing.qualityPct = winner?.avgQuality ?? null;
+        const mult      = tier === 'exceptional' ? EXCEPTIONAL_MULTIPLIER : HQ_MULTIPLIER;
+        const compSource = tier === 'exceptional' ? 'exceptional-2.5x' : 'hq-2x';
 
-      let refPrice   = null;
-      let compSource = 'bonus-only';
-      let interpLower = null;
-      let interpUpper = null;
+        listing.refPrice     = Math.round(basePrice * mult);
+        listing.baseCompPrice = basePrice;
+        listing.compSource   = compSource;
+        listing.qualityMatched = false;
+        listing.histUsedAsRef  = false;
+        listing.interpLower  = null;
+        listing.interpUpper  = null;
+        listing.imPrice      = imBase?.price  ?? null;
+        listing.w3bPrice     = w3bBase?.price ?? null;
 
-      if (anyQualityMatched) {
-        // Priority 1: direct quality-matched comp — cheapest across both sources
-        const qmPrices = [];
-        if (imQM)  qmPrices.push(imPrice);
-        if (w3bQM) qmPrices.push(w3bPrice);
-        refPrice   = Math.min(...qmPrices);
-        compSource = 'quality-match';
+      } else {
+        // ── Base tier: quality-matched comp with interpolation fallback ──
+        const imComp  = getItemMarketComp(itemId, listing.bonusPct, listing.qualityPct);
+        const w3bComp = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, listing.qualityPct);
 
-      } else if (listing.qualityPct != null) {
-        // Priority 2 & 3: interpolate across all bonus-matched quality points
-        const allPoints = [
-          ...(imComp?.bonusMatchedPoints  ?? []),
-          ...(w3bComp?.bonusMatchedPoints ?? []),
-        ];
+        const imPrice  = imComp?.price  ?? Infinity;
+        const w3bPrice = w3bComp?.price ?? Infinity;
 
-        if (allPoints.length) {
-          const { lower, upper } = findQualityBracket(allPoints, listing.qualityPct);
-          interpLower = lower;
-          interpUpper = upper;
-          const interpolated = interpolateQualityPrice(listing.qualityPct, lower, upper);
-          if (interpolated != null) {
-            refPrice   = interpolated;
-            compSource = (lower && upper) ? 'interpolated' : 'single-bound';
+        if (imPrice === Infinity && w3bPrice === Infinity) continue;
+
+        const imQM  = imComp?.qualityMatched  ?? false;
+        const w3bQM = w3bComp?.qualityMatched ?? false;
+        const anyQualityMatched = imQM || w3bQM;
+
+        // Fill DOM-missing quality from comp average
+        const winner = imPrice <= w3bPrice ? imComp : w3bComp;
+        if (listing.qualityPct == null) listing.qualityPct = winner?.avgQuality ?? null;
+
+        let refPrice    = null;
+        let compSource  = 'bonus-only';
+        let interpLower = null;
+        let interpUpper = null;
+
+        if (anyQualityMatched) {
+          const qmPrices = [];
+          if (imQM)  qmPrices.push(imPrice);
+          if (w3bQM) qmPrices.push(w3bPrice);
+          refPrice   = Math.min(...qmPrices);
+          compSource = 'quality-match';
+
+        } else if (listing.qualityPct != null) {
+          const allPoints = [
+            ...(imComp?.bonusMatchedPoints  ?? []),
+            ...(w3bComp?.bonusMatchedPoints ?? []),
+          ];
+          if (allPoints.length) {
+            const { lower, upper } = findQualityBracket(allPoints, listing.qualityPct);
+            interpLower = lower;
+            interpUpper = upper;
+            const interpolated = interpolateQualityPrice(listing.qualityPct, lower, upper);
+            if (interpolated != null) {
+              refPrice   = interpolated;
+              compSource = (lower && upper) ? 'interpolated' : 'single-bound';
+            }
           }
-        }
-
-        // Priority 4 fallback: no quality data in comp pool at all
-        if (refPrice == null) {
+          if (refPrice == null) {
+            refPrice   = Math.min(imPrice, w3bPrice);
+            compSource = 'bonus-only';
+          }
+        } else {
           refPrice   = Math.min(imPrice, w3bPrice);
           compSource = 'bonus-only';
         }
 
-      } else {
-        // No quality data on this listing — cheapest bonus-matched
-        refPrice   = Math.min(imPrice, w3bPrice);
-        compSource = 'bonus-only';
+        listing.refPrice      = Math.round(refPrice);
+        listing.baseCompPrice = null;
+        listing.compSource    = compSource;
+        listing.qualityMatched = anyQualityMatched;
+        listing.histUsedAsRef  = false;
+        listing.interpLower   = interpLower;
+        listing.interpUpper   = interpUpper;
+        listing.imPrice       = imPrice  === Infinity ? null : imPrice;
+        listing.w3bPrice      = w3bPrice === Infinity ? null : w3bPrice;
       }
-
-      listing.refPrice    = Math.round(refPrice);
-      listing.compSource  = compSource;
-      listing.interpLower = interpLower;
-      listing.interpUpper = interpUpper;
-      listing.qualityMatched = anyQualityMatched;
-      listing.histUsedAsRef  = false;
-      listing.imPrice    = imPrice  === Infinity ? null : imPrice;
-      listing.w3bPrice   = w3bPrice === Infinity ? null : w3bPrice;
     }
   }
 
