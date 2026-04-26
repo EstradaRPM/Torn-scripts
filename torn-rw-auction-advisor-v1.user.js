@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.6
+// @version      1.15.7
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.6';
+  const SCRIPT_VERSION = '1.15.7';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -262,7 +262,9 @@
       return Math.round(lower.price + weight * (upper.price - lower.price));
     }
     if (lower) return lower.price;
-    if (upper) return upper.price;
+    // upper-only: all comps have higher quality than the target.
+    // Returning upper.price would overvalue a lower-quality piece — return null
+    // so the caller can fall back to base-stat comp instead.
     return null;
   }
 
@@ -1265,14 +1267,13 @@
         const up = fmtM(l.interpUpper?.price);
         compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Interpolated between ${lq}% qual (${lp}) and ${uq}% qual (${up})">interp</span>`;
       } else if (compSource === 'single-bound') {
-        const isLower = l.interpLower != null;
-        const bound   = isLower ? l.interpLower : l.interpUpper;
-        const dir     = isLower ? '≥' : '≤';
-        const side    = isLower ? 'floor' : 'ceil';
-        const tip     = isLower
-          ? `Only lower quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality exceeds all comps`
-          : `Only upper quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality below all comps`;
-        compCellInner = `${dir}${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="${tip}">${side}</span>`;
+        const bound = l.interpLower;
+        const tip   = `Only lower quality bound (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — this piece is higher quality than all comps; price is a floor`;
+        compCellInner = `≥${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="${tip}">floor</span>`;
+      } else if (compSource === 'base-fallback') {
+        const uq = l.interpUpper?.quality?.toFixed(1) ?? '?';
+        const up = fmtM(l.interpUpper?.price);
+        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="All market comps are higher quality (cheapest: ${uq}% at ${up}) — used base-stat price as reference; piece is low-quality, valued near base">⌊base</span>`;
       } else {
         compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality data in comp listings — cheapest bonus-matched price only">~</span>`;
       }
@@ -1587,8 +1588,16 @@
           }
         }
         if (refPrice == null) {
-          refPrice   = Math.min(imPrice, w3bPrice);
-          compSource = 'bonus-only';
+          // Upper-bound-only case: all comps are higher quality than the target piece.
+          // Those inflated prices cannot be used — a 5% quality piece is not worth
+          // what a 30% quality listing says. Use base-stat comp as the price floor.
+          if (interpUpper != null && interpLower == null) {
+            const imBase  = getItemMarketComp(itemId, baseBonusPct, null, { strict: true });
+            const w3bBase = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, baseBonusPct, null, { strict: true });
+            const bsp = Math.min(imBase?.price ?? Infinity, w3bBase?.price ?? Infinity);
+            if (bsp < Infinity) { refPrice = bsp; compSource = 'base-fallback'; }
+          }
+          if (refPrice == null) { refPrice = Math.min(imPrice, w3bPrice); compSource = 'bonus-only'; }
         }
       } else {
         refPrice   = Math.min(imPrice, w3bPrice);
