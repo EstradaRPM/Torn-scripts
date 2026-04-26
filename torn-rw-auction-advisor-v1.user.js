@@ -1107,92 +1107,81 @@
   `;
   document.head.appendChild(rwStyle);
 
-  // ── Panel HTML ───────────────────────────────────────────────────────────────
+  // ── Gear cluster HTML ────────────────────────────────────────────────────────
 
-  const panel = document.createElement('div');
-  panel.id = 'rw-panel';
-  panel.innerHTML = `
-    <div id="rw-header">
-      <span id="rw-title">RW Auction Advisor v${SCRIPT_VERSION}</span>
-      <div style="display:flex;align-items:center;gap:4px">
-        <button id="rw-refresh-btn" title="Re-scan page">↻</button>
-        <button id="rw-collapse-btn" title="Toggle panel">&minus;</button>
-      </div>
-    </div>
-
-    <div id="rw-body">
-      <div id="rw-tabs">
-        <div class="rw-tab rw-active" data-tab="listings">Listings</div>
-        <div class="rw-tab"           data-tab="settings">Settings</div>
-      </div>
-
-      <!-- Listings pane -->
-      <div id="rw-pane-listings" class="rw-pane rw-active">
-        <div id="rw-listings-content" style="overflow-y:auto;flex:1">
-          <div class="rw-empty">Scanning page…</div>
-        </div>
-      </div>
-
-      <!-- Settings pane -->
-      <div id="rw-pane-settings" class="rw-pane">
-        <div class="rw-settings-label">API</div>
-
-        <div class="rw-field">
-          <label for="rw-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
-          <input id="rw-input-apikey" class="rw-input" type="password" placeholder="paste key here" style="width:240px">
-        </div>
-
-        <div class="rw-settings-label">Pricing</div>
-
-        <div class="rw-field">
-          <label for="rw-input-profit">Target profit %</label>
-          <input id="rw-input-profit" class="rw-input" type="number" min="1" max="99" step="1">
-        </div>
-
-        <div class="rw-field">
-          <label for="rw-input-mug">Mug buffer %</label>
-          <input id="rw-input-mug" class="rw-input" type="number" min="0" max="30" step="1">
-        </div>
-
-        <div class="rw-field">
-          <label>Sell via trade <span style="font-weight:400;color:#4a6070">(skips 5% market fee)</span></label>
-          <div class="rw-toggle-row">
-            <button id="rw-toggle-trade" class="rw-toggle" aria-label="Sell via trade"></button>
-            <span id="rw-toggle-trade-label" class="rw-toggle-label">Off</span>
-          </div>
-        </div>
-
-        <div class="rw-settings-label">Comp Tolerances</div>
-
-        <div class="rw-field">
-          <label for="rw-input-quality-range">Quality match range ±&thinsp;%</label>
-          <input id="rw-input-quality-range" class="rw-input" type="number" min="1" max="30" step="1">
-        </div>
-
-        <div class="rw-field">
-          <label for="rw-input-bonus-range">Bonus match range ±&thinsp;%</label>
-          <input id="rw-input-bonus-range" class="rw-input" type="number" min="1" max="10" step="1">
-        </div>
-      </div>
-    </div>
-
-    <div id="rw-footer">RW Auction Advisor v${SCRIPT_VERSION}</div>
+  const gearCluster = document.createElement('div');
+  gearCluster.id = 'rwa-gear-cluster';
+  gearCluster.innerHTML = `
+    <div id="rwa-error-toast"></div>
+    <button id="rwa-refresh-btn" class="rwa-cluster-btn" title="Refresh advisor data">↻</button>
+    <button id="rwa-gear-btn"    class="rwa-cluster-btn" title="Advisor settings">⚙</button>
   `;
-  document.body.appendChild(panel);
+  document.body.appendChild(gearCluster);
+
+  const rwaRefreshBtn = document.getElementById('rwa-refresh-btn');
+  const rwaGearBtn    = document.getElementById('rwa-gear-btn');
+  const rwaErrorToast = document.getElementById('rwa-error-toast');
+
+  function showError(msg) {
+    if (!msg) { rwaErrorToast.classList.remove('rwa-visible'); return; }
+    rwaErrorToast.textContent = msg;
+    rwaErrorToast.classList.add('rwa-visible');
+  }
+
+  // ── Settings modal HTML ──────────────────────────────────────────────────────
+
+  const settingsModal = document.createElement('dialog');
+  settingsModal.id = 'rwa-settings-modal';
+  settingsModal.innerHTML = `
+    <div class="rwa-modal-header">
+      <span class="rwa-modal-title">RW Advisor Settings</span>
+      <button class="rwa-modal-close" title="Close">✕</button>
+    </div>
+    <div class="rwa-modal-body">
+      <div class="rwa-section-label">API</div>
+      <div class="rwa-field">
+        <label for="rwa-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
+        <input id="rwa-input-apikey" class="rwa-input" type="password" placeholder="paste key here" style="width:240px">
+      </div>
+      <div class="rwa-section-label">Pricing</div>
+      <div class="rwa-field">
+        <label for="rwa-input-profit">Target profit %</label>
+        <input id="rwa-input-profit" class="rwa-input" type="number" min="1" max="99" step="1">
+      </div>
+      <div class="rwa-field">
+        <label for="rwa-input-mug">Mug buffer %</label>
+        <input id="rwa-input-mug" class="rwa-input" type="number" min="0" max="30" step="1">
+      </div>
+      <div class="rwa-field">
+        <label>Sell via trade <span style="font-weight:400;color:#4a6070">(skips 5% market fee)</span></label>
+        <div class="rwa-toggle-row">
+          <button id="rwa-toggle-trade" class="rwa-toggle" aria-label="Sell via trade"></button>
+          <span id="rwa-toggle-trade-label" class="rwa-toggle-label">Off</span>
+        </div>
+      </div>
+      <div class="rwa-section-label">Comp Tolerances</div>
+      <div class="rwa-field">
+        <label for="rwa-input-quality-range">Quality match range ±&thinsp;%</label>
+        <input id="rwa-input-quality-range" class="rwa-input" type="number" min="1" max="30" step="1">
+      </div>
+      <div class="rwa-field">
+        <label for="rwa-input-bonus-range">Bonus match range ±&thinsp;%</label>
+        <input id="rwa-input-bonus-range" class="rwa-input" type="number" min="1" max="10" step="1">
+      </div>
+    </div>
+    <div class="rwa-modal-footer">RW Auction Advisor v${SCRIPT_VERSION} · Data stored locally only</div>
+  `;
+  document.body.appendChild(settingsModal);
 
   // ── Element refs ─────────────────────────────────────────────────────────────
 
-  const collapseBtn      = panel.querySelector('#rw-collapse-btn');
-  const refreshBtn       = panel.querySelector('#rw-refresh-btn');
-  const rwHeader         = panel.querySelector('#rw-header');
-  const listingsContent  = panel.querySelector('#rw-listings-content');
-  const profitInput      = panel.querySelector('#rw-input-profit');
-  const mugInput         = panel.querySelector('#rw-input-mug');
-  const tradeToggle      = panel.querySelector('#rw-toggle-trade');
-  const tradeLabel       = panel.querySelector('#rw-toggle-trade-label');
-  const apikeyInput      = panel.querySelector('#rw-input-apikey');
-  const qualRangeInput   = panel.querySelector('#rw-input-quality-range');
-  const bonusRangeInput  = panel.querySelector('#rw-input-bonus-range');
+  const profitInput     = settingsModal.querySelector('#rwa-input-profit');
+  const mugInput        = settingsModal.querySelector('#rwa-input-mug');
+  const tradeToggle     = settingsModal.querySelector('#rwa-toggle-trade');
+  const tradeLabel      = settingsModal.querySelector('#rwa-toggle-trade-label');
+  const apikeyInput     = settingsModal.querySelector('#rwa-input-apikey');
+  const qualRangeInput  = settingsModal.querySelector('#rwa-input-quality-range');
+  const bonusRangeInput = settingsModal.querySelector('#rwa-input-bonus-range');
 
   // ── render() ─────────────────────────────────────────────────────────────────
 
