@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.0
+// @version      1.9.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.0';
+  const SCRIPT_VERSION = '1.9.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -647,6 +647,7 @@
       padding: 6px 8px;
       border-bottom: 1px solid #0f1e2e;
       vertical-align: middle;
+      color: #c0d0c8;
     }
     .rw-table tr:hover td      { background: #0a1520; }
     .rw-table tr:last-child td { border-bottom: none; }
@@ -715,7 +716,7 @@
     #rw-footer {
       padding: 5px 14px;
       font-size: 11px;
-      color: #2a4a3a;
+      color: #4a6070;
       border-top: 1px solid #1a2a3a;
       text-align: right;
       flex-shrink: 0;
