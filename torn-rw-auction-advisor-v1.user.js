@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.16.2
+// @version      1.17.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.16.2';
+  const SCRIPT_VERSION = '1.17.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -33,8 +33,6 @@
     BB_RATE            : 'rw_bbRate',
     CACHE_ITEM_IDS     : 'rw_cacheItemIds',
     ARMOR_ITEM_IDS     : 'rw_armorItemIds',
-    COLLAPSED          : 'rw_collapsed',
-    POSITION           : 'rw_position',
     QUALITY_MATCH_RANGE: 'rw_qualityMatchRange',
     BONUS_MATCH_RANGE  : 'rw_bonusMatchRange',
   };
@@ -66,13 +64,6 @@
     // { rate, cachePrices: { name: price }, fetchedAt }
     bbRate: (() => {
       try { return JSON.parse(Store.get(KEYS.BB_RATE)) || null; } catch { return null; }
-    })(),
-
-    // Panel UI state
-    collapsed : Store.get(KEYS.COLLAPSED) === 'true',
-    position  : (() => {
-      try { return JSON.parse(Store.get(KEYS.POSITION)) || { top: 80, right: 20 }; }
-      catch { return { top: 80, right: 20 }; }
     })(),
 
     // Historical auction sale stats keyed by composite listing search key.
@@ -903,7 +894,7 @@
         if (timeM) timeRemaining = timeM[0].trim();
       }
 
-      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, uid, currentBid, timeRemaining });
+      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, uid, currentBid, timeRemaining, el: li });
     }
 
     MEM.listings = results;
@@ -923,59 +914,87 @@
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // ── Panel UI ────────────────────────────────────────────────────────────────
+  // ── UI ──────────────────────────────────────────────────────────────────────
 
   // Guard against double-injection (e.g. Tampermonkey re-runs on AJAX nav)
-  if (document.getElementById('rw-panel')) return;
+  if (document.getElementById('rwa-gear-cluster')) return;
 
   // ── Styles ──────────────────────────────────────────────────────────────────
 
   const rwStyle = document.createElement('style');
   rwStyle.textContent = `
-    #rw-panel {
+    /* ── Floating gear cluster ── */
+    #rwa-gear-cluster {
       position: fixed;
-      top: 80px;
+      bottom: 20px;
       right: 20px;
-      z-index: 999999;
-      width: 740px;
-      max-width: calc(100vw - 24px);
-      max-height: 85vh;
+      z-index: 999998;
       display: flex;
       flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+      font-family: 'Segoe UI', Arial, sans-serif;
+    }
+    #rwa-error-toast {
+      background: #1a0a00;
+      border: 1px solid #ff4444;
+      border-radius: 6px;
+      color: #ff8844;
+      font-size: 11px;
+      max-width: 280px;
+      padding: 6px 10px;
+      display: none;
+    }
+    #rwa-error-toast.rwa-visible { display: block; }
+    .rwa-cluster-btn {
+      background: #0c1622;
+      border: 1px solid #1a2a3a;
+      border-radius: 6px;
+      color: #c0d0c8;
+      cursor: pointer;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 15px;
+      height: 38px;
+      line-height: 1;
+      padding: 0 12px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .rwa-cluster-btn:hover { border-color: #00ff88; color: #00ff88; }
+    .rwa-cluster-btn.rwa-spinning { animation: rwaSpin 0.6s linear infinite; }
+    @keyframes rwaSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    /* ── Settings modal ── */
+    #rwa-settings-modal {
       background: #080e18;
       border: 1px solid #1a2a3a;
       border-radius: 8px;
-      box-shadow: 0 4px 32px rgba(0,0,0,0.7);
+      box-shadow: 0 4px 32px rgba(0,0,0,0.8);
+      color: #c0d0c8;
       font-family: 'Segoe UI', Arial, sans-serif;
       font-size: 13px;
-      color: #c0d0c8;
-      user-select: none;
+      max-height: 85vh;
+      overflow-y: auto;
+      padding: 0;
+      width: 340px;
     }
-
-    /* ── Header ── */
-    #rw-header {
-      display: flex;
+    #rwa-settings-modal::backdrop { background: rgba(0,0,0,0.6); }
+    .rwa-modal-header {
       align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px;
       background: #0c1622;
-      border-radius: 8px 8px 0 0;
-      cursor: grab;
       border-bottom: 1px solid #1a2a3a;
-      flex-shrink: 0;
+      border-radius: 8px 8px 0 0;
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 16px;
     }
-    #rw-header:active { cursor: grabbing; }
-
-    #rw-title {
+    .rwa-modal-title {
+      color: #00ff88;
       font-size: 13px;
       font-weight: 700;
       letter-spacing: 0.06em;
-      color: #00ff88;
       text-transform: uppercase;
-      text-shadow: 0 0 12px rgba(0,255,136,0.5);
     }
-
-    #rw-collapse-btn {
+    .rwa-modal-close {
       background: none;
       border: 1px solid #2a3a4a;
       border-radius: 4px;
@@ -984,414 +1003,272 @@
       font-size: 14px;
       line-height: 1;
       padding: 2px 8px;
-      transition: border-color 0.15s, color 0.15s;
     }
-    #rw-collapse-btn:hover { border-color: #00ff88; color: #00ff88; }
-
-    #rw-refresh-btn {
-      background: none;
-      border: 1px solid #2a3a4a;
-      border-radius: 4px;
-      color: #c0d0c8;
-      cursor: pointer;
-      font-size: 13px;
-      line-height: 1;
-      padding: 2px 7px;
-      margin-right: 6px;
-      transition: border-color 0.15s, color 0.15s;
-    }
-    #rw-refresh-btn:hover { border-color: #00ff88; color: #00ff88; }
-    #rw-refresh-btn.rw-spinning { animation: rwSpin 0.6s linear infinite; }
-    @keyframes rwSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-    /* ── Body ── */
-    #rw-body {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      min-height: 0;
-      flex: 1;
-    }
-    #rw-panel.rw-collapsed #rw-body  { display: none; }
-    #rw-panel.rw-collapsed            { border-radius: 8px; }
-    #rw-panel.rw-collapsed #rw-header { border-bottom: none; border-radius: 8px; }
-
-    /* ── Tabs ── */
-    #rw-tabs {
-      display: flex;
-      border-bottom: 1px solid #1a2a3a;
-      flex-shrink: 0;
-    }
-    .rw-tab {
-      padding: 8px 18px;
-      font-size: 13px;
-      font-weight: 600;
+    .rwa-modal-close:hover { border-color: #00ff88; color: #00ff88; }
+    .rwa-modal-body { padding: 16px; }
+    .rwa-section-label {
       color: #4a7060;
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      transition: color 0.15s, border-color 0.15s;
-    }
-    .rw-tab:hover        { color: #c0d0c8; }
-    .rw-tab.rw-active    { color: #00ff88; border-bottom-color: #00ff88; }
-
-    /* ── Panes ── */
-    .rw-pane          { display: none; overflow-y: auto; padding: 12px 14px; flex: 1; min-height: 0; }
-    .rw-pane.rw-active { display: flex; flex-direction: column; }
-
-    /* ── Listings table ── */
-    .rw-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    .rw-table th {
-      text-align: left;
-      padding: 6px 8px;
-      background: #0c1622;
-      color: #4a7060;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      border-bottom: 1px solid #1a2a3a;
-      white-space: nowrap;
-      position: sticky;
-      top: 0;
-    }
-    .rw-table td {
-      padding: 6px 8px;
-      border-bottom: 1px solid #0f1e2e;
-      vertical-align: middle;
-      color: #c0d0c8;
-    }
-    .rw-table tr:hover td      { background: #0a1520; }
-    .rw-table tr:last-child td { border-bottom: none; }
-
-    .rw-empty {
-      text-align: center;
-      color: #4a7060;
-      padding: 28px 0;
-      font-size: 12px;
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    /* ── Settings pane ── */
-    .rw-settings-label {
       font-size: 11px;
       font-weight: 700;
       letter-spacing: 0.08em;
-      color: #4a7060;
-      text-transform: uppercase;
       margin-bottom: 12px;
+      text-transform: uppercase;
     }
-    .rw-field       { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
-    .rw-field label { font-size: 12px; color: #8aa898; }
-    .rw-input {
+    .rwa-field       { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    .rwa-field label { color: #8aa898; font-size: 12px; }
+    .rwa-input {
       background: #0a1220;
       border: 1px solid #1a2a3a;
       border-radius: 4px;
       color: #c0d0c8;
       font-size: 13px;
-      padding: 5px 8px;
-      width: 110px;
       outline: none;
+      padding: 5px 8px;
       transition: border-color 0.15s;
+      width: 110px;
     }
-    .rw-input:focus { border-color: #00ff88; }
-
-    /* Toggle switch */
-    .rw-toggle-row { display: flex; align-items: center; gap: 10px; }
-    .rw-toggle {
-      width: 36px; height: 20px;
+    .rwa-input:focus { border-color: #00ff88; }
+    .rwa-toggle-row { align-items: center; display: flex; gap: 10px; }
+    .rwa-toggle {
       background: #1a2a3a;
-      border-radius: 10px;
-      position: relative;
-      cursor: pointer;
       border: none;
+      border-radius: 10px;
+      cursor: pointer;
       flex-shrink: 0;
+      height: 20px;
+      position: relative;
       transition: background 0.2s;
+      width: 36px;
     }
-    .rw-toggle.rw-on { background: #00aa66; }
-    .rw-toggle::after {
-      content: '';
-      width: 14px; height: 14px;
+    .rwa-toggle.rwa-on { background: #00aa66; }
+    .rwa-toggle::after {
       background: #c0d0c8;
       border-radius: 50%;
+      content: '';
+      height: 14px;
+      left: 3px;
       position: absolute;
-      top: 3px; left: 3px;
+      top: 3px;
       transition: left 0.2s;
+      width: 14px;
     }
-    .rw-toggle.rw-on::after { left: 19px; }
-    .rw-toggle-label { font-size: 12px; color: #8aa898; }
-
-    /* ── Footer ── */
-    #rw-footer {
-      padding: 5px 14px;
-      font-size: 11px;
-      color: #4a6070;
+    .rwa-toggle.rwa-on::after { left: 19px; }
+    .rwa-toggle-label { color: #8aa898; font-size: 12px; }
+    .rwa-modal-footer {
       border-top: 1px solid #1a2a3a;
+      color: #4a6070;
+      font-size: 11px;
+      padding: 8px 16px;
       text-align: right;
-      flex-shrink: 0;
     }
+
+    /* ── Advisory strip (injected into each auction li) ── */
+    .rwa-strip {
+      background: #060c16;
+      border-top: 1px solid #1a2a3a;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 12px;
+      margin-top: 4px;
+      padding: 6px 8px;
+      user-select: none;
+    }
+    .rwa-strip-main {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: space-between;
+    }
+    .rwa-strip-offer { align-items: center; display: flex; gap: 6px; }
+    .rwa-strip-label {
+      color: #4a7060;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .rwa-strip-val  { font-size: 13px; font-weight: 700; }
+    .rwa-strip-roi  { font-size: 11px; font-weight: 600; }
+    .rwa-strip-actions { align-items: center; display: flex; gap: 4px; }
+    .rwa-btn {
+      background: #0c1622;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #8aa898;
+      cursor: pointer;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 11px;
+      line-height: 1;
+      padding: 3px 7px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .rwa-btn:hover { border-color: #00ff88; color: #c0d0c8; }
+    .rwa-strip-loading { color: #4a7060; font-size: 11px; font-style: italic; }
   `;
   document.head.appendChild(rwStyle);
 
-  // ── Panel HTML ───────────────────────────────────────────────────────────────
+  // ── Gear cluster HTML ────────────────────────────────────────────────────────
 
-  const panel = document.createElement('div');
-  panel.id = 'rw-panel';
-  panel.innerHTML = `
-    <div id="rw-header">
-      <span id="rw-title">RW Auction Advisor v${SCRIPT_VERSION}</span>
-      <div style="display:flex;align-items:center;gap:4px">
-        <button id="rw-refresh-btn" title="Re-scan page">↻</button>
-        <button id="rw-collapse-btn" title="Toggle panel">&minus;</button>
-      </div>
-    </div>
-
-    <div id="rw-body">
-      <div id="rw-tabs">
-        <div class="rw-tab rw-active" data-tab="listings">Listings</div>
-        <div class="rw-tab"           data-tab="settings">Settings</div>
-      </div>
-
-      <!-- Listings pane -->
-      <div id="rw-pane-listings" class="rw-pane rw-active">
-        <div id="rw-listings-content" style="overflow-y:auto;flex:1">
-          <div class="rw-empty">Scanning page…</div>
-        </div>
-      </div>
-
-      <!-- Settings pane -->
-      <div id="rw-pane-settings" class="rw-pane">
-        <div class="rw-settings-label">API</div>
-
-        <div class="rw-field">
-          <label for="rw-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
-          <input id="rw-input-apikey" class="rw-input" type="password" placeholder="paste key here" style="width:240px">
-        </div>
-
-        <div class="rw-settings-label">Pricing</div>
-
-        <div class="rw-field">
-          <label for="rw-input-profit">Target profit %</label>
-          <input id="rw-input-profit" class="rw-input" type="number" min="1" max="99" step="1">
-        </div>
-
-        <div class="rw-field">
-          <label for="rw-input-mug">Mug buffer %</label>
-          <input id="rw-input-mug" class="rw-input" type="number" min="0" max="30" step="1">
-        </div>
-
-        <div class="rw-field">
-          <label>Sell via trade <span style="font-weight:400;color:#4a6070">(skips 5% market fee)</span></label>
-          <div class="rw-toggle-row">
-            <button id="rw-toggle-trade" class="rw-toggle" aria-label="Sell via trade"></button>
-            <span id="rw-toggle-trade-label" class="rw-toggle-label">Off</span>
-          </div>
-        </div>
-
-        <div class="rw-settings-label">Comp Tolerances</div>
-
-        <div class="rw-field">
-          <label for="rw-input-quality-range">Quality match range ±&thinsp;%</label>
-          <input id="rw-input-quality-range" class="rw-input" type="number" min="1" max="30" step="1">
-        </div>
-
-        <div class="rw-field">
-          <label for="rw-input-bonus-range">Bonus match range ±&thinsp;%</label>
-          <input id="rw-input-bonus-range" class="rw-input" type="number" min="1" max="10" step="1">
-        </div>
-      </div>
-    </div>
-
-    <div id="rw-footer">RW Auction Advisor v${SCRIPT_VERSION}</div>
+  const gearCluster = document.createElement('div');
+  gearCluster.id = 'rwa-gear-cluster';
+  gearCluster.innerHTML = `
+    <div id="rwa-error-toast"></div>
+    <button id="rwa-refresh-btn" class="rwa-cluster-btn" title="Refresh advisor data">↻</button>
+    <button id="rwa-gear-btn"    class="rwa-cluster-btn" title="Advisor settings">⚙</button>
   `;
-  document.body.appendChild(panel);
+  document.body.appendChild(gearCluster);
+
+  const rwaRefreshBtn = document.getElementById('rwa-refresh-btn');
+  const rwaGearBtn    = document.getElementById('rwa-gear-btn');
+  const rwaErrorToast = document.getElementById('rwa-error-toast');
+
+  function showError(msg) {
+    if (!msg) { rwaErrorToast.classList.remove('rwa-visible'); return; }
+    rwaErrorToast.textContent = msg;
+    rwaErrorToast.classList.add('rwa-visible');
+  }
+
+  // ── Settings modal HTML ──────────────────────────────────────────────────────
+
+  const settingsModal = document.createElement('dialog');
+  settingsModal.id = 'rwa-settings-modal';
+  settingsModal.innerHTML = `
+    <div class="rwa-modal-header">
+      <span class="rwa-modal-title">RW Advisor Settings</span>
+      <button class="rwa-modal-close" title="Close">✕</button>
+    </div>
+    <div class="rwa-modal-body">
+      <div class="rwa-section-label">API</div>
+      <div class="rwa-field">
+        <label for="rwa-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
+        <input id="rwa-input-apikey" class="rwa-input" type="password" placeholder="paste key here" style="width:240px">
+      </div>
+      <div class="rwa-section-label">Pricing</div>
+      <div class="rwa-field">
+        <label for="rwa-input-profit">Target profit %</label>
+        <input id="rwa-input-profit" class="rwa-input" type="number" min="1" max="99" step="1">
+      </div>
+      <div class="rwa-field">
+        <label for="rwa-input-mug">Mug buffer %</label>
+        <input id="rwa-input-mug" class="rwa-input" type="number" min="0" max="30" step="1">
+      </div>
+      <div class="rwa-field">
+        <label>Sell via trade <span style="font-weight:400;color:#4a6070">(skips 5% market fee)</span></label>
+        <div class="rwa-toggle-row">
+          <button id="rwa-toggle-trade" class="rwa-toggle" aria-label="Sell via trade"></button>
+          <span id="rwa-toggle-trade-label" class="rwa-toggle-label">Off</span>
+        </div>
+      </div>
+      <div class="rwa-section-label">Comp Tolerances</div>
+      <div class="rwa-field">
+        <label for="rwa-input-quality-range">Quality match range ±&thinsp;%</label>
+        <input id="rwa-input-quality-range" class="rwa-input" type="number" min="1" max="30" step="1">
+      </div>
+      <div class="rwa-field">
+        <label for="rwa-input-bonus-range">Bonus match range ±&thinsp;%</label>
+        <input id="rwa-input-bonus-range" class="rwa-input" type="number" min="1" max="10" step="1">
+      </div>
+    </div>
+    <div class="rwa-modal-footer">RW Auction Advisor v${SCRIPT_VERSION} · Data stored locally only</div>
+  `;
+  document.body.appendChild(settingsModal);
 
   // ── Element refs ─────────────────────────────────────────────────────────────
 
-  const collapseBtn      = panel.querySelector('#rw-collapse-btn');
-  const refreshBtn       = panel.querySelector('#rw-refresh-btn');
-  const rwHeader         = panel.querySelector('#rw-header');
-  const listingsContent  = panel.querySelector('#rw-listings-content');
-  const profitInput      = panel.querySelector('#rw-input-profit');
-  const mugInput         = panel.querySelector('#rw-input-mug');
-  const tradeToggle      = panel.querySelector('#rw-toggle-trade');
-  const tradeLabel       = panel.querySelector('#rw-toggle-trade-label');
-  const apikeyInput      = panel.querySelector('#rw-input-apikey');
-  const qualRangeInput   = panel.querySelector('#rw-input-quality-range');
-  const bonusRangeInput  = panel.querySelector('#rw-input-bonus-range');
+  const profitInput     = settingsModal.querySelector('#rwa-input-profit');
+  const mugInput        = settingsModal.querySelector('#rwa-input-mug');
+  const tradeToggle     = settingsModal.querySelector('#rwa-toggle-trade');
+  const tradeLabel      = settingsModal.querySelector('#rwa-toggle-trade-label');
+  const apikeyInput     = settingsModal.querySelector('#rwa-input-apikey');
+  const qualRangeInput  = settingsModal.querySelector('#rwa-input-quality-range');
+  const bonusRangeInput = settingsModal.querySelector('#rwa-input-bonus-range');
 
-  // ── render() ─────────────────────────────────────────────────────────────────
+  // ── Inline render ────────────────────────────────────────────────────────────
 
-  function render() {
-    if (!MEM.listings.length) {
-      listingsContent.innerHTML = '<div class="rw-empty">No supported RW armor found on this page.</div>';
-      return;
-    }
-
+  function computeListingMetrics(l) {
+    const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
     const bbRate = MEM.bbRate?.rate ?? null;
 
-    const rows = MEM.listings.map(l => {
-      const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
+    const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
+      ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
+      : null;
 
-      // Quality score (null when DOM couldn't extract quality or bonus %)
-      const qualityScore = (l.qualityPct != null && l.bonusPct != null)
-        ? scoreArmorPiece(l.qualityPct, l.bonusPct, baseBonusPct, highTierThreshold)
-        : null;
+    const refPrice     = l.refPrice ?? null;
+    const kingCap      = l.kingCap  ?? null;
+    const formulaOffer = refPrice != null
+      ? calcMaxOffer({
+          refPrice,
+          bbFloor        : BB_FLOOR_SETS.has(l.armorSet) ? bbFloor : null,
+          targetProfitPct: MEM.settings.targetProfitPct,
+          mugBufferPct   : MEM.settings.mugBufferPct,
+          sellViaTrade   : MEM.settings.sellViaTrade,
+        })
+      : null;
+    const maxOffer = (formulaOffer != null && kingCap != null)
+      ? Math.min(formulaOffer, kingCap)
+      : formulaOffer;
 
-      // BB floor — applies to sets that trade near BB (Riot, Dune).
-      // Assault and higher-tier sets trade significantly above BB floor.
-      const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
-        ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
-        : null;
+    const bid = l.currentBid;
+    let netProfit = null, roi = null;
+    if (bid != null && refPrice != null) {
+      const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
+      const mugBuffer   = MEM.settings.mugBufferPct / 100;
+      const netReceived = refPrice * (1 - marketFee) * (1 - mugBuffer);
+      netProfit         = Math.round(netReceived - bid);
+      roi               = bid > 0 ? (netProfit / bid) * 100 : null;
+    }
 
-      // Reference price: quality-aware estimate of realistic resale value
-      const refPrice = l.refPrice ?? null;
+    const signalColor = bid != null && maxOffer != null
+      ? (bid < maxOffer ? '#00cc66' : '#ff4444')
+      : '#8aa898';
 
-      // Max offer: formula result, then floored by BB floor, then capped by King's rule.
-      // King's cap (HQ/exceptional only): don't bid more than 2× or 2.5× the cheapest
-      // base-stat listing, regardless of what quality-matched comps suggest — HQ market
-      // prices are 3–4× inflated and can push the formula above a safe auction bid.
-      const formulaOffer = refPrice != null
-        ? calcMaxOffer({
-            refPrice,
-            bbFloor        : BB_FLOOR_SETS.has(l.armorSet) ? bbFloor : null,
-            targetProfitPct: MEM.settings.targetProfitPct,
-            mugBufferPct   : MEM.settings.mugBufferPct,
-            sellViaTrade   : MEM.settings.sellViaTrade,
-          })
-        : null;
-      const kingCap        = l.kingCap ?? null;
-      const maxOffer       = (formulaOffer != null && kingCap != null)
-        ? Math.min(formulaOffer, kingCap)
-        : formulaOffer;
-      const kingCapActive  = kingCap != null && maxOffer != null && maxOffer === kingCap && kingCap < (formulaOffer ?? Infinity);
-
-      // Net profit and ROI at the current bid price
-      const bid = l.currentBid;
-      let netProfit = null, roi = null;
-      if (bid != null && refPrice != null) {
-        const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
-        const mugBuffer   = MEM.settings.mugBufferPct / 100;
-        const netReceived = refPrice * (1 - marketFee) * (1 - mugBuffer);
-        netProfit         = Math.round(netReceived - bid);
-        roi               = bid > 0 ? (netProfit / bid) * 100 : null;
-      }
-
-      // Bonus cell: append tier badge per King's RW Guide classification
-      const tier = l.tier ?? 'base';
-      const tierBadge = tier === 'exceptional'
-        ? `&thinsp;<span style="color:#e060e0;font-size:10px;font-weight:700" title="Exceptional: quality ≥40% AND high bonus — King's guide cap: ${EXCEPTIONAL_MULTIPLIER}× base price">EXCEP</span>`
-        : tier === 'hq'
-          ? `&thinsp;<span style="color:#60a0f0;font-size:10px;font-weight:700" title="High quality/bonus — King's guide cap: ${HQ_MULTIPLIER}× base price">HQ</span>`
-          : '';
-
-      // Mkt Comp cell — display depends on comp source (same for all tiers):
-      //   no badge   — direct quality-matched comp (most precise)
-      //   interp     — amber, interpolated between quality brackets
-      //   floor/ceil — amber, single quality bracket
-      //   ~          — amber, no quality data; cheapest bonus-matched only
-      const compSource = l.compSource ?? 'bonus-only';
-      let compCellInner;
-      if (refPrice == null) {
-        compCellInner = '—';
-      } else if (compSource === 'quality-match') {
-        compCellInner = fmtM(refPrice);
-      } else if (compSource === 'interpolated') {
-        const lq = l.interpLower?.quality?.toFixed(1) ?? '?';
-        const uq = l.interpUpper?.quality?.toFixed(1) ?? '?';
-        const lp = fmtM(l.interpLower?.price);
-        const up = fmtM(l.interpUpper?.price);
-        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Interpolated between ${lq}% qual (${lp}) and ${uq}% qual (${up})">interp</span>`;
-      } else if (compSource === 'single-bound') {
-        const isLower = l.interpLower != null;
-        const bound   = isLower ? l.interpLower : l.interpUpper;
-        const dir     = isLower ? '≥' : '≤';
-        const side    = isLower ? 'floor' : 'ceil';
-        const tip     = isLower
-          ? `Only lower quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality exceeds all comps`
-          : `Only upper quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality below all comps`;
-        compCellInner = `${dir}${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="${tip}">${side}</span>`;
-      } else {
-        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality data in comp listings — cheapest bonus-matched price only">~</span>`;
-      }
-
-      // Max Offer cell: green = bid below max, red = at/above max.
-      // Badges (at most one fires per row):
-      //   cap  — purple/blue: King's cap is the binding constraint (formula would allow more)
-      //   !    — amber: comp is imprecise AND max offer exceeds hist median (possible inflation)
-      // BB floor active: suppresses ! (hist < BB floor is expected for Riot/Dune, not a signal)
-      const canColor      = bid != null && maxOffer != null;
-      const isBuyZone     = canColor && bid < maxOffer;
-      const offerColor    = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
-      const histMedian    = l.hist?.median ?? null;
-      const bbFloorActive = bbFloor != null && maxOffer != null && maxOffer <= bbFloor + 1;
-      const offerRiskFlag = !bbFloorActive && !kingCapActive && compSource !== 'quality-match'
-                            && histMedian != null && maxOffer != null && maxOffer > histMedian;
-
-      const capColor      = tier === 'exceptional' ? '#e060e0' : '#60a0f0';
-      const capMult       = tier === 'exceptional' ? EXCEPTIONAL_MULTIPLIER : HQ_MULTIPLIER;
-      const offerBadge    = kingCapActive
-        ? `&thinsp;<span style="color:${capColor};font-size:10px;font-weight:700" title="King's cap: base-stat price ${fmtM(l.baseCompPrice)} × ${capMult} = ${fmtM(l.kingCap)} (HQ market prices run 3–4× base; formula gave ${fmtM(formulaOffer)})">cap</span>`
-        : offerRiskFlag
-          ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical auction median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
-          : '';
-
-      // Net Profit / ROI cells: green = positive, red = negative
-      const profitColor = netProfit != null ? (netProfit > 0 ? '#00cc66' : '#ff4444') : '';
-
-      return `<tr>
-        <td>${escHtml(l.name)}</td>
-        <td>${escHtml(l.rarity ?? '—')}</td>
-        <td>${escHtml(l.bonusType ?? '—')}${tierBadge}</td>
-        <td>${qualityScore != null ? qualityScore.toFixed(1) : '—'}</td>
-        <td>${fmtM(bbFloor)}</td>
-        <td>${compCellInner}</td>
-        <td>${fmtM(bid)}</td>
-        <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}${offerBadge}</td>
-        <td style="color:${profitColor}">${fmtM(netProfit)}</td>
-        <td style="color:${profitColor}">${roi != null ? roi.toFixed(1) + '%' : '—'}</td>
-      </tr>`;
-    }).join('');
-
-    const errorBanner = MEM.fetchError
-      ? `<div style="padding:6px 14px;font-size:12px;color:#ff8844;border-bottom:1px solid #1a2a3a">${escHtml(MEM.fetchError)}</div>`
-      : '';
-
-    listingsContent.innerHTML = errorBanner + `
-      <table class="rw-table">
-        <thead><tr>
-          <th>Item</th><th>Rarity</th><th>Bonus</th><th>Score</th>
-          <th>BB Floor</th><th>Mkt Comp</th><th>Current Bid</th>
-          <th>Max Offer</th><th>Net Profit</th><th>ROI %</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
+    return { bbFloor, refPrice, maxOffer, netProfit, roi, signalColor };
   }
 
-  // ── Tab switching ─────────────────────────────────────────────────────────────
+  function injectAdvisoryStrip(listing) {
+    if (!listing.el) return;
+    listing.el.querySelector('.rwa-strip')?.remove();
 
-  panel.querySelector('#rw-tabs').addEventListener('click', e => {
-    const tab = e.target.closest('.rw-tab');
-    if (!tab) return;
-    const id = tab.dataset.tab;
-    panel.querySelectorAll('.rw-tab').forEach(t  => t.classList.toggle('rw-active', t.dataset.tab === id));
-    panel.querySelectorAll('.rw-pane').forEach(p => p.classList.toggle('rw-active', p.id === `rw-pane-${id}`));
-  });
+    const { maxOffer, roi, signalColor } = computeListingMetrics(listing);
+    const isLoading = maxOffer == null && !MEM.fetchError;
 
-  // ── Collapse ──────────────────────────────────────────────────────────────────
+    const strip = document.createElement('div');
+    strip.className = 'rwa-strip';
 
-  collapseBtn.addEventListener('click', () => {
-    MEM.collapsed = !MEM.collapsed;
-    panel.classList.toggle('rw-collapsed', MEM.collapsed);
-    collapseBtn.textContent = MEM.collapsed ? '+' : '−';
-    Store.set(KEYS.COLLAPSED, String(MEM.collapsed));
-  });
+    const offerHtml = isLoading
+      ? `<span class="rwa-strip-loading">fetching…</span>`
+      : `<span class="rwa-strip-val" style="color:${escHtml(signalColor)}">${escHtml(fmtM(maxOffer))}</span>`;
+    const roiHtml = (!isLoading && roi != null)
+      ? `<span class="rwa-strip-roi" style="color:${escHtml(signalColor)}">${roi.toFixed(1)}%</span>`
+      : '';
 
-  // ── Settings inputs ───────────────────────────────────────────────────────────
+    strip.innerHTML = `
+      <div class="rwa-strip-main">
+        <div class="rwa-strip-offer">
+          <span class="rwa-strip-label">Max Offer</span>
+          ${offerHtml}
+          ${roiHtml}
+        </div>
+        <div class="rwa-strip-actions">
+          <button class="rwa-btn rwa-btn-details">&#9660; Details</button>
+          <button class="rwa-btn rwa-btn-market">Market</button>
+          <button class="rwa-btn rwa-btn-bazaar">Bazaar</button>
+          <button class="rwa-btn rwa-btn-log">Log</button>
+        </div>
+      </div>
+    `;
+
+    listing.el.appendChild(strip);
+  }
+
+  function renderInline() {
+    showError(MEM.fetchError);
+    for (const listing of MEM.listings) {
+      injectAdvisoryStrip(listing);
+    }
+  }
+
+  // ── Settings event wiring ────────────────────────────────────────────────────
 
   if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
 
@@ -1400,7 +1277,7 @@
   qualRangeInput.value  = MEM.settings.qualityMatchRange;
   bonusRangeInput.value = MEM.settings.bonusMatchRange;
   if (MEM.settings.sellViaTrade) {
-    tradeToggle.classList.add('rw-on');
+    tradeToggle.classList.add('rwa-on');
     tradeLabel.textContent = 'On';
   }
 
@@ -1409,7 +1286,7 @@
     if (isNaN(v) || v < 1 || v > 99) return;
     MEM.settings.targetProfitPct = v;
     Store.set(KEYS.TARGET_PROFIT_PCT, String(v));
-    render();
+    renderInline();
   });
 
   mugInput.addEventListener('change', () => {
@@ -1417,7 +1294,7 @@
     if (isNaN(v) || v < 0 || v > 30) return;
     MEM.settings.mugBufferPct = v;
     Store.set(KEYS.MUG_BUFFER_PCT, String(v));
-    render();
+    renderInline();
   });
 
   apikeyInput.addEventListener('change', () => {
@@ -1431,10 +1308,10 @@
 
   tradeToggle.addEventListener('click', () => {
     MEM.settings.sellViaTrade = !MEM.settings.sellViaTrade;
-    tradeToggle.classList.toggle('rw-on', MEM.settings.sellViaTrade);
+    tradeToggle.classList.toggle('rwa-on', MEM.settings.sellViaTrade);
     tradeLabel.textContent = MEM.settings.sellViaTrade ? 'On' : 'Off';
     Store.set(KEYS.SELL_VIA_TRADE, String(MEM.settings.sellViaTrade));
-    render();
+    renderInline();
   });
 
   qualRangeInput.addEventListener('change', () => {
@@ -1443,7 +1320,7 @@
     MEM.settings.qualityMatchRange = v;
     Store.set(KEYS.QUALITY_MATCH_RANGE, String(v));
     MEM.historicalSales = {};
-    render();
+    renderInline();
   });
 
   bonusRangeInput.addEventListener('change', () => {
@@ -1452,83 +1329,12 @@
     MEM.settings.bonusMatchRange = v;
     Store.set(KEYS.BONUS_MATCH_RANGE, String(v));
     MEM.historicalSales = {};
-    render();
+    renderInline();
   });
 
-  // ── Restore panel state ───────────────────────────────────────────────────────
-
-  if (MEM.collapsed) {
-    panel.classList.add('rw-collapsed');
-    collapseBtn.textContent = '+';
-  }
-
-  // Apply saved drag position (left+top); CSS default (top:80px right:20px) used before first drag
-  if (MEM.position?.left != null) {
-    panel.style.right  = 'auto';
-    panel.style.left   = typeof MEM.position.left === 'number' ? MEM.position.left + 'px' : MEM.position.left;
-    panel.style.top    = typeof MEM.position.top  === 'number' ? MEM.position.top  + 'px' : MEM.position.top;
-  }
-
-  // ── Drag ──────────────────────────────────────────────────────────────────────
-
-  const DRAG_MARGIN = 60;
-  let dragging = false, dragOffX = 0, dragOffY = 0;
-
-  function clampPos(x, y) {
-    return [
-      Math.max(DRAG_MARGIN - panel.offsetWidth,  Math.min(x, window.innerWidth  - DRAG_MARGIN)),
-      Math.max(DRAG_MARGIN - panel.offsetHeight, Math.min(y, window.innerHeight - DRAG_MARGIN)),
-    ];
-  }
-
-  function applyPos(x, y) {
-    const [cx, cy] = clampPos(x, y);
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left   = cx + 'px';
-    panel.style.top    = cy + 'px';
-  }
-
-  function savePos() {
-    MEM.position = { left: panel.style.left, top: panel.style.top };
-    Store.set(KEYS.POSITION, JSON.stringify(MEM.position));
-  }
-
-  rwHeader.addEventListener('mousedown', e => {
-    if (e.target === collapseBtn) return;
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffX = e.clientX - rect.left;
-    dragOffY = e.clientY - rect.top;
-    panel.style.transition = 'none';
-    e.preventDefault();
-  });
-
-  document.addEventListener('mousemove', e => { if (dragging) applyPos(e.clientX - dragOffX, e.clientY - dragOffY); });
-  document.addEventListener('mouseup',   () => { if (dragging) savePos(); dragging = false; });
-
-  rwHeader.addEventListener('touchstart', e => {
-    if (e.target === collapseBtn) return;
-    const t = e.touches[0];
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffX = t.clientX - rect.left;
-    dragOffY = t.clientY - rect.top;
-    e.preventDefault();
-  }, { passive: false });
-
-  document.addEventListener('touchmove', e => {
-    if (!dragging) return;
-    const t = e.touches[0];
-    applyPos(t.clientX - dragOffX, t.clientY - dragOffY);
-  }, { passive: false });
-
-  document.addEventListener('touchend', () => { if (dragging) savePos(); dragging = false; });
-
-  window.addEventListener('resize', () => {
-    if (!MEM.position?.left) return;
-    applyPos(parseInt(panel.style.left, 10), parseInt(panel.style.top, 10));
-  });
+  settingsModal.querySelector('.rwa-modal-close').addEventListener('click', () => settingsModal.close());
+  settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
+  rwaGearBtn.addEventListener('click', () => settingsModal.showModal());
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
@@ -1658,7 +1464,7 @@
       // ── King's cap for HQ/exceptional (ceiling on maxOffer, not on refPrice) ─
       // Anchor = cheapest near-baseBonusPct listing (quality-agnostic), strict match only.
       // strict=true prevents fallback to all listings — if no base-stat comps exist, cap is null.
-      // Cap = anchor × tier multiplier. Applied in render(), not here.
+      // Cap = anchor × tier multiplier. Applied in computeListingMetrics(), not here.
       let kingCap       = null;
       let baseCompPrice = null;
       if (tier === 'hq' || tier === 'exceptional') {
@@ -1691,19 +1497,19 @@
   //   3. resolve armor item IDs → fetch all market comps → enrich listings → final render
   async function init() {
     parseAuctionListings();
-    render();
+    renderInline();
 
     if (!MEM.listings.length) return;
 
     const key = getApiKey();
     if (!key) {
-      MEM.fetchError = 'No API key — paste one into Settings (only needed without Torn PDA)';
-      render();
+      MEM.fetchError = 'No API key — tap ⚙ (bottom right) to add one';
+      renderInline();
       return;
     }
 
     await fetchBBRate();
-    render();
+    renderInline();
 
     await resolveArmorItemIds();
 
@@ -1727,7 +1533,7 @@
     ]);
 
     enrichListingsFromMarketData();
-    render();
+    renderInline();
   }
 
   // ── Init guard + re-init on AJAX page changes ─────────────────────────────
@@ -1762,13 +1568,13 @@
 
     isIniting        = true;
     lastAutoInitTime = now;
-    refreshBtn.classList.add('rw-spinning');
+    rwaRefreshBtn.classList.add('rwa-spinning');
     listObserver.disconnect();
     try {
       await init();
     } finally {
       isIniting = false;
-      refreshBtn.classList.remove('rw-spinning');
+      rwaRefreshBtn.classList.remove('rwa-spinning');
       attachObserver();
     }
   }
@@ -1788,7 +1594,7 @@
   const listObserver = new MutationObserver(scheduleReinit);
 
   // Manual refresh — always runs, bypasses cooldown.
-  refreshBtn.addEventListener('click', () => {
+  rwaRefreshBtn.addEventListener('click', () => {
     MEM.historicalSales = {};
     safeInit(true);
   });
