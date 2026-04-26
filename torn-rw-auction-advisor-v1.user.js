@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.3
+// @version      1.9.4
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.3';
+  const SCRIPT_VERSION = '1.9.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1051,16 +1051,17 @@
 
     // Step 1 diagnostic — temporary, remove after confirmation
     MEM.listings.forEach((l, i) => {
-      console.log(`[RW Advisor] Step1 listing #${i + 1}:`, {
-        armorName    : l.name,
-        pieceType    : l.pieceType,
-        rarity       : l.rarity,
-        bonusType    : l.bonusType,
-        bonusPct     : l.bonusPct,
-        qualityPct   : l.qualityPct,
-        currentBid   : l.currentBid,
-        timeRemaining: l.timeRemaining,
-      });
+      console.log(
+        `[RW Advisor] Step1 listing #${i + 1}:` +
+        ` armorName="${l.name}"` +
+        ` pieceType="${l.pieceType}"` +
+        ` rarity="${l.rarity}"` +
+        ` bonusType="${l.bonusType}"` +
+        ` bonusPct=${l.bonusPct}` +
+        ` qualityPct=${l.qualityPct}` +
+        ` currentBid=${l.currentBid}` +
+        ` timeRemaining="${l.timeRemaining}"`
+      );
     });
 
     render();
