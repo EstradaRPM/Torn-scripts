@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.8
+// @version      1.9.9
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.8';
+  const SCRIPT_VERSION = '1.9.9';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -142,7 +142,8 @@
    * @returns {number}
    */
   function scoreArmorPiece(qualityPct, bonusPct, baseBonusPct = 20, highTierThreshold = 26) {
-    let score = qualityPct + (bonusPct - baseBonusPct) * 5;
+    const bonusAboveBase = Math.max(0, bonusPct - baseBonusPct);
+    let score = qualityPct + bonusAboveBase * 5;
     if (bonusPct >= highTierThreshold) score += 5;
     return score;
   }
@@ -157,7 +158,8 @@
       { q: 60.98, b: 21, base: 20, thr: 26, expect: 65.98, label: 'doc Body B' },
       { q: 50,    b: 26, base: 20, thr: 26, expect: 85,    label: 'at threshold (+5)' },
       { q: 50,    b: 27, base: 20, thr: 26, expect: 90,    label: 'above threshold (+5)' },
-      { q: 50,    b: 20, base: 20, thr: 26, expect: 50,    label: 'base bonus, no premium' },
+      { q: 50,    b: 20, base: 20, thr: 26, expect: 50,    label: 'at base bonus, no premium' },
+      { q: 50,    b: 18, base: 20, thr: 26, expect: 50,    label: 'below base bonus — clamped to 0' },
     ];
 
     cases.forEach(({ q, b, base, thr, expect, label }) => {
@@ -1110,15 +1112,18 @@
 
     enrichListingsFromMarketData();
 
-    // Step 2 diagnostic — temporary, remove after confirmation
+    // Step 5 diagnostic — temporary, remove after confirmation
     MEM.listings.forEach((l, i) => {
+      const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
+      const score = (l.qualityPct != null && l.bonusPct != null)
+        ? scoreArmorPiece(l.qualityPct, l.bonusPct, baseBonusPct, highTierThreshold)
+        : null;
       console.log(
-        `[RW Advisor] Step2 listing #${i + 1}:` +
+        `[RW Advisor] Step5 listing #${i + 1}:` +
         ` armorName="${l.name}"` +
-        ` uid=${l.uid}` +
         ` bonusPct=${l.bonusPct}` +
-        ` qualityPct=${l.qualityPct}` +
-        ` rarity="${l.rarity}"`
+        ` qualityPct=${l.qualityPct?.toFixed(2)}` +
+        ` score=${score?.toFixed(2)}`
       );
     });
 
