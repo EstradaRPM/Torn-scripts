@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.15.1
+// @version      1.15.2
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.15.1';
+  const SCRIPT_VERSION = '1.15.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1547,12 +1547,36 @@
 
   // ── Init guard + re-init on AJAX page changes ─────────────────────────────
 
-  let isIniting   = false;
-  let reinitTimer = null;
+  let isIniting        = false;
+  let reinitTimer      = null;
+  let lastAutoInitTime = 0;
+  const REINIT_COOLDOWN_MS = 30_000;
 
-  async function safeInit() {
+  // Switches the observer to the most targeted node available.
+  // When ul.items-list exists: watch it directly with childList only —
+  //   fires on item add/remove (pagination) but NOT on text changes inside
+  //   items (auction countdown timers), preventing the re-init loop.
+  // When it doesn't exist yet: watch a stable ancestor with subtree so we
+  //   catch the ul being injected by Torn's AJAX loader.
+  function attachObserver() {
+    listObserver.disconnect();
+    const ul = document.querySelector('ul.items-list');
+    if (ul) {
+      listObserver.observe(ul, { childList: true });
+    } else {
+      const root = document.querySelector('#mainContainer, .content, .cont-wrap') ?? document.body;
+      listObserver.observe(root, { childList: true, subtree: true });
+    }
+  }
+
+  // isManual = true bypasses the cooldown (user explicitly clicked Refresh).
+  async function safeInit(isManual = false) {
     if (isIniting) return;
-    isIniting = true;
+    const now = Date.now();
+    if (!isManual && (now - lastAutoInitTime) < REINIT_COOLDOWN_MS) return;
+
+    isIniting        = true;
+    lastAutoInitTime = now;
     refreshBtn.classList.add('rw-spinning');
     listObserver.disconnect();
     try {
@@ -1560,35 +1584,32 @@
     } finally {
       isIniting = false;
       refreshBtn.classList.remove('rw-spinning');
-      listObserver.observe(observeTarget, { childList: true, subtree: true });
+      attachObserver();
     }
   }
 
   // Debounced re-init triggered by MutationObserver.
-  // Fires when the items-list DOM changes (AJAX pagination / tab switches).
+  // Only auto-fires; respects the 30s cooldown via safeInit(false).
   function scheduleReinit() {
     clearTimeout(reinitTimer);
     reinitTimer = setTimeout(() => {
       if (document.querySelector('ul.items-list li:not(.last):not(.clear)')) {
         MEM.historicalSales = {};
-        safeInit();
+        safeInit(false);
       }
-    }, 600);
+    }, 800);
   }
 
-  // Watch the main content area for listing changes caused by AJAX navigation.
-  // Observe a stable ancestor; fall back to body if the inner container isn't found.
-  const observeTarget = document.querySelector('#mainContainer, .content, .cont-wrap') ?? document.body;
-  const listObserver  = new MutationObserver(scheduleReinit);
-  listObserver.observe(observeTarget, { childList: true, subtree: true });
+  const listObserver = new MutationObserver(scheduleReinit);
 
-  // Manual refresh button
+  // Manual refresh — always runs, bypasses cooldown.
   refreshBtn.addEventListener('click', () => {
     MEM.historicalSales = {};
-    safeInit();
+    safeInit(true);
   });
 
-  // Initial parse — delayed so AJAX content has time to settle before we scan.
-  setTimeout(safeInit, 500);
+  // Start observing immediately, then run initial scan after AJAX content settles.
+  attachObserver();
+  setTimeout(() => safeInit(true), 500);
 
 })();
