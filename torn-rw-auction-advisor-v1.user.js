@@ -67,4 +67,48 @@
     fetchError: null,
   };
 
+  // ── BB floor calculation ────────────────────────────────────────────────────
+
+  // BB multipliers per piece by rarity — same for all armor sets
+  const BB_MULTIPLIERS = { yellow: 12, orange: 26, red: 108 };
+
+  /**
+   * Returns the BB floor price in Torn dollars for a single armor piece.
+   *
+   * @param {string} armorType - e.g. 'Riot', 'Assault' (unused in formula;
+   *                             multipliers are rarity-only per the pricing doc)
+   * @param {string} rarity    - 'yellow' | 'orange' | 'red'
+   * @param {number} bbRate    - dollar value per BB = cache_price / 20
+   * @returns {number|null}    - floor price in $, or null if inputs are invalid
+   */
+  function calculateBBFloor(armorType, rarity, bbRate) {
+    const multiplier = BB_MULTIPLIERS[rarity.toLowerCase()];
+    if (!multiplier || !bbRate || bbRate <= 0) return null;
+    return multiplier * bbRate;
+  }
+
+  // Self-test — visible in browser console when the script loads
+  (() => {
+    const cacheAt120m = 120_000_000;
+    const rate120m    = cacheAt120m / 20; // 6,000,000 per BB
+
+    const cases = [
+      { armorType: 'Riot',    rarity: 'yellow', bbRate: rate120m, expect: 72_000_000  },
+      { armorType: 'Assault', rarity: 'yellow', bbRate: rate120m, expect: 72_000_000  },
+      { armorType: 'Riot',    rarity: 'orange', bbRate: rate120m, expect: 156_000_000 },
+      { armorType: 'Riot',    rarity: 'red',    bbRate: rate120m, expect: 648_000_000 },
+      { armorType: 'Riot',    rarity: 'yellow', bbRate: 0,        expect: null        },
+    ];
+
+    cases.forEach(({ armorType, rarity, bbRate, expect }) => {
+      const result = calculateBBFloor(armorType, rarity, bbRate);
+      const pass   = result === expect;
+      console.log(
+        `[RW Advisor] calculateBBFloor(${armorType}, ${rarity}, ${bbRate}) =`,
+        result,
+        pass ? '✓' : `✗ expected ${expect}`
+      );
+    });
+  })();
+
 })();
