@@ -111,4 +111,55 @@
     });
   })();
 
+  // ── Armor quality scoring (King's method) ──────────────────────────────────
+
+  // Base bonus % and high-tier threshold by armor set
+  const ARMOR_SCORING = {
+    Riot    : { baseBonusPct: 20, highTierThreshold: 26 },
+    Assault : { baseBonusPct: 20, highTierThreshold: 26 },
+    Dune    : { baseBonusPct: 30, highTierThreshold: 37 },
+  };
+
+  /**
+   * Returns King's quality score for a single armor piece.
+   *
+   * score = quality_pct + (bonus_pct - base_bonus_pct) × 5
+   *       + 5 if bonus_pct >= high_tier_threshold
+   *
+   * @param {number} qualityPct       - armor quality percentage
+   * @param {number} bonusPct         - armor bonus percentage
+   * @param {number} [baseBonusPct=20]       - base bonus for the set (Riot/Assault=20, Dune=30)
+   * @param {number} [highTierThreshold=26]  - threshold for the +5 tier premium
+   * @returns {number}
+   */
+  function scoreArmorPiece(qualityPct, bonusPct, baseBonusPct = 20, highTierThreshold = 26) {
+    let score = qualityPct + (bonusPct - baseBonusPct) * 5;
+    if (bonusPct >= highTierThreshold) score += 5;
+    return score;
+  }
+
+  // Self-test
+  (() => {
+    // Doc examples (rw-pricing-logic.md §5)
+    // Riot Body A: quality 46.95%, bonus 25% → 46.95 + (25-20)×5 = 71.95  (25 < 26 so no +5)
+    // Riot Body B: quality 60.98%, bonus 21% → 60.98 + (21-20)×5 = 65.98
+    const cases = [
+      { q: 46.95, b: 25, base: 20, thr: 26, expect: 71.95, label: 'doc Body A' },
+      { q: 60.98, b: 21, base: 20, thr: 26, expect: 65.98, label: 'doc Body B' },
+      { q: 50,    b: 26, base: 20, thr: 26, expect: 85,    label: 'at threshold (+5)' },
+      { q: 50,    b: 27, base: 20, thr: 26, expect: 90,    label: 'above threshold (+5)' },
+      { q: 50,    b: 20, base: 20, thr: 26, expect: 50,    label: 'base bonus, no premium' },
+    ];
+
+    cases.forEach(({ q, b, base, thr, expect, label }) => {
+      const result = scoreArmorPiece(q, b, base, thr);
+      const pass   = Math.abs(result - expect) < 0.0001;
+      console.log(
+        `[RW Advisor] scoreArmorPiece(${q}, ${b}) [${label}] =`,
+        result,
+        pass ? '✓' : `✗ expected ${expect}`
+      );
+    });
+  })();
+
 })();
