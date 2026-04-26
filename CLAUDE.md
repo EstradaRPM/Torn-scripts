@@ -12,6 +12,7 @@ Personal collection of scripts for the browser game **Torn City** (torn.com). Sc
 |------|------|---------|
 | `torn-gym-optomizer-v5.js` | Userscript | Multi-month gym training planner with real-time energy tracking and buff rotation support. Note: filename has a typo ("optomizer"); the canonical name is "Torn Gym Optimizer". |
 | `torn-snipe-tracker-v1.user.js` | Userscript | Bazaar snipe detector and trade ledger. Watches a configurable item list, flags listings priced below a threshold, and tracks open/closed trades with P&L. |
+| `torn-rw-auction-advisor-v1.user.js` | Userscript *(in development)* | Auction house advisor for Riot and Assault armor. Evaluates listings for flip potential by calculating a recommended max offer price based on BB floor value, item market comps, armor quality scoring, and a user-defined target profit margin. |
 
 ---
 
@@ -152,6 +153,62 @@ Headroom = how far a stat can grow before the condition reverses and the gym clo
 
 ### Faction buffs
 Torn factions grant stat buffs (%) that rotate monthly. Scripts that plan training across months need to accept a buff schedule as user-defined input (not hardcoded) since buffs vary per faction and change over time.
+
+---
+
+## RW Auction Advisor
+
+### Goal
+
+Help the player evaluate Riot and Assault armor listings in the auction house
+for flip potential. For each listing the script calculates a recommended max
+offer price and displays whether the current bid leaves room for profit.
+
+### Target page
+
+`https://www.torn.com/amarket.php` — the Torn City auction house.
+Tampermonkey `@match`: `https://www.torn.com/amarket.php*`
+
+### Development phase
+
+**Pre-implementation.** All research and reference documentation is complete.
+No script file exists yet. Next step is authoring
+`torn-rw-auction-advisor-v1.user.js`.
+
+### Reference documentation
+
+All design decisions for this script must be consistent with the four docs
+in `docs/`:
+
+| Doc | Contents |
+|-----|---------|
+| [`docs/rw-pricing-logic.md`](docs/rw-pricing-logic.md) | BB floor formula, auction max bid targets, armor quality scoring (King's method), net profit calculation, fee structure, core max-offer formula, price reference hierarchy |
+| [`docs/rw-api-reference.md`](docs/rw-api-reference.md) | Torn API v2 endpoints (auction house, item market), full response schemas, DOM selectors for amarket.php, TornW3B API (opt-in), armor item IDs, rate limiting rules |
+| [`docs/rw-community-context.md`](docs/rw-community-context.md) | Trader mindset, auction red flags, safe bid patterns, mug risk, negotiation rules, selling strategy, market manipulation awareness, common mistakes |
+| [`docs/rw-armor-guide.md`](docs/rw-armor-guide.md) | All eight armor set use cases, piece priority, Riot Helmet special role, mixed set logic, full set bonuses, yellow quality vs bonus % tradeoff, orange/red behavior, advisor scope |
+
+### Torn PDA constraints
+
+All constraints in the **Torn Scripting Rules & API Compliance** section
+below apply in full. Specific constraints most relevant to this script:
+
+- **Key placeholder:** `###PDA-APIKEY###` — PDA injects the real key at
+  install time; never prompt for a key unless PDA injection is unavailable
+- **Permitted data sources:** Torn official API (`api.torn.com/v2`) and the
+  DOM of `amarket.php` only. TornW3B (`weav3r.dev/api`) is an opt-in
+  external source — requires an explicit user toggle and the ToS disclosure
+  table shown in the UI at opt-in
+- **API polling:** Only on user action or page load; no background timers
+  that fire while the user is away from the page. Item market endpoint is
+  globally cached — do not hammer it
+- **No automation:** The script displays pricing information only. It must
+  never place bids, click buttons, or submit any form on behalf of the user
+- **Disclosure (default config):** `Only locally | Nobody | Competitive
+  advantage (auction flip evaluation) | Not stored/Not shared | Public key —
+  market/auctionhouse, market/itemmarket`
+- **Disclosure (TornW3B opt-in):** `Only locally | Service owners |
+  Competitive advantage (auction flip evaluation) | Not stored/Not shared |
+  N/A (no Torn key sent to weav3r.dev)`
 
 ---
 
