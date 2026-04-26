@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.9.1
+// @version      1.9.2
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.1';
+  const SCRIPT_VERSION = '1.9.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -465,8 +465,13 @@
       const bonusSpans = li.querySelectorAll('.iconsbonuses span');
       let bonusType = null;
       if (bonusSpans.length) {
-        // Prefer the title attribute (full tooltip text); fall back to visible text
-        bonusType = (bonusSpans[0].getAttribute('title') ?? bonusSpans[0].textContent).trim() || null;
+        // title attribute often contains HTML markup (<b>, <br>) — strip it to plain text
+        const rawBonus = (bonusSpans[0].getAttribute('title') ?? bonusSpans[0].textContent).trim();
+        bonusType = rawBonus
+          .replace(/<br\s*\/?>/gi, ' ')
+          .replace(/<[^>]*>/g, '')
+          .replace(/\s+/g, ' ')
+          .trim() || null;
       }
 
       // ── Quality % and bonus % via full-text regex ────────────────────────
