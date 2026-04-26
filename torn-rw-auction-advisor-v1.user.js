@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.11.0
+// @version      1.11.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.11.0';
+  const SCRIPT_VERSION = '1.11.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -298,9 +298,6 @@
 
   // ── Torn API fetch functions ────────────────────────────────────────────────
 
-  // Log the full raw response only for the first armor item fetched to avoid flooding.
-  let _itemMarketLogDone = false;
-
   /**
    * Fetches item market listings for a specific Torn item ID.
    * Uses GET /v2/market/{id}/itemmarket — globally cached by Torn; poll on
@@ -318,17 +315,10 @@
       const url  = `https://api.torn.com/v2/market/${itemId}/itemmarket?limit=50&key=${key}&comment=rw-advisor`;
       const data = await apiFetch(url);
 
-      // Step 4 diagnostic: full raw JSON for the first item only; summary for all
-      if (!_itemMarketLogDone) {
-        console.log(`[RW Advisor] fetchItemMarketComp(${itemId}) full raw:`, JSON.stringify(data));
-        _itemMarketLogDone = true;
-      }
-
       if (data.error) { handleApiError(data.error); return null; }
 
       const im = data.itemmarket;
       if (!im?.listings?.length) {
-        console.log(`[RW Advisor] fetchItemMarketComp(${itemId}): no listings`);
         MEM.itemMarketComps[itemId] = null;
         return null;
       }
@@ -350,7 +340,6 @@
       };
 
       MEM.itemMarketComps[itemId] = comp;
-      console.log(`[RW Advisor] fetchItemMarketComp(${itemId}): lowestPrice=${lowestPrice} avgQuality=${avgQuality?.toFixed(2)} listings=${im.listings.length}`);
       return comp;
     } catch (err) {
       MEM.fetchError = `fetchItemMarketComp error: ${err.message}`;
@@ -383,9 +372,6 @@
     return { price, avgQuality };
   }
 
-  // Log full raw TornW3B response for the first piece only.
-  let _tornw3bLogDone = false;
-
   /**
    * Fetches all TornW3B bazaar listings for an armor set + rarity.
    * Returns all piece types mixed; filter in-client by itemId.
@@ -402,18 +388,10 @@
       const url  = `https://weav3r.dev/api/ranked-weapons?tab=armor&armorSet=${armorSet}&rarity=${rarity}&sortField=price&sortDirection=asc`;
       const text = await gmFetch(url);
       const data = JSON.parse(text);
-
-      if (!_tornw3bLogDone) {
-        console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) full raw:`, JSON.stringify(data).slice(0, 800));
-        _tornw3bLogDone = true;
-      }
-
       const weapons = data?.weapons ?? null;
       MEM.tornw3bComps[cacheKey] = weapons;
-      console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}): ${weapons?.length ?? 0} listings`);
       return weapons;
     } catch (err) {
-      console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) error: ${err.message}`);
       MEM.tornw3bComps[cacheKey] = null;
       return null;
     }
@@ -474,8 +452,6 @@
         const entry = Object.entries(catalogData.items || {}).find(
           ([, item]) => item.name?.toLowerCase() === 'small arms cache'
         );
-        // Log just the matched entry — full catalog is thousands of items
-        console.log('[RW Advisor] fetchBBRate catalog match:', JSON.stringify(entry ?? null));
         if (!entry) {
           MEM.fetchError = 'Small Arms Cache not found in item catalog';
           return null;
@@ -488,8 +464,6 @@
       // Fetch the cheapest listing for the cache item
       const marketUrl  = `https://api.torn.com/v2/market/${cacheItemId}/itemmarket?limit=1&key=${key}&comment=rw-advisor`;
       const marketData = await apiFetch(marketUrl);
-      // Step 3 diagnostic — log full raw response before any parsing
-      console.log('[RW Advisor] fetchBBRate market raw:', JSON.stringify(marketData));
 
       if (marketData.error) { handleApiError(marketData.error); return null; }
 
@@ -503,7 +477,6 @@
       const bbRateData = { rate: cachePrice / 20, cachePrice, fetchedAt: Date.now() };
       MEM.bbRate = bbRateData;
       Store.set(KEYS.BB_RATE, JSON.stringify(bbRateData));
-      console.log(`[RW Advisor] fetchBBRate: cachePrice=${cachePrice} rate=${bbRateData.rate} $/BB`);
       return bbRateData;
     } catch (err) {
       MEM.fetchError = `fetchBBRate error: ${err.message}`;
@@ -615,10 +588,6 @@
     }
 
     MEM.listings = results;
-    console.log(
-      `[RW Advisor] parseAuctionListings: found ${results.length} Riot/Assault listing(s)`,
-      results
-    );
     return results;
   }
 
@@ -1178,14 +1147,6 @@
         const winner = w3bPrice <= imPrice ? w3bComp : imComp;
         listing.qualityPct = winner?.avgQuality ?? null;
       }
-
-      console.log(
-        `[RW Advisor] StepB listing "${listing.name}" bonusPct=${listing.bonusPct}` +
-        ` imPrice=${imPrice === Infinity ? 'n/a' : imPrice}` +
-        ` w3bPrice=${w3bPrice === Infinity ? 'n/a' : w3bPrice}` +
-        ` refPrice=${listing.refPrice}` +
-        ` qualityPct=${listing.qualityPct?.toFixed(2)}`
-      );
     }
   }
 
@@ -1227,22 +1188,6 @@
     );
 
     enrichListingsFromMarketData();
-
-    // Step 5 diagnostic — temporary, remove after confirmation
-    MEM.listings.forEach((l, i) => {
-      const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
-      const score = (l.qualityPct != null && l.bonusPct != null)
-        ? scoreArmorPiece(l.qualityPct, l.bonusPct, baseBonusPct, highTierThreshold)
-        : null;
-      console.log(
-        `[RW Advisor] Step5 listing #${i + 1}:` +
-        ` armorName="${l.name}"` +
-        ` bonusPct=${l.bonusPct}` +
-        ` qualityPct=${l.qualityPct?.toFixed(2)}` +
-        ` score=${score?.toFixed(2)}`
-      );
-    });
-
     render();
   }
 
