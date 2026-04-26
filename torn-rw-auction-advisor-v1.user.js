@@ -405,4 +405,105 @@
     }
   }
 
+  // ── DOM parsing ─────────────────────────────────────────────────────────────
+
+  const ARMOR_PIECES  = ['Helmet', 'Body', 'Pants', 'Gloves', 'Boots'];
+  const RARITY_GLOWS  = ['red', 'orange', 'yellow'];
+
+  // Regexes against each listing's full text content
+  const RE_QUALITY    = /[Qq]uality[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%/;
+  const RE_BONUS_VAL  = /(?:Impregnable|Impenetrable)[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%/i;
+  const RE_PRICE      = /\$\s*([0-9,]+)/;
+  const RE_TIME       = /\b(\d+d\s*)?\s*(\d+h\s*)?\s*(\d+m)?\b/;
+
+  /**
+   * Parses all Riot and Assault armor listings from the current amarket.php DOM.
+   * Populates MEM.listings with one object per qualifying listing.
+   *
+   * Fields extracted:
+   *   name, armorSet, pieceType, rarity  — from name text and glow class
+   *   bonusType, bonusPct, qualityPct    — from tooltip spans and text regex
+   *   currentBid, timeRemaining          — from price/time elements and text
+   */
+  function parseAuctionListings() {
+    const listItems = document.querySelectorAll('ul.items-list li');
+    const results   = [];
+
+    for (const li of listItems) {
+      // Skip structural spacers
+      if (li.classList.contains('last') || li.classList.contains('clear')) continue;
+
+      // ── Item name ────────────────────────────────────────────────────────
+      const nameEl = li.querySelector('span.title');
+      if (!nameEl) continue;
+      const name = nameEl.textContent.trim();
+
+      // ── Filter: Riot and Assault only ────────────────────────────────────
+      const armorSet = name.startsWith('Riot')    ? 'Riot'
+                     : name.startsWith('Assault') ? 'Assault'
+                     : null;
+      if (!armorSet) continue;
+
+      const pieceType = ARMOR_PIECES.find(p => name.includes(p)) ?? null;
+
+      // ── Rarity from glow class (li itself, or first descendant match) ────
+      let rarity = null;
+      const glowTarget = li.matches('[class*="glow-"]') ? li
+                       : li.querySelector('[class*="glow-"]');
+      if (glowTarget) {
+        rarity = RARITY_GLOWS.find(r => glowTarget.classList.contains(`glow-${r}`)) ?? null;
+      }
+
+      // ── Bonus info from icon tooltip spans ───────────────────────────────
+      const bonusSpans = li.querySelectorAll('.iconsbonuses span');
+      let bonusType = null;
+      if (bonusSpans.length) {
+        // Prefer the title attribute (full tooltip text); fall back to visible text
+        bonusType = (bonusSpans[0].getAttribute('title') ?? bonusSpans[0].textContent).trim() || null;
+      }
+
+      // ── Quality % and bonus % via full-text regex ────────────────────────
+      // Torn renders these in stat/tooltip text within the listing element.
+      // Null when not visible in DOM — to be filled from API in Step 10.
+      const liText   = li.textContent;
+      const qualM    = liText.match(RE_QUALITY);
+      const bonusM   = liText.match(RE_BONUS_VAL);
+      const qualityPct = qualM  ? parseFloat(qualM[1])  : null;
+      const bonusPct   = bonusM ? parseFloat(bonusM[1]) : null;
+
+      // ── Current bid ──────────────────────────────────────────────────────
+      // Try a dedicated price element first; fall back to first $ amount in text
+      let currentBid = null;
+      const priceEl  = li.querySelector('.price, [class*="price"]');
+      if (priceEl) {
+        const raw = priceEl.textContent.replace(/[^0-9]/g, '');
+        if (raw) currentBid = parseInt(raw, 10);
+      }
+      if (currentBid === null) {
+        const priceM = liText.match(RE_PRICE);
+        if (priceM) currentBid = parseInt(priceM[1].replace(/,/g, ''), 10);
+      }
+
+      // ── Time remaining ───────────────────────────────────────────────────
+      let timeRemaining = null;
+      const timeEl = li.querySelector('.time, [class*="time-left"], [class*="timer"]');
+      if (timeEl) {
+        timeRemaining = timeEl.textContent.trim() || null;
+      }
+      if (!timeRemaining) {
+        const timeM = liText.match(/\d+\s*(?:day|hour|hr|min|d\b|h\b|m\b)/i);
+        if (timeM) timeRemaining = timeM[0].trim();
+      }
+
+      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, currentBid, timeRemaining });
+    }
+
+    MEM.listings = results;
+    console.log(
+      `[RW Advisor] parseAuctionListings: found ${results.length} Riot/Assault listing(s)`,
+      results
+    );
+    return results;
+  }
+
 })();
