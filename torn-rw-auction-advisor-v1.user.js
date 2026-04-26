@@ -1336,67 +1336,6 @@
   settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
   rwaGearBtn.addEventListener('click', () => settingsModal.showModal());
 
-  // ── Drag ──────────────────────────────────────────────────────────────────────
-
-  const DRAG_MARGIN = 60;
-  let dragging = false, dragOffX = 0, dragOffY = 0;
-
-  function clampPos(x, y) {
-    return [
-      Math.max(DRAG_MARGIN - panel.offsetWidth,  Math.min(x, window.innerWidth  - DRAG_MARGIN)),
-      Math.max(DRAG_MARGIN - panel.offsetHeight, Math.min(y, window.innerHeight - DRAG_MARGIN)),
-    ];
-  }
-
-  function applyPos(x, y) {
-    const [cx, cy] = clampPos(x, y);
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left   = cx + 'px';
-    panel.style.top    = cy + 'px';
-  }
-
-  function savePos() {
-    MEM.position = { left: panel.style.left, top: panel.style.top };
-    Store.set(KEYS.POSITION, JSON.stringify(MEM.position));
-  }
-
-  rwHeader.addEventListener('mousedown', e => {
-    if (e.target === collapseBtn) return;
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffX = e.clientX - rect.left;
-    dragOffY = e.clientY - rect.top;
-    panel.style.transition = 'none';
-    e.preventDefault();
-  });
-
-  document.addEventListener('mousemove', e => { if (dragging) applyPos(e.clientX - dragOffX, e.clientY - dragOffY); });
-  document.addEventListener('mouseup',   () => { if (dragging) savePos(); dragging = false; });
-
-  rwHeader.addEventListener('touchstart', e => {
-    if (e.target === collapseBtn) return;
-    const t = e.touches[0];
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffX = t.clientX - rect.left;
-    dragOffY = t.clientY - rect.top;
-    e.preventDefault();
-  }, { passive: false });
-
-  document.addEventListener('touchmove', e => {
-    if (!dragging) return;
-    const t = e.touches[0];
-    applyPos(t.clientX - dragOffX, t.clientY - dragOffY);
-  }, { passive: false });
-
-  document.addEventListener('touchend', () => { if (dragging) savePos(); dragging = false; });
-
-  window.addEventListener('resize', () => {
-    if (!MEM.position?.left) return;
-    applyPos(parseInt(panel.style.left, 10), parseInt(panel.style.top, 10));
-  });
-
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
   // Resolves armor piece names → Torn item IDs via the items catalog.
@@ -1525,7 +1464,7 @@
       // ── King's cap for HQ/exceptional (ceiling on maxOffer, not on refPrice) ─
       // Anchor = cheapest near-baseBonusPct listing (quality-agnostic), strict match only.
       // strict=true prevents fallback to all listings — if no base-stat comps exist, cap is null.
-      // Cap = anchor × tier multiplier. Applied in render(), not here.
+      // Cap = anchor × tier multiplier. Applied in computeListingMetrics(), not here.
       let kingCap       = null;
       let baseCompPrice = null;
       if (tier === 'hq' || tier === 'exceptional') {
@@ -1558,19 +1497,19 @@
   //   3. resolve armor item IDs → fetch all market comps → enrich listings → final render
   async function init() {
     parseAuctionListings();
-    render();
+    renderInline();
 
     if (!MEM.listings.length) return;
 
     const key = getApiKey();
     if (!key) {
-      MEM.fetchError = 'No API key — paste one into Settings (only needed without Torn PDA)';
-      render();
+      MEM.fetchError = 'No API key — tap ⚙ (bottom right) to add one';
+      renderInline();
       return;
     }
 
     await fetchBBRate();
-    render();
+    renderInline();
 
     await resolveArmorItemIds();
 
@@ -1594,7 +1533,7 @@
     ]);
 
     enrichListingsFromMarketData();
-    render();
+    renderInline();
   }
 
   // ── Init guard + re-init on AJAX page changes ─────────────────────────────
