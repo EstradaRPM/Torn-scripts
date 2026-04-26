@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.10.1
+// @version      1.10.2
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.10.1';
+  const SCRIPT_VERSION = '1.10.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -334,7 +334,7 @@
     if (!key) { MEM.fetchError = 'No API key — enter one in Settings'; return null; }
 
     try {
-      const url  = `https://api.torn.com/v2/market/${itemId}/itemmarket?limit=10&key=${key}&comment=rw-advisor`;
+      const url  = `https://api.torn.com/v2/market/${itemId}/itemmarket?limit=50&key=${key}&comment=rw-advisor`;
       const data = await apiFetch(url);
 
       // Step 4 diagnostic: full raw JSON for the first item only; summary for all
@@ -377,30 +377,53 @@
     }
   }
 
+  /**
+   * Returns the lowest item market price and avgQuality for listings whose
+   * bonus value is within BONUS_MATCH_RANGE of the target bonusPct.
+   * Falls back to unfiltered lowestPrice if no bonus-matched listings exist.
+   *
+   * @param {number} itemId
+   * @param {number} bonusPct
+   * @returns {{ price: number, avgQuality: number|null } | null}
+   */
+  function getItemMarketComp(itemId, bonusPct) {
+    const comp = itemId ? MEM.itemMarketComps[itemId] : null;
+    if (!comp) return null;
+
+    const matched = comp.listings.filter(l => {
+      const bv = l.item_details?.bonuses?.[0]?.value ?? null;
+      return bv != null && Math.abs(bv - bonusPct) <= BONUS_MATCH_RANGE;
+    });
+
+    const src      = matched.length ? matched : comp.listings;
+    const price    = Math.min(...src.map(l => l.price));
+    const qs       = src.map(l => l.item_details?.stats?.quality).filter(q => q != null);
+    const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : comp.avgQuality;
+    return { price, avgQuality };
+  }
+
   // Log full raw TornW3B response for the first piece only.
   let _tornw3bLogDone = false;
 
   /**
-   * Fetches TornW3B bazaar listings for a specific armor piece type.
-   * No API key required. Results stored in MEM.tornw3bComps.
+   * Fetches all TornW3B bazaar listings for an armor set + rarity.
+   * Returns all piece types mixed; filter in-client by itemId.
+   * No API key required. Torn page CSP blocks fetch() — use gmFetch directly.
+   * Results stored in MEM.tornw3bComps keyed by "ArmorSet_rarity".
    *
-   * @param {string} armorSet  - 'Riot' | 'Assault'
-   * @param {string} pieceType - 'Helmet' | 'Body' | 'Pants' | 'Gloves' | 'Boots'
-   * @param {string} rarity    - 'yellow' | 'orange' | 'red'
+   * @param {string} armorSet - 'Riot' | 'Assault'
+   * @param {string} rarity   - 'yellow' | 'orange' | 'red'
    * @returns {Promise<Array|null>}
    */
-  async function fetchTornW3BComp(armorSet, pieceType, rarity) {
-    const cacheKey = `${armorSet}_${pieceType}_${rarity}`;
+  async function fetchTornW3BComp(armorSet, rarity) {
+    const cacheKey = `${armorSet}_${rarity}`;
     try {
-      // Torn's page CSP always blocks fetch() to weav3r.dev — use gmFetch directly.
-      // Omit armorPiece for now to confirm the API returns results and to see the
-      // piece name format TornW3B uses in its response data.
       const url  = `https://weav3r.dev/api/ranked-weapons?tab=armor&armorSet=${armorSet}&rarity=${rarity}&sortField=price&sortDirection=asc`;
       const text = await gmFetch(url);
       const data = JSON.parse(text);
 
       if (!_tornw3bLogDone) {
-        console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) full raw:`, JSON.stringify(data));
+        console.log(`[RW Advisor] fetchTornW3BComp(${cacheKey}) full raw:`, JSON.stringify(data).slice(0, 800));
         _tornw3bLogDone = true;
       }
 
@@ -413,6 +436,37 @@
       MEM.tornw3bComps[cacheKey] = null;
       return null;
     }
+  }
+
+  /**
+   * Returns the lowest bazaar price from TornW3B for a specific armor piece
+   * with a bonus value within BONUS_MATCH_RANGE of the target bonus.
+   * quality from TornW3B is a string percentage — parse with parseFloat().
+   *
+   * @param {string} armorName - e.g. 'Riot Gloves'
+   * @param {string} armorSet  - 'Riot' | 'Assault'
+   * @param {string} rarity    - 'yellow' | 'orange' | 'red'
+   * @param {number} bonusPct  - target bonus percentage
+   * @returns {{ price: number, avgQuality: number|null } | null}
+   */
+  const BONUS_MATCH_RANGE = 2;
+
+  function getTornW3BComp(armorName, armorSet, rarity, bonusPct) {
+    const cacheKey = `${armorSet}_${rarity}`;
+    const all      = MEM.tornw3bComps[cacheKey];
+    if (!all?.length) return null;
+
+    const itemId = armorItemIds[armorName];
+    const matched = all.filter(w =>
+      w.itemId === itemId &&
+      Math.abs((Object.values(w.bonuses ?? {})[0]?.value ?? 0) - bonusPct) <= BONUS_MATCH_RANGE
+    );
+    if (!matched.length) return null;
+
+    const price      = Math.min(...matched.map(w => w.price));
+    const qs         = matched.map(w => parseFloat(w.quality)).filter(q => !isNaN(q));
+    const avgQuality = qs.length ? qs.reduce((s, q) => s + q, 0) / qs.length : null;
+    return { price, avgQuality };
   }
 
   /**
@@ -1111,18 +1165,37 @@
     }
   }
 
-  // Populates qualityPct on each listing from the average quality of the fetched
-  // itemmarket listings for that item type. Per-item UID matching is not possible:
-  // DOM "UIDs" (e.g. 7701) are model IDs, not the large per-instance UIDs the API
-  // returns (e.g. 18551905524). stats.quality is already a percentage — no conversion.
+  // Enriches each listing with qualityPct and refPrice derived from both
+  // itemmarket (bonus-filtered) and TornW3B bazaar (bonus-filtered) data.
+  // refPrice = lowest comparable price across both sources.
+  // qualityPct = avgQuality of whichever source produced the lower price.
   function enrichListingsFromMarketData() {
     for (const listing of MEM.listings) {
-      if (listing.qualityPct != null) continue;
-      const itemId = armorItemIds[listing.name];
-      const comp   = itemId ? MEM.itemMarketComps[itemId] : null;
-      if (comp?.avgQuality != null) {
-        listing.qualityPct = comp.avgQuality;
+      const itemId   = armorItemIds[listing.name];
+      const imComp   = getItemMarketComp(itemId, listing.bonusPct);
+      const w3bComp  = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct);
+
+      const imPrice  = imComp?.price  ?? Infinity;
+      const w3bPrice = w3bComp?.price ?? Infinity;
+
+      if (imPrice === Infinity && w3bPrice === Infinity) continue;
+
+      listing.refPrice   = Math.min(imPrice, w3bPrice);
+      listing.imPrice    = imPrice  === Infinity ? null : imPrice;
+      listing.w3bPrice   = w3bPrice === Infinity ? null : w3bPrice;
+
+      if (listing.qualityPct == null) {
+        const winner = w3bPrice <= imPrice ? w3bComp : imComp;
+        listing.qualityPct = winner?.avgQuality ?? null;
       }
+
+      console.log(
+        `[RW Advisor] StepB listing "${listing.name}" bonusPct=${listing.bonusPct}` +
+        ` imPrice=${imPrice === Infinity ? 'n/a' : imPrice}` +
+        ` w3bPrice=${w3bPrice === Infinity ? 'n/a' : w3bPrice}` +
+        ` refPrice=${listing.refPrice}` +
+        ` qualityPct=${listing.qualityPct?.toFixed(2)}`
+      );
     }
   }
 
@@ -1153,14 +1226,14 @@
     )];
     await Promise.all(uniqueIds.map(id => fetchItemMarketComp(id)));
 
-    // Fetch TornW3B bazaar listings for each unique (armorSet, pieceType, rarity) combination
-    const uniquePieces = [...new Map(
-      MEM.listings.map(l => [`${l.armorSet}_${l.pieceType}_${l.rarity}`, l])
+    // Fetch TornW3B bazaar listings — one call per unique armorSet+rarity covers all piece types
+    const uniqueSetRarities = [...new Map(
+      MEM.listings.map(l => [`${l.armorSet}_${l.rarity}`, l])
     ).values()];
     await Promise.all(
-      uniquePieces
-        .filter(l => l.armorSet && l.pieceType && l.rarity)
-        .map(l => fetchTornW3BComp(l.armorSet, l.pieceType, l.rarity))
+      uniqueSetRarities
+        .filter(l => l.armorSet && l.rarity)
+        .map(l => fetchTornW3BComp(l.armorSet, l.rarity))
     );
 
     enrichListingsFromMarketData();
