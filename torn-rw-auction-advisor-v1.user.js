@@ -1183,152 +1183,89 @@
   const qualRangeInput  = settingsModal.querySelector('#rwa-input-quality-range');
   const bonusRangeInput = settingsModal.querySelector('#rwa-input-bonus-range');
 
-  // ── render() ─────────────────────────────────────────────────────────────────
+  // ── Inline render ────────────────────────────────────────────────────────────
 
-  function render() {
-    if (!MEM.listings.length) {
-      listingsContent.innerHTML = '<div class="rw-empty">No supported RW armor found on this page.</div>';
-      return;
-    }
-
+  function computeListingMetrics(l) {
+    const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
     const bbRate = MEM.bbRate?.rate ?? null;
 
-    const rows = MEM.listings.map(l => {
-      const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
+    const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
+      ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
+      : null;
 
-      // Quality score (null when DOM couldn't extract quality or bonus %)
-      const qualityScore = (l.qualityPct != null && l.bonusPct != null)
-        ? scoreArmorPiece(l.qualityPct, l.bonusPct, baseBonusPct, highTierThreshold)
-        : null;
+    const refPrice     = l.refPrice ?? null;
+    const kingCap      = l.kingCap  ?? null;
+    const formulaOffer = refPrice != null
+      ? calcMaxOffer({
+          refPrice,
+          bbFloor        : BB_FLOOR_SETS.has(l.armorSet) ? bbFloor : null,
+          targetProfitPct: MEM.settings.targetProfitPct,
+          mugBufferPct   : MEM.settings.mugBufferPct,
+          sellViaTrade   : MEM.settings.sellViaTrade,
+        })
+      : null;
+    const maxOffer = (formulaOffer != null && kingCap != null)
+      ? Math.min(formulaOffer, kingCap)
+      : formulaOffer;
 
-      // BB floor — applies to sets that trade near BB (Riot, Dune).
-      // Assault and higher-tier sets trade significantly above BB floor.
-      const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
-        ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
-        : null;
+    const bid = l.currentBid;
+    let netProfit = null, roi = null;
+    if (bid != null && refPrice != null) {
+      const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
+      const mugBuffer   = MEM.settings.mugBufferPct / 100;
+      const netReceived = refPrice * (1 - marketFee) * (1 - mugBuffer);
+      netProfit         = Math.round(netReceived - bid);
+      roi               = bid > 0 ? (netProfit / bid) * 100 : null;
+    }
 
-      // Reference price: quality-aware estimate of realistic resale value
-      const refPrice = l.refPrice ?? null;
+    const signalColor = bid != null && maxOffer != null
+      ? (bid < maxOffer ? '#00cc66' : '#ff4444')
+      : '#8aa898';
 
-      // Max offer: formula result, then floored by BB floor, then capped by King's rule.
-      // King's cap (HQ/exceptional only): don't bid more than 2× or 2.5× the cheapest
-      // base-stat listing, regardless of what quality-matched comps suggest — HQ market
-      // prices are 3–4× inflated and can push the formula above a safe auction bid.
-      const formulaOffer = refPrice != null
-        ? calcMaxOffer({
-            refPrice,
-            bbFloor        : BB_FLOOR_SETS.has(l.armorSet) ? bbFloor : null,
-            targetProfitPct: MEM.settings.targetProfitPct,
-            mugBufferPct   : MEM.settings.mugBufferPct,
-            sellViaTrade   : MEM.settings.sellViaTrade,
-          })
-        : null;
-      const kingCap        = l.kingCap ?? null;
-      const maxOffer       = (formulaOffer != null && kingCap != null)
-        ? Math.min(formulaOffer, kingCap)
-        : formulaOffer;
-      const kingCapActive  = kingCap != null && maxOffer != null && maxOffer === kingCap && kingCap < (formulaOffer ?? Infinity);
+    return { bbFloor, refPrice, maxOffer, netProfit, roi, signalColor };
+  }
 
-      // Net profit and ROI at the current bid price
-      const bid = l.currentBid;
-      let netProfit = null, roi = null;
-      if (bid != null && refPrice != null) {
-        const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
-        const mugBuffer   = MEM.settings.mugBufferPct / 100;
-        const netReceived = refPrice * (1 - marketFee) * (1 - mugBuffer);
-        netProfit         = Math.round(netReceived - bid);
-        roi               = bid > 0 ? (netProfit / bid) * 100 : null;
-      }
+  function injectAdvisoryStrip(listing) {
+    if (!listing.el) return;
+    listing.el.querySelector('.rwa-strip')?.remove();
 
-      // Bonus cell: append tier badge per King's RW Guide classification
-      const tier = l.tier ?? 'base';
-      const tierBadge = tier === 'exceptional'
-        ? `&thinsp;<span style="color:#e060e0;font-size:10px;font-weight:700" title="Exceptional: quality ≥40% AND high bonus — King's guide cap: ${EXCEPTIONAL_MULTIPLIER}× base price">EXCEP</span>`
-        : tier === 'hq'
-          ? `&thinsp;<span style="color:#60a0f0;font-size:10px;font-weight:700" title="High quality/bonus — King's guide cap: ${HQ_MULTIPLIER}× base price">HQ</span>`
-          : '';
+    const { maxOffer, roi, signalColor } = computeListingMetrics(listing);
+    const isLoading = maxOffer == null && !MEM.fetchError;
 
-      // Mkt Comp cell — display depends on comp source (same for all tiers):
-      //   no badge   — direct quality-matched comp (most precise)
-      //   interp     — amber, interpolated between quality brackets
-      //   floor/ceil — amber, single quality bracket
-      //   ~          — amber, no quality data; cheapest bonus-matched only
-      const compSource = l.compSource ?? 'bonus-only';
-      let compCellInner;
-      if (refPrice == null) {
-        compCellInner = '—';
-      } else if (compSource === 'quality-match') {
-        compCellInner = fmtM(refPrice);
-      } else if (compSource === 'interpolated') {
-        const lq = l.interpLower?.quality?.toFixed(1) ?? '?';
-        const uq = l.interpUpper?.quality?.toFixed(1) ?? '?';
-        const lp = fmtM(l.interpLower?.price);
-        const up = fmtM(l.interpUpper?.price);
-        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Interpolated between ${lq}% qual (${lp}) and ${uq}% qual (${up})">interp</span>`;
-      } else if (compSource === 'single-bound') {
-        const isLower = l.interpLower != null;
-        const bound   = isLower ? l.interpLower : l.interpUpper;
-        const dir     = isLower ? '≥' : '≤';
-        const side    = isLower ? 'floor' : 'ceil';
-        const tip     = isLower
-          ? `Only lower quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality exceeds all comps`
-          : `Only upper quality bound found (${bound?.quality?.toFixed(1)}% at ${fmtM(bound?.price)}) — target quality below all comps`;
-        compCellInner = `${dir}${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="${tip}">${side}</span>`;
-      } else {
-        compCellInner = `${fmtM(refPrice)}&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="No quality data in comp listings — cheapest bonus-matched price only">~</span>`;
-      }
+    const strip = document.createElement('div');
+    strip.className = 'rwa-strip';
 
-      // Max Offer cell: green = bid below max, red = at/above max.
-      // Badges (at most one fires per row):
-      //   cap  — purple/blue: King's cap is the binding constraint (formula would allow more)
-      //   !    — amber: comp is imprecise AND max offer exceeds hist median (possible inflation)
-      // BB floor active: suppresses ! (hist < BB floor is expected for Riot/Dune, not a signal)
-      const canColor      = bid != null && maxOffer != null;
-      const isBuyZone     = canColor && bid < maxOffer;
-      const offerColor    = canColor ? (isBuyZone ? '#00cc66' : '#ff4444') : '';
-      const histMedian    = l.hist?.median ?? null;
-      const bbFloorActive = bbFloor != null && maxOffer != null && maxOffer <= bbFloor + 1;
-      const offerRiskFlag = !bbFloorActive && !kingCapActive && compSource !== 'quality-match'
-                            && histMedian != null && maxOffer != null && maxOffer > histMedian;
-
-      const capColor      = tier === 'exceptional' ? '#e060e0' : '#60a0f0';
-      const capMult       = tier === 'exceptional' ? EXCEPTIONAL_MULTIPLIER : HQ_MULTIPLIER;
-      const offerBadge    = kingCapActive
-        ? `&thinsp;<span style="color:${capColor};font-size:10px;font-weight:700" title="King's cap: base-stat price ${fmtM(l.baseCompPrice)} × ${capMult} = ${fmtM(l.kingCap)} (HQ market prices run 3–4× base; formula gave ${fmtM(formulaOffer)})">cap</span>`
-        : offerRiskFlag
-          ? `&thinsp;<span style="color:#f0a040;font-size:10px;font-weight:700" title="Max offer exceeds historical auction median (${fmtM(histMedian)}) — live comp may be inflated">!</span>`
-          : '';
-
-      // Net Profit / ROI cells: green = positive, red = negative
-      const profitColor = netProfit != null ? (netProfit > 0 ? '#00cc66' : '#ff4444') : '';
-
-      return `<tr>
-        <td>${escHtml(l.name)}</td>
-        <td>${escHtml(l.rarity ?? '—')}</td>
-        <td>${escHtml(l.bonusType ?? '—')}${tierBadge}</td>
-        <td>${qualityScore != null ? qualityScore.toFixed(1) : '—'}</td>
-        <td>${fmtM(bbFloor)}</td>
-        <td>${compCellInner}</td>
-        <td>${fmtM(bid)}</td>
-        <td style="font-weight:600;color:${offerColor}">${fmtM(maxOffer)}${offerBadge}</td>
-        <td style="color:${profitColor}">${fmtM(netProfit)}</td>
-        <td style="color:${profitColor}">${roi != null ? roi.toFixed(1) + '%' : '—'}</td>
-      </tr>`;
-    }).join('');
-
-    const errorBanner = MEM.fetchError
-      ? `<div style="padding:6px 14px;font-size:12px;color:#ff8844;border-bottom:1px solid #1a2a3a">${escHtml(MEM.fetchError)}</div>`
+    const offerHtml = isLoading
+      ? `<span class="rwa-strip-loading">fetching…</span>`
+      : `<span class="rwa-strip-val" style="color:${escHtml(signalColor)}">${escHtml(fmtM(maxOffer))}</span>`;
+    const roiHtml = (!isLoading && roi != null)
+      ? `<span class="rwa-strip-roi" style="color:${escHtml(signalColor)}">${roi.toFixed(1)}%</span>`
       : '';
 
-    listingsContent.innerHTML = errorBanner + `
-      <table class="rw-table">
-        <thead><tr>
-          <th>Item</th><th>Rarity</th><th>Bonus</th><th>Score</th>
-          <th>BB Floor</th><th>Mkt Comp</th><th>Current Bid</th>
-          <th>Max Offer</th><th>Net Profit</th><th>ROI %</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
+    strip.innerHTML = `
+      <div class="rwa-strip-main">
+        <div class="rwa-strip-offer">
+          <span class="rwa-strip-label">Max Offer</span>
+          ${offerHtml}
+          ${roiHtml}
+        </div>
+        <div class="rwa-strip-actions">
+          <button class="rwa-btn rwa-btn-details">&#9660; Details</button>
+          <button class="rwa-btn rwa-btn-market">Market</button>
+          <button class="rwa-btn rwa-btn-bazaar">Bazaar</button>
+          <button class="rwa-btn rwa-btn-log">Log</button>
+        </div>
+      </div>
+    `;
+
+    listing.el.appendChild(strip);
+  }
+
+  function renderInline() {
+    showError(MEM.fetchError);
+    for (const listing of MEM.listings) {
+      injectAdvisoryStrip(listing);
+    }
   }
 
   // ── Settings event wiring ────────────────────────────────────────────────────
