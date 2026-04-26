@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.16.2
+// @version      1.17.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.16.2';
+  const SCRIPT_VERSION = '1.17.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -33,8 +33,6 @@
     BB_RATE            : 'rw_bbRate',
     CACHE_ITEM_IDS     : 'rw_cacheItemIds',
     ARMOR_ITEM_IDS     : 'rw_armorItemIds',
-    COLLAPSED          : 'rw_collapsed',
-    POSITION           : 'rw_position',
     QUALITY_MATCH_RANGE: 'rw_qualityMatchRange',
     BONUS_MATCH_RANGE  : 'rw_bonusMatchRange',
   };
@@ -66,13 +64,6 @@
     // { rate, cachePrices: { name: price }, fetchedAt }
     bbRate: (() => {
       try { return JSON.parse(Store.get(KEYS.BB_RATE)) || null; } catch { return null; }
-    })(),
-
-    // Panel UI state
-    collapsed : Store.get(KEYS.COLLAPSED) === 'true',
-    position  : (() => {
-      try { return JSON.parse(Store.get(KEYS.POSITION)) || { top: 80, right: 20 }; }
-      catch { return { top: 80, right: 20 }; }
     })(),
 
     // Historical auction sale stats keyed by composite listing search key.
@@ -903,7 +894,7 @@
         if (timeM) timeRemaining = timeM[0].trim();
       }
 
-      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, uid, currentBid, timeRemaining });
+      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, uid, currentBid, timeRemaining, el: li });
     }
 
     MEM.listings = results;
