@@ -1048,6 +1048,21 @@
   //   3. resolve armor item IDs → fetch all market comps in parallel → final render
   async function init() {
     parseAuctionListings();
+
+    // Step 1 diagnostic — temporary, remove after confirmation
+    MEM.listings.forEach((l, i) => {
+      console.log(`[RW Advisor] Step1 listing #${i + 1}:`, {
+        armorName    : l.name,
+        pieceType    : l.pieceType,
+        rarity       : l.rarity,
+        bonusType    : l.bonusType,
+        bonusPct     : l.bonusPct,
+        qualityPct   : l.qualityPct,
+        currentBid   : l.currentBid,
+        timeRemaining: l.timeRemaining,
+      });
+    });
+
     render();
 
     if (!MEM.listings.length) return;
