@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.19.0
+// @version      1.20.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.19.0';
+  const SCRIPT_VERSION = '1.20.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -431,6 +431,9 @@
       // Incorrect key (2) or key owner banned (13) — stop using it
       Store.remove(KEYS.BB_RATE);
       Store.remove(KEYS.CACHE_ITEM_IDS);
+      apikeyInput.classList.add('rwa-input-error');
+      apikeyHint.textContent = err.code === 2 ? 'Invalid key — paste a new one' : 'Key owner banned';
+      apikeyHint.classList.add('rwa-hint-error');
     }
   }
 
@@ -1538,6 +1541,33 @@
     }
   }
 
+  function refreshDataSources() {
+    const rows = [];
+    const bbTs = MEM.bbRate?.fetchedAt;
+    rows.push(`<div class="rwa-source-row">
+      <span class="rwa-source-name">BB Rate</span>
+      <span class="rwa-source-age">${escHtml(bbTs ? fmtAgo(bbTs) : 'not fetched')}</span>
+    </div>`);
+    const imEntries = Object.entries(MEM.itemMarketComps).filter(([, v]) => v?.fetchedAt);
+    for (const [id, comp] of imEntries) {
+      const name = Object.keys(armorItemIds).find(k => armorItemIds[k] === parseInt(id, 10)) ?? `ID ${id}`;
+      rows.push(`<div class="rwa-source-row">
+        <span class="rwa-source-name">${escHtml(name)}</span>
+        <span class="rwa-source-age">${escHtml(fmtAgo(comp.fetchedAt))}</span>
+      </div>`);
+    }
+    const w3bEntries = Object.entries(MEM.tornw3bFetchedAt);
+    for (const [key, ts] of w3bEntries) {
+      rows.push(`<div class="rwa-source-row">
+        <span class="rwa-source-name">Bazaar ${escHtml(key)}</span>
+        <span class="rwa-source-age">${escHtml(fmtAgo(ts))}</span>
+      </div>`);
+    }
+    sourcesBody.innerHTML = rows.length
+      ? rows.join('')
+      : '<span class="rwa-source-empty">not yet fetched</span>';
+  }
+
   // ── Settings event wiring ────────────────────────────────────────────────────
 
   if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
@@ -1567,12 +1597,18 @@
     renderInline();
   });
 
+  apikeyInput.addEventListener('focus', () => { apikeyInput.type = 'text'; });
+  apikeyInput.addEventListener('blur',  () => { if (!apikeyInput.value) apikeyInput.type = 'password'; });
   apikeyInput.addEventListener('change', () => {
     const val = apikeyInput.value.trim();
     if (val) {
       Store.set('rw_apikey', val);
       apikeyInput.value       = '';
+      apikeyInput.type        = 'password';
       apikeyInput.placeholder = '(key saved)';
+      apikeyInput.classList.remove('rwa-input-error');
+      apikeyHint.textContent  = '';
+      apikeyHint.classList.remove('rwa-hint-error');
     }
   });
 
@@ -1604,7 +1640,7 @@
 
   settingsModal.querySelector('.rwa-modal-close').addEventListener('click', () => settingsModal.close());
   settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
-  rwaGearBtn.addEventListener('click', () => settingsModal.showModal());
+  rwaGearBtn.addEventListener('click', () => { refreshDataSources(); settingsModal.showModal(); });
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
