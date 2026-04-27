@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.26.2
+// @version      1.26.3
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.26.2';
+  const SCRIPT_VERSION = '1.26.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -876,19 +876,64 @@
           .trim() || null;
       }
 
-      // ── Quality %, bonus %, and armor stat ──────────────────────────────
-      // qualityPct: from full listing text via regex; null when DOM omits it.
-      // armorStat: likewise via regex; used downstream to estimate quality
-      //   from comp data when qualityPct is unavailable.
-      // bonusPct: extracted from the already-parsed bonusType tooltip string —
-      //   works for any armor set without naming specific bonus types.
-      const liText     = li.textContent;
-      const qualM      = liText.match(RE_QUALITY);
-      const qualityPct = qualM ? parseFloat(qualM[1]) : null;
-      const armorM     = liText.match(RE_ARMOR);
-      const armorStat  = armorM ? parseFloat(armorM[1]) : null;
-      const bonusPctM  = bonusType?.match(/(\d+(?:\.\d+)?)\s*%/);
-      const bonusPct   = bonusPctM ? parseFloat(bonusPctM[1]) : null;
+      // ── Quality %, armor stat, bonus % ──────────────────────────────────
+      // Primary attempt: regex on textContent (works when stats are inline text).
+      // Extended attempt: scan every [title] attribute in the li — same pattern
+      //   that successfully reads the bonus from .iconsbonuses span title.
+      // Both run here at parse time; re-attempted on Details click for lazy-
+      //   loaded stats sections that may not be in the DOM yet on page load.
+      const liText = li.textContent;
+
+      function extractQualityFrom(text) {
+        const m = text?.match(RE_QUALITY);
+        return m ? parseFloat(m[1]) : null;
+      }
+      function extractArmorFrom(text) {
+        const m = text?.match(RE_ARMOR);
+        return m ? parseFloat(m[1]) : null;
+      }
+
+      let qualityPct = extractQualityFrom(liText);
+      let armorStat  = extractArmorFrom(liText);
+
+      // Scan title attributes on all descendant elements (skip our own strip)
+      if (qualityPct == null || armorStat == null) {
+        for (const el of li.querySelectorAll('[title]')) {
+          if (el.closest('.rwa-strip')) continue;
+          const t = el.getAttribute('title') ?? '';
+          if (qualityPct == null) qualityPct = extractQualityFrom(t);
+          if (armorStat  == null) armorStat  = extractArmorFrom(t);
+          if (qualityPct != null && armorStat != null) break;
+        }
+      }
+
+      // Also check data attributes Torn may use for item stats
+      if (qualityPct == null) {
+        const dq = li.getAttribute('data-quality') ?? li.querySelector('[data-quality]')?.getAttribute('data-quality');
+        if (dq) { const v = parseFloat(dq); if (!isNaN(v)) qualityPct = v; }
+      }
+      if (armorStat == null) {
+        const da = li.getAttribute('data-armor') ?? li.querySelector('[data-armor]')?.getAttribute('data-armor');
+        if (da) { const v = parseFloat(da); if (!isNaN(v)) armorStat = v; }
+      }
+
+      // One-time console dump — remove once the correct selector is identified
+      if (results.length === 0) {
+        console.group('[RW Advisor] DOM debug — first listing');
+        console.log('textContent:', liText);
+        console.log('qualityPct from text:', qualityPct, '| armorStat from text:', armorStat);
+        console.log('[title] elements:',
+          [...li.querySelectorAll('[title]')]
+            .filter(e => !e.closest('.rwa-strip'))
+            .map(e => ({ cls: e.className, title: e.getAttribute('title') }))
+        );
+        console.log('dataset on li:', JSON.stringify(li.dataset));
+        console.log('outerHTML (trimmed):', li.outerHTML.slice(0, 2000));
+        console.groupEnd();
+      }
+
+      const bonusPctM = bonusType?.match(/(\d+(?:\.\d+)?)\s*%/);
+      const bonusPct  = bonusPctM ? parseFloat(bonusPctM[1]) : null;
 
       // ── Current bid ──────────────────────────────────────────────────────
       // Try a dedicated price element first; fall back to first $ amount in text
@@ -1556,6 +1601,41 @@
     listing.el.appendChild(strip);
 
     strip.querySelector('.rwa-btn-details').addEventListener('click', () => {
+      // Re-attempt quality/armor parse in case stats were lazy-loaded since init
+      if (listing.qualityPct == null || listing.qualityEstimated) {
+        const freshText = listing.el.textContent;
+        const freshQ = freshText.match(RE_QUALITY);
+        if (freshQ) { listing.qualityPct = parseFloat(freshQ[1]); listing.qualityEstimated = false; }
+        if (listing.qualityPct == null || listing.qualityEstimated) {
+          for (const el of listing.el.querySelectorAll('[title]')) {
+            if (el.closest('.rwa-strip')) continue;
+            const t = el.getAttribute('title') ?? '';
+            const m = t.match(RE_QUALITY);
+            if (m) { listing.qualityPct = parseFloat(m[1]); listing.qualityEstimated = false; break; }
+          }
+        }
+        if (listing.armorStat == null) {
+          const freshA = freshText.match(RE_ARMOR);
+          if (freshA) listing.armorStat = parseFloat(freshA[1]);
+        }
+        // If armor stat now available and quality still estimated, re-run regression
+        if ((listing.qualityPct == null || listing.qualityEstimated) && listing.armorStat != null) {
+          const itemId = armorItemIds[listing.name];
+          const imRaw  = MEM.itemMarketComps[itemId];
+          if (imRaw?.listings?.length >= 2) {
+            const est = estimateQualityFromArmorStat(listing.armorStat, imRaw.listings);
+            if (est != null) { listing.qualityPct = est; listing.qualityEstimated = true; }
+          }
+        }
+        // If quality changed, re-enrich this listing and redraw the strip
+        if (listing.qualityPct != null && !listing.qualityEstimated) {
+          const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
+          listing.tier = classifyArmorTier(listing.qualityPct, listing.bonusPct, baseBonusPct, highTierThreshold);
+          // Strip will be rebuilt when panel opens — force remove ctx so it regenerates
+          strip.querySelector('.rwa-context')?.remove();
+        }
+      }
+
       document.querySelectorAll('.rwa-context.rwa-open').forEach(p => {
         if (p.closest('.rwa-strip') !== strip) {
           p.classList.remove('rwa-open');
