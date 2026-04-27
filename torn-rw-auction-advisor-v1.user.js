@@ -35,6 +35,7 @@
     ARMOR_ITEM_IDS     : 'rw_armorItemIds',
     QUALITY_MATCH_RANGE: 'rw_qualityMatchRange',
     BONUS_MATCH_RANGE  : 'rw_bonusMatchRange',
+    LEDGER             : 'rw_ledger',
   };
 
   // ── Runtime state ───────────────────────────────────────────────────────────
@@ -62,6 +63,10 @@
 
     // Fetch timestamps for TornW3B cache keyed by "ArmorSet_rarity"
     tornw3bFetchedAt: {},
+
+    // Bid ledger entries persisted to localStorage
+    // [{ id, timestamp, itemName, rarity, qualityPct, bonusPct, tier, currentBid, maxOffer, roi, bbFloor, refPrice, result }]
+    ledger: (() => { try { return JSON.parse(Store.get(KEYS.LEDGER)) || []; } catch { return []; } })(),
 
     // Weighted $/BB rate from all 5 combat caches
     // { rate, cachePrices: { name: price }, fetchedAt }
@@ -1274,14 +1279,29 @@
   gearCluster.id = 'rwa-gear-cluster';
   gearCluster.innerHTML = `
     <div id="rwa-error-toast"></div>
-    <button id="rwa-refresh-btn" class="rwa-cluster-btn" title="Refresh advisor data">↻</button>
-    <button id="rwa-gear-btn"    class="rwa-cluster-btn" title="Advisor settings">⚙</button>
+    <button id="rwa-refresh-btn"  class="rwa-cluster-btn" title="Refresh advisor data">↻</button>
+    <button id="rwa-ledger-btn"   class="rwa-cluster-btn" title="Bid ledger">&#9776;</button>
+    <button id="rwa-gear-btn"     class="rwa-cluster-btn" title="Advisor settings">⚙</button>
   `;
   document.body.appendChild(gearCluster);
 
+  const ledgerPanel = document.createElement('div');
+  ledgerPanel.id = 'rwa-ledger-panel';
+  ledgerPanel.innerHTML = `
+    <div class="rwa-ledger-hdr">
+      <span class="rwa-ledger-title">Bid Ledger</span>
+      <button id="rwa-ledger-clear" class="rwa-ledger-clear">Clear All</button>
+      <button id="rwa-ledger-close" class="rwa-ledger-close" title="Close">✕</button>
+    </div>
+    <div class="rwa-ledger-body" id="rwa-ledger-body"></div>
+  `;
+  document.body.appendChild(ledgerPanel);
+
   const rwaRefreshBtn = document.getElementById('rwa-refresh-btn');
+  const rwaLedgerBtn  = document.getElementById('rwa-ledger-btn');
   const rwaGearBtn    = document.getElementById('rwa-gear-btn');
   const rwaErrorToast = document.getElementById('rwa-error-toast');
+  const ledgerBody    = document.getElementById('rwa-ledger-body');
 
   function showError(msg) {
     if (!msg) { rwaErrorToast.classList.remove('rwa-visible'); return; }
