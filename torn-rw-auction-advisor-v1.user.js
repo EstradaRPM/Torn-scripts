@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.22.0
+// @version      1.23.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.22.0';
+  const SCRIPT_VERSION = '1.23.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1161,6 +1161,8 @@
     .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
     .rwa-result-select { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; cursor: pointer; }
     .rwa-result-select option { background: #0c1620; }
+    .rwa-sell-input { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; width: 72px; }
+    .rwa-anet { font-size: 10px; color: #4a9070; margin-top: 2px; }
     .rwa-ledger-table tr:last-child td { border-bottom: none; }
 
     /* ── Advisory strip (injected into each auction li) ── */
@@ -1655,7 +1657,9 @@
       roi       : roi,
       bbFloor   : bbFloor,
       refPrice  : listing.refPrice ?? null,
-      result    : null,
+      result         : null,
+      actualSellPrice: null,
+      actualNet      : null,
     };
     MEM.ledger.unshift(entry);
     Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
