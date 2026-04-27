@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.21.1
+// @version      1.22.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.21.1';
+  const SCRIPT_VERSION = '1.22.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1159,6 +1159,8 @@
       top: 0;
     }
     .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
+    .rwa-result-select { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; cursor: pointer; }
+    .rwa-result-select option { background: #0c1620; }
     .rwa-ledger-table tr:last-child td { border-bottom: none; }
 
     /* ── Advisory strip (injected into each auction li) ── */
@@ -1302,6 +1304,16 @@
   const rwaGearBtn    = document.getElementById('rwa-gear-btn');
   const rwaErrorToast = document.getElementById('rwa-error-toast');
   const ledgerBody    = document.getElementById('rwa-ledger-body');
+
+  ledgerBody.addEventListener('change', ev => {
+    const sel = ev.target.closest('.rwa-result-select');
+    if (!sel) return;
+    const id = parseInt(sel.dataset.entryId, 10);
+    const entry = MEM.ledger.find(x => x.id === id);
+    if (!entry) return;
+    entry.result = sel.value || null;
+    Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+  });
 
   function showError(msg) {
     if (!msg) { rwaErrorToast.classList.remove('rwa-visible'); return; }
@@ -1667,7 +1679,12 @@
       <td>${escHtml(fmtM(e.currentBid))}</td>
       <td>${escHtml(fmtM(e.maxOffer))}</td>
       <td>${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
-      <td style="color:#2a5040">—</td>
+      <td><select class="rwa-result-select" data-entry-id="${e.id}">
+        <option value="" ${!e.result ? 'selected' : ''}>—</option>
+        <option value="Won"    ${e.result === 'Won'    ? 'selected' : ''}>Won</option>
+        <option value="Lost"   ${e.result === 'Lost'   ? 'selected' : ''}>Lost</option>
+        <option value="Passed" ${e.result === 'Passed' ? 'selected' : ''}>Passed</option>
+      </select></td>
     </tr>`).join('');
     ledgerBody.innerHTML = `<table class="rwa-ledger-table">
       <thead><tr>

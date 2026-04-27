@@ -1,16 +1,16 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-27_
+_Last updated: 2026-04-27 (Step A done)_
 
 ---
 
 ## Current WIP
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
-**Branch:** `claude/inline-auction-advisor-MxQCI` → open PR → `main`
-**Version:** `1.21.1`
+**Branch:** `claude/rw-auction-tool-next-step-A2b3A`
+**Version:** `1.22.0`
 
-### All steps complete (Steps 1–6)
+### Completed steps
 
 | Step | Description | Version |
 |------|-------------|---------|
@@ -20,8 +20,9 @@ _Last updated: 2026-04-27_
 | 4 | Settings modal polish — Data Sources section, API key mask/reveal, error feedback | 1.20.0 |
 | 5 | Ledger framework scaffold — Log button, sidebar panel, localStorage persistence | 1.21.0 |
 | 6 | CLAUDE.md documentation + memory.md final update | 1.21.1 |
+| **A** | **Result capture dropdown — —/Won/Lost/Passed per ledger row; delegated change listener persists to localStorage** | **1.22.0** |
 
-### Key function locations (final)
+### Key function locations
 
 | Symbol | Line (approx) | Notes |
 |--------|---------------|-------|
@@ -29,12 +30,13 @@ _Last updated: 2026-04-27_
 | `injectAdvisoryStrip(listing)` | ~1340 | Builds `.rwa-strip`, wires all 4 buttons |
 | `buildContextPanel(listing)` | ~1500 | Returns `.rwa-context` div with 5 metric rows |
 | `buildCompsPanel(listing)` | ~1550 | Returns `.rwa-comps` 2-column panel with `_refreshCol` / `_isStale` |
-| `logListing(listing)` | ~1640 | Snapshots listing into MEM.ledger, persists |
-| `renderLedger()` | ~1660 | Rebuilds ledger table from MEM.ledger |
-| `refreshDataSources()` | ~1690 | Populates Data Sources section in settings modal |
-| `renderInline()` | ~1630 | Re-runs injectAdvisoryStrip for all listings |
-| `init()` | ~1750 | Main data pipeline: parse → BB rate → comps → enrich → render |
-| `safeInit()` | ~1780 | MutationObserver debounce wrapper with 30s cooldown |
+| `logListing(listing)` | ~1645 | Snapshots listing into MEM.ledger, persists |
+| `renderLedger()` | ~1665 | Rebuilds ledger table from MEM.ledger; renders result dropdown per row |
+| `refreshDataSources()` | ~1700 | Populates Data Sources section in settings modal |
+| `renderInline()` | ~1635 | Re-runs injectAdvisoryStrip for all listings |
+| `init()` | ~1760 | Main data pipeline: parse → BB rate → comps → enrich → render |
+| `safeInit()` | ~1790 | MutationObserver debounce wrapper with 30s cooldown |
+| ledgerBody change listener | ~1308 | Delegated handler for `.rwa-result-select`; updates entry.result + persists |
 
 ### DOM structure (final)
 
@@ -75,24 +77,24 @@ _Last updated: 2026-04-27_
 | Function declarations (not const arrows) for render/build fns | Hoisted within IIFE — safe to reference from event handlers defined earlier |
 | `buildCompsPanel._refreshCol()` / `._isStale()` as panel-attached methods | Keeps fetch logic co-located with the panel it modifies; avoids closure over strip |
 | Step size limit: ~50–80 lines per edit | Prevents API stream idle timeout; each sub-step is a self-contained commit |
-| Ledger result column left as `—` placeholder | Future Step A; structure complete, no partial logic committed |
+| Delegated `change` listener on `ledgerBody` for result select | Container persists across `innerHTML` resets — no need to re-attach on each renderLedger call |
+| `sel.value || null` for result storage | Empty string (—) stored as null for consistent `!e.result` checks |
 
 ---
 
 ## Open Questions / Blockers
 
-- None. All 6 steps are committed and pushed.
-- Future ledger features (Steps A–E) are documented in `CLAUDE.md` under "Future ledger steps".
+- None. Step A is committed and pushed.
+- Future ledger features (Steps B–E) are documented in `CLAUDE.md` under "Future ledger steps".
 
 ---
 
 ## Concrete Next Steps
 
-The inline advisor is feature-complete at v1.21.1. Next actions:
-
-1. **Merge the open PR** into `main`
-2. **Future ledger work** — see CLAUDE.md "Future ledger steps" for Steps A–E (result capture, P&L, CSV export, filtering, summary stats)
-3. Each future step follows the same iterative sub-step pattern with user confirmation before starting
+1. **Step B — P&L calculation (→ 1.23.0)**: For `result === 'Won'` rows, add an "Actual sell price" input. On blur/enter compute `actualNet = sellPrice × (1 − marketFee) × (1 − mugBuffer) − entry.currentBid`. Persist `actualSellPrice` and `actualNet` to the entry schema.
+2. **Step C — CSV export (→ 1.24.0)**
+3. **Step D — Filtering (→ 1.25.0)**
+4. **Step E — Summary stats (→ 1.26.0)**
 
 ---
 
