@@ -1,6 +1,6 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-27 (Step B done)_
+_Last updated: 2026-04-27 (Step D done)_
 
 ---
 
@@ -8,7 +8,7 @@ _Last updated: 2026-04-27 (Step B done)_
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
 **Branch:** `claude/rw-auction-tool-next-step-A2b3A`
-**Version:** `1.23.0`
+**Version:** `1.25.0`
 
 ### Completed steps
 
@@ -21,7 +21,9 @@ _Last updated: 2026-04-27 (Step B done)_
 | 5 | Ledger framework scaffold | 1.21.0 |
 | 6 | CLAUDE.md documentation + memory.md | 1.21.1 |
 | A | Result capture dropdown — —/Won/Lost/Passed per row | 1.22.0 |
-| **B** | **P&L — actualSellPrice input (Won rows only), actualNet computed on blur/Enter, in-place span update** | **1.23.0** |
+| B | P&L — actualSellPrice input (Won rows only), actualNet computed on blur/Enter, in-place span update | 1.23.0 |
+| C | CSV export — "Copy CSV" button in ledger header; RFC-4180, all 14 columns; "Copied!"/"Failed" flash | 1.24.0 |
+| **D** | **Filter bar above ledger table: Set/Rarity/Outcome/Date-range; `ledgerFilter` object; applied in renderLedger()** | **1.25.0** |
 
 ### Key function locations
 
@@ -90,15 +92,13 @@ _Last updated: 2026-04-27 (Step B done)_
 
 ## Open Questions / Blockers
 
-- None. Steps A and B are committed and pushed.
+- None. Steps A–D are committed and pushed.
 
 ---
 
 ## Concrete Next Steps
 
-1. **Step C — CSV export (→ 1.24.0)**: "Copy CSV" button in ledger header. Serialize all MEM.ledger entries to CSV (header + one row per entry, all columns). Copy via `navigator.clipboard.writeText()`. Brief "Copied!" label reset after 2s.
-2. **Step D — Filtering (→ 1.25.0)**
-3. **Step E — Summary stats (→ 1.26.0)**
+1. **Step E — Summary stats (→ 1.26.0)**: Summary bar between ledger header and filter bar. Shows: Total entries, Win rate (Won ÷ decided), Avg actual ROI (mean of actualNet/currentBid for Won), Total P&L (sum of actualNet for Won). Display `—` when data unavailable. Rendered inside `renderLedger()` before filterBar.
 
 ---
 
