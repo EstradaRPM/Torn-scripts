@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.26.3
+// @version      1.26.4
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.26.3';
+  const SCRIPT_VERSION = '1.26.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -817,8 +817,11 @@
   const ARMOR_PIECES  = ['Helmet', 'Body', 'Vest', 'Mask', 'Pants', 'Gloves', 'Boots'];
   const RARITY_GLOWS  = ['red', 'orange', 'yellow'];
 
-  const RE_QUALITY = /[Qq]uality[:\s]*([0-9]+(?:\.[0-9]+)?)\s*%/;
-  const RE_ARMOR   = /[Aa]rmor[:\s]*([0-9]+(?:\.[0-9]+)?)/;
+  // Quality: Torn renders as "Q 12.8%" (single letter Q + space), not "Quality: X%"
+  const RE_QUALITY = /(?:[Qq]uality[:\s]*|\bQ\s+)([0-9]+(?:\.[0-9]+)?)\s*%/;
+  // Armor stat: bare decimal like "45.64" with no label; ≥2 digits before decimal,
+  // NOT followed by % (which would make it a bonus/quality percentage instead)
+  const RE_ARMOR   = /\b([1-9][0-9]+\.[0-9]+)\b(?!\s*%)/;
   const RE_PRICE   = /\$\s*([0-9,]+)/;
 
   /**
@@ -915,21 +918,6 @@
       if (armorStat == null) {
         const da = li.getAttribute('data-armor') ?? li.querySelector('[data-armor]')?.getAttribute('data-armor');
         if (da) { const v = parseFloat(da); if (!isNaN(v)) armorStat = v; }
-      }
-
-      // One-time console dump — remove once the correct selector is identified
-      if (results.length === 0) {
-        console.group('[RW Advisor] DOM debug — first listing');
-        console.log('textContent:', liText);
-        console.log('qualityPct from text:', qualityPct, '| armorStat from text:', armorStat);
-        console.log('[title] elements:',
-          [...li.querySelectorAll('[title]')]
-            .filter(e => !e.closest('.rwa-strip'))
-            .map(e => ({ cls: e.className, title: e.getAttribute('title') }))
-        );
-        console.log('dataset on li:', JSON.stringify(li.dataset));
-        console.log('outerHTML (trimmed):', li.outerHTML.slice(0, 2000));
-        console.groupEnd();
       }
 
       const bonusPctM = bonusType?.match(/(\d+(?:\.\d+)?)\s*%/);
