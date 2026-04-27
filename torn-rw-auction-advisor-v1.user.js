@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.20.0
+// @version      1.21.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.20.0';
+  const SCRIPT_VERSION = '1.21.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1479,6 +1479,7 @@
 
     strip.querySelector('.rwa-btn-market').addEventListener('click', () => toggleCompCol('market'));
     strip.querySelector('.rwa-btn-bazaar').addEventListener('click', () => toggleCompCol('bazaar'));
+    strip.querySelector('.rwa-btn-log').addEventListener('click', () => logListing(listing));
   }
 
   function buildContextPanel(listing) {
@@ -1777,6 +1778,19 @@
   settingsModal.querySelector('.rwa-modal-close').addEventListener('click', () => settingsModal.close());
   settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
   rwaGearBtn.addEventListener('click', () => { refreshDataSources(); settingsModal.showModal(); });
+
+  rwaLedgerBtn.addEventListener('click', () => {
+    renderLedger();
+    ledgerPanel.classList.toggle('rwa-ledger-open');
+  });
+  document.getElementById('rwa-ledger-close').addEventListener('click', () => {
+    ledgerPanel.classList.remove('rwa-ledger-open');
+  });
+  document.getElementById('rwa-ledger-clear').addEventListener('click', () => {
+    MEM.ledger = [];
+    Store.set(KEYS.LEDGER, '[]');
+    renderLedger();
+  });
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
