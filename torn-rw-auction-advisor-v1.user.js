@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.24.0
+// @version      1.25.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.24.0';
+  const SCRIPT_VERSION = '1.25.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -81,6 +81,9 @@
     // Last fetch error message, surfaced in UI
     fetchError: null,
   };
+
+  // Ledger filter state — not persisted, resets on page load
+  const ledgerFilter = { itemSet: 'All', rarity: 'All', outcome: 'All', dateFrom: '', dateTo: '' };
 
   // Armor name → Torn item ID map. Resolved at runtime from the items catalog
   // and persisted so only one catalog call is needed after first run.
@@ -1154,6 +1157,24 @@
     .rwa-ledger-close:hover { color: #c0d0c8; }
     .rwa-ledger-body { flex: 1; overflow-y: auto; padding: 8px 0; }
     .rwa-ledger-empty { color: #2a5040; font-size: 12px; font-style: italic; padding: 16px 12px; }
+    .rwa-filter-bar {
+      border-bottom: 1px solid #1a2a3a;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      padding: 8px 12px;
+    }
+    .rwa-filter-group { align-items: center; display: flex; gap: 4px; }
+    .rwa-filter-group label { color: #4a7060; font-size: 10px; white-space: nowrap; }
+    .rwa-filter-select, .rwa-filter-date {
+      background: #0a1520;
+      border: 1px solid #1a2a3a;
+      border-radius: 3px;
+      color: #c0d0c8;
+      font-size: 10px;
+      padding: 2px 4px;
+    }
+    .rwa-filter-date { width: 100px; }
     .rwa-ledger-table { border-collapse: collapse; min-width: 100%; }
     .rwa-ledger-table th {
       background: #060c16;
@@ -1354,6 +1375,15 @@
     if (ev.key !== 'Enter') return;
     const inp = ev.target.closest('.rwa-sell-input');
     if (inp) { commitSellPrice(inp); inp.blur(); }
+  });
+
+  ledgerBody.addEventListener('change', ev => {
+    const sel = ev.target.closest('.rwa-filter-select');
+    if (sel) { ledgerFilter[sel.dataset.filter] = sel.value; renderLedger(); }
+  });
+  ledgerBody.addEventListener('input', ev => {
+    const dt = ev.target.closest('.rwa-filter-date');
+    if (dt) { ledgerFilter[dt.dataset.filter] = dt.value; renderLedger(); }
   });
 
   function showError(msg) {
@@ -1738,13 +1768,69 @@
   }
 
   function renderLedger() {
+    const filterBar = `<div class="rwa-filter-bar">
+      <div class="rwa-filter-group">
+        <label>Set</label>
+        <select class="rwa-filter-select" data-filter="itemSet">
+          <option ${ledgerFilter.itemSet === 'All'     ? 'selected' : ''}>All</option>
+          <option ${ledgerFilter.itemSet === 'Riot'    ? 'selected' : ''}>Riot</option>
+          <option ${ledgerFilter.itemSet === 'Assault' ? 'selected' : ''}>Assault</option>
+        </select>
+      </div>
+      <div class="rwa-filter-group">
+        <label>Rarity</label>
+        <select class="rwa-filter-select" data-filter="rarity">
+          <option ${ledgerFilter.rarity === 'All'    ? 'selected' : ''}>All</option>
+          <option ${ledgerFilter.rarity === 'yellow' ? 'selected' : ''}>yellow</option>
+          <option ${ledgerFilter.rarity === 'orange' ? 'selected' : ''}>orange</option>
+          <option ${ledgerFilter.rarity === 'red'    ? 'selected' : ''}>red</option>
+        </select>
+      </div>
+      <div class="rwa-filter-group">
+        <label>Outcome</label>
+        <select class="rwa-filter-select" data-filter="outcome">
+          <option ${ledgerFilter.outcome === 'All'     ? 'selected' : ''}>All</option>
+          <option ${ledgerFilter.outcome === 'Won'     ? 'selected' : ''}>Won</option>
+          <option ${ledgerFilter.outcome === 'Lost'    ? 'selected' : ''}>Lost</option>
+          <option ${ledgerFilter.outcome === 'Passed'  ? 'selected' : ''}>Passed</option>
+          <option ${ledgerFilter.outcome === 'Pending' ? 'selected' : ''}>Pending</option>
+        </select>
+      </div>
+      <div class="rwa-filter-group">
+        <label>From</label>
+        <input type="date" class="rwa-filter-date" data-filter="dateFrom" value="${ledgerFilter.dateFrom}">
+      </div>
+      <div class="rwa-filter-group">
+        <label>To</label>
+        <input type="date" class="rwa-filter-date" data-filter="dateTo" value="${ledgerFilter.dateTo}">
+      </div>
+    </div>`;
+
     if (!MEM.ledger.length) {
-      ledgerBody.innerHTML = '<div class="rwa-ledger-empty">No entries logged yet</div>';
+      ledgerBody.innerHTML = filterBar + '<div class="rwa-ledger-empty">No entries logged yet</div>';
       return;
     }
+
+    const itemSetOf = name => /riot/i.test(name) ? 'Riot' : /assault/i.test(name) ? 'Assault' : null;
+    const dayStart  = iso => iso ? new Date(iso + 'T00:00:00').getTime() : null;
+    const dayEnd    = iso => iso ? new Date(iso + 'T23:59:59').getTime() : null;
+    const from = dayStart(ledgerFilter.dateFrom);
+    const to   = dayEnd(ledgerFilter.dateTo);
+
+    const filtered = MEM.ledger.filter(e => {
+      if (ledgerFilter.itemSet !== 'All' && itemSetOf(e.itemName) !== ledgerFilter.itemSet) return false;
+      if (ledgerFilter.rarity  !== 'All' && e.rarity !== ledgerFilter.rarity) return false;
+      if (ledgerFilter.outcome !== 'All') {
+        if (ledgerFilter.outcome === 'Pending' ? e.result : e.result !== ledgerFilter.outcome) return false;
+      }
+      if (from && e.timestamp < from) return false;
+      if (to   && e.timestamp > to)   return false;
+      return true;
+    });
+
     const fmt = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const tierLabel = t => t === 'exceptional' ? 'EXCEP' : t === 'hq' ? 'HQ' : t === 'base' ? 'BASE' : '—';
-    const rows = MEM.ledger.map(e => `<tr>
+    const rows = filtered.map(e => `<tr>
       <td style="color:#4a7060;font-size:10px">${escHtml(fmt(e.timestamp))}</td>
       <td>${escHtml(e.itemName)}</td>
       <td>${escHtml(e.rarity)}</td>
@@ -1765,12 +1851,14 @@
            <div class="rwa-anet" data-anet-id="${e.id}">${e.actualNet != null ? fmtM(e.actualNet) : '—'}</div>`
         : '—'}</td>
     </tr>`).join('');
-    ledgerBody.innerHTML = `<table class="rwa-ledger-table">
+
+    const emptyRow = filtered.length ? '' : '<tr><td colspan="11" class="rwa-ledger-empty">No matching entries</td></tr>';
+    ledgerBody.innerHTML = filterBar + `<table class="rwa-ledger-table">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
         <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
       </tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows || emptyRow}</tbody>
     </table>`;
   }
 
