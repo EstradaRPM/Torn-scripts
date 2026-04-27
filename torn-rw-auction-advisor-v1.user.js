@@ -1294,6 +1294,61 @@
     listing.el.appendChild(strip);
   }
 
+  function buildContextPanel(listing) {
+    const { bbFloor, refPrice, netProfit } = computeListingMetrics(listing);
+    const { rarity, qualityPct, bonusPct, bonusType, tier, compSource, kingCap } = listing;
+
+    const rarityClass = rarity ? `rwa-rarity-${rarity}` : '';
+    const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
+    const tierBadge = tier === 'exceptional'
+      ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
+      : tier === 'hq'
+        ? `<span class="rwa-badge rwa-badge-hq">HQ</span>`
+        : '';
+    const profitColor = netProfit == null ? '#8aa898' : netProfit >= 0 ? '#00cc66' : '#ff4444';
+
+    const rows = [];
+
+    rows.push(`<div class="rwa-context-row">
+      <span class="rwa-context-lbl">BB Floor</span>
+      <span class="rwa-context-val ${rarityClass}">${escHtml(fmtM(bbFloor))}</span>
+    </div>`);
+
+    rows.push(`<div class="rwa-context-row">
+      <span class="rwa-context-lbl">Comp Price</span>
+      <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
+      <span class="rwa-badge rwa-badge-src">${escHtml(srcLabel)}</span>
+    </div>`);
+
+    if (qualityPct != null || bonusPct != null) {
+      const qStr = qualityPct != null ? `Q${qualityPct.toFixed(0)}%` : '';
+      const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Quality</span>
+        <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
+        ${tierBadge}
+      </div>`);
+    }
+
+    if (kingCap != null) {
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">King's Cap</span>
+        <span class="rwa-context-val">${escHtml(fmtM(kingCap))}</span>
+        <span class="rwa-badge rwa-badge-cap">!</span>
+      </div>`);
+    }
+
+    rows.push(`<div class="rwa-context-row">
+      <span class="rwa-context-lbl">Net Profit</span>
+      <span class="rwa-context-val" style="color:${escHtml(profitColor)}">${escHtml(fmtM(netProfit))}</span>
+    </div>`);
+
+    const panel = document.createElement('div');
+    panel.className = 'rwa-context';
+    panel.innerHTML = rows.join('');
+    return panel;
+  }
+
   function renderInline() {
     showError(MEM.fetchError);
     for (const listing of MEM.listings) {
