@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.26.4
+// @version      1.27.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.26.4';
+  const SCRIPT_VERSION = '1.27.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -40,14 +40,17 @@
 
   // ── Runtime state ───────────────────────────────────────────────────────────
 
+  // Safe numeric loader — || would treat stored "0" as missing and apply the default.
+  function parseNum(str, def) { const v = parseFloat(str); return isNaN(v) ? def : v; }
+
   const MEM = {
     // User-configurable settings (loaded from localStorage, safe fallbacks)
     settings: {
-      targetProfitPct  : parseFloat(Store.get(KEYS.TARGET_PROFIT_PCT))   || 15,
-      mugBufferPct     : parseFloat(Store.get(KEYS.MUG_BUFFER_PCT))      || 10,
+      targetProfitPct  : parseNum(Store.get(KEYS.TARGET_PROFIT_PCT),   15),
+      mugBufferPct     : parseNum(Store.get(KEYS.MUG_BUFFER_PCT),      10),
       sellViaTrade     : Store.get(KEYS.SELL_VIA_TRADE) === 'true',
-      qualityMatchRange: parseFloat(Store.get(KEYS.QUALITY_MATCH_RANGE)) || 10,
-      bonusMatchRange  : parseFloat(Store.get(KEYS.BONUS_MATCH_RANGE))   || 2,
+      qualityMatchRange: parseNum(Store.get(KEYS.QUALITY_MATCH_RANGE), 10),
+      bonusMatchRange  : parseNum(Store.get(KEYS.BONUS_MATCH_RANGE),    2),
     },
 
     // Current parsed auction house listings (supported RW armor sets)
