@@ -1137,6 +1137,40 @@
     .rwa-rarity-yellow { color: #e8d070; }
     .rwa-rarity-orange { color: #f0a030; }
     .rwa-rarity-red    { color: #f04040; }
+    .rwa-comps {
+      border-top: 1px solid #1a2a3a;
+      display: flex;
+      gap: 8px;
+      padding: 6px 8px;
+    }
+    .rwa-comps-col {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    .rwa-comps-col.rwa-col-visible { display: flex; }
+    .rwa-comps-hdr {
+      align-items: baseline;
+      display: flex;
+      gap: 6px;
+      justify-content: space-between;
+      margin-bottom: 2px;
+    }
+    .rwa-comps-title {
+      color: #4a7060;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .rwa-comps-age   { color: #2a5040; font-size: 10px; }
+    .rwa-comps-row   { align-items: baseline; display: flex; font-size: 11px; gap: 5px; }
+    .rwa-comps-price { color: #c0d0c8; font-weight: 600; }
+    .rwa-comps-meta  { color: #4a7060; font-size: 10px; }
+    .rwa-comps-empty { color: #2a5040; font-size: 11px; font-style: italic; }
+    .rwa-spinner     { animation: rwaSpin 0.6s linear infinite; display: inline-block; }
   `;
   document.head.appendChild(rwStyle);
 
