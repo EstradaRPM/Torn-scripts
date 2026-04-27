@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.23.0
+// @version      1.24.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.23.0';
+  const SCRIPT_VERSION = '1.24.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1132,6 +1132,16 @@
       padding: 2px 8px;
     }
     .rwa-ledger-clear:hover { border-color: #ff4444; color: #ff4444; }
+    .rwa-ledger-csv {
+      background: none;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    .rwa-ledger-csv:hover { border-color: #5a9070; color: #5a9070; }
     .rwa-ledger-close {
       background: none;
       border: none;
@@ -1294,6 +1304,7 @@
   ledgerPanel.innerHTML = `
     <div class="rwa-ledger-hdr">
       <span class="rwa-ledger-title">Bid Ledger</span>
+      <button id="rwa-ledger-csv" class="rwa-ledger-csv">Copy CSV</button>
       <button id="rwa-ledger-clear" class="rwa-ledger-clear">Clear All</button>
       <button id="rwa-ledger-close" class="rwa-ledger-close" title="Close">✕</button>
     </div>
@@ -1694,6 +1705,38 @@
     renderLedger();
   }
 
+  function copyCsv() {
+    if (!MEM.ledger.length) return;
+    const csvRow = e => [
+      new Date(e.timestamp).toISOString(),
+      e.itemName,
+      e.rarity ?? '',
+      e.qualityPct != null ? e.qualityPct.toFixed(1) : '',
+      e.bonusPct   != null ? e.bonusPct.toFixed(1)   : '',
+      e.tier ?? '',
+      e.currentBid ?? '',
+      e.maxOffer   != null ? e.maxOffer.toFixed(0)   : '',
+      e.roi        != null ? e.roi.toFixed(1)        : '',
+      e.bbFloor    != null ? e.bbFloor.toFixed(0)    : '',
+      e.refPrice   != null ? e.refPrice.toFixed(0)   : '',
+      e.result ?? '',
+      e.actualSellPrice != null ? e.actualSellPrice.toFixed(0) : '',
+      e.actualNet       != null ? e.actualNet.toFixed(0)       : '',
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
+
+    const header = '"Date","Item","Rarity","Q%","Bonus%","Score","Bid","Max Offer","ROI%","BB Floor","Ref Price","Result","Actual Sell","Actual Net"';
+    const csv = [header, ...MEM.ledger.map(csvRow)].join('\r\n');
+
+    const btn = document.getElementById('rwa-ledger-csv');
+    navigator.clipboard.writeText(csv).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy CSV'; }, 2000);
+    }).catch(() => {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Copy CSV'; }, 2000);
+    });
+  }
+
   function renderLedger() {
     if (!MEM.ledger.length) {
       ledgerBody.innerHTML = '<div class="rwa-ledger-empty">No entries logged yet</div>';
@@ -1844,6 +1887,7 @@
     Store.set(KEYS.LEDGER, '[]');
     renderLedger();
   });
+  document.getElementById('rwa-ledger-csv').addEventListener('click', copyCsv);
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
