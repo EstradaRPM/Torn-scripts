@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.28.0
+// @version      1.28.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.28.0';
+  const SCRIPT_VERSION = '1.28.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1769,23 +1769,28 @@
     const w3bKey   = `${listing.armorSet}_${listing.rarity}`;
     const STALE_MS = 5 * 60 * 1000;
 
-    // Shared renderer — inserts "— this" row at the listing's quality position.
-    // qEstimated: when true, quality label uses ~ prefix to signal estimation.
-    // fallback: when true (no bonus-matched comps), skips THIS row entirely.
+    // Shared renderer — items sorted by price ASC; inserts "— this" row at the
+    // listing's refPrice position so the user can see where the piece would sell
+    // relative to the market. Skips THIS row in fallback mode (non-comparable comps)
+    // or when refPrice is not yet available.
     function renderCompRows(items, getBonus, getQuality, fallback) {
-      const lq = listing.qualityPct;
-      const lb = listing.bonusPct;
+      const lb       = listing.bonusPct;
+      const lq       = listing.qualityPct;
+      const refPrice = listing.refPrice ?? null;
+
+      const sorted = items.slice().sort((a, b) => a.price - b.price);
+      const showThis = !fallback && refPrice != null;
+
       const rows = [];
       let thisInserted = false;
-      for (const item of items) {
-        const cq = getQuality(item);
-        if (!thisInserted && !fallback && lq != null && (cq == null || cq >= lq)) {
+      for (const item of sorted) {
+        if (showThis && !thisInserted && item.price >= refPrice) {
           rows.push({ _this: true });
           thisInserted = true;
         }
         rows.push(item);
       }
-      if (!thisInserted && !fallback && lq != null) rows.push({ _this: true });
+      if (showThis && !thisInserted) rows.push({ _this: true });
 
       return rows.map(item => {
         if (item._this) {
@@ -1794,7 +1799,7 @@
           const bStr = lb != null ? `${lb}%` : '';
           const meta = [qStr, bStr].filter(Boolean).join(' ');
           return `<div class="rwa-comps-row rwa-comps-row--this">
-            <span class="rwa-comps-price">— this</span>
+            <span class="rwa-comps-price">— this ${escHtml(fmtM(refPrice))}</span>
             ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
           </div>`;
         }
