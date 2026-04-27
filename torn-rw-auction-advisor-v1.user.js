@@ -1073,6 +1073,19 @@
       padding: 8px 16px;
       text-align: right;
     }
+    .rwa-source-row {
+      align-items: baseline;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .rwa-source-name  { color: #8aa898; font-size: 11px; }
+    .rwa-source-age   { color: #4a7060; font-size: 11px; }
+    .rwa-source-empty { color: #2a5040; font-size: 11px; font-style: italic; }
+    .rwa-field-hint   { color: #4a7060; font-size: 11px; margin-top: 2px; }
+    .rwa-field-hint.rwa-hint-error { color: #ff4444; }
+    .rwa-input.rwa-input-error { border-color: #ff4444; }
 
     /* ── Advisory strip (injected into each auction li) ── */
     .rwa-strip {
