@@ -1090,6 +1090,72 @@
     .rwa-field-hint.rwa-hint-error { color: #ff4444; }
     .rwa-input.rwa-input-error { border-color: #ff4444; }
 
+    .rwa-field-hint.rwa-hint-error { color: #ff4444; }
+    .rwa-input.rwa-input-error { border-color: #ff4444; }
+    #rwa-ledger-panel {
+      background: #060c16;
+      border-left: 1px solid #1a2a3a;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 12px;
+      position: fixed;
+      right: -420px;
+      top: 0;
+      transition: right 0.2s ease;
+      width: 420px;
+      z-index: 9000;
+    }
+    #rwa-ledger-panel.rwa-ledger-open { right: 0; }
+    .rwa-ledger-hdr {
+      align-items: center;
+      border-bottom: 1px solid #1a2a3a;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      padding: 10px 12px;
+    }
+    .rwa-ledger-title { color: #c0d0c8; font-size: 13px; font-weight: 600; }
+    .rwa-ledger-clear {
+      background: none;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    .rwa-ledger-clear:hover { border-color: #ff4444; color: #ff4444; }
+    .rwa-ledger-close {
+      background: none;
+      border: none;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .rwa-ledger-close:hover { color: #c0d0c8; }
+    .rwa-ledger-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+    .rwa-ledger-empty { color: #2a5040; font-size: 12px; font-style: italic; padding: 16px 12px; }
+    .rwa-ledger-table { border-collapse: collapse; min-width: 100%; }
+    .rwa-ledger-table th {
+      background: #060c16;
+      border-bottom: 1px solid #1a2a3a;
+      color: #4a7060;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 4px 8px;
+      position: sticky;
+      text-align: left;
+      text-transform: uppercase;
+      top: 0;
+    }
+    .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
+    .rwa-ledger-table tr:last-child td { border-bottom: none; }
+
     /* ── Advisory strip (injected into each auction li) ── */
     .rwa-strip {
       background: #060c16;
