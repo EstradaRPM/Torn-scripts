@@ -60,6 +60,9 @@
     // { [key]: weapons[] } where weapons[] is the full TornW3B response array
     tornw3bComps: {},
 
+    // Fetch timestamps for TornW3B cache keyed by "ArmorSet_rarity"
+    tornw3bFetchedAt: {},
+
     // Weighted $/BB rate from all 5 combat caches
     // { rate, cachePrices: { name: price }, fetchedAt }
     bbRate: (() => {
@@ -640,6 +643,7 @@
       const data = JSON.parse(text);
       const weapons = data?.weapons ?? null;
       MEM.tornw3bComps[cacheKey] = weapons;
+      MEM.tornw3bFetchedAt[cacheKey] = Date.now();
       return weapons;
     } catch (err) {
       MEM.tornw3bComps[cacheKey] = null;
@@ -902,6 +906,14 @@
   }
 
   // ── Formatting helpers ───────────────────────────────────────────────────────
+
+  function fmtAgo(ts) {
+    if (!ts) return '';
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60)  return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
+  }
 
   function fmtM(n) {
     if (n == null || isNaN(n)) return '—';
