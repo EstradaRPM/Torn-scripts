@@ -1314,7 +1314,35 @@
     const entry = MEM.ledger.find(x => x.id === id);
     if (!entry) return;
     entry.result = sel.value || null;
+    if (entry.result !== 'Won') { entry.actualSellPrice = null; entry.actualNet = null; }
     Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    renderLedger();
+  });
+
+  function commitSellPrice(input) {
+    const raw = parseFloat(input.value.replace(/[^0-9.]/g, ''));
+    if (isNaN(raw) || raw <= 0) return;
+    const id = parseInt(input.dataset.entryId, 10);
+    const entry = MEM.ledger.find(x => x.id === id);
+    if (!entry) return;
+    const marketFee = MEM.settings.sellViaTrade ? 0 : 0.05;
+    const mugBuffer = MEM.settings.mugBufferPct / 100;
+    entry.actualSellPrice = raw;
+    entry.actualNet = raw * (1 - marketFee) * (1 - mugBuffer) - entry.currentBid;
+    Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    const display = ledgerBody.querySelector(`[data-anet-id="${id}"]`);
+    if (display) display.textContent = fmtM(entry.actualNet);
+  }
+
+  ledgerBody.addEventListener('blur', ev => {
+    const inp = ev.target.closest('.rwa-sell-input');
+    if (inp) commitSellPrice(inp);
+  }, true);
+
+  ledgerBody.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter') return;
+    const inp = ev.target.closest('.rwa-sell-input');
+    if (inp) { commitSellPrice(inp); inp.blur(); }
   });
 
   function showError(msg) {
