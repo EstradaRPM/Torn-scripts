@@ -1689,11 +1689,15 @@
         <option value="Lost"   ${e.result === 'Lost'   ? 'selected' : ''}>Lost</option>
         <option value="Passed" ${e.result === 'Passed' ? 'selected' : ''}>Passed</option>
       </select></td>
+      <td>${e.result === 'Won'
+        ? `<input class="rwa-sell-input" data-entry-id="${e.id}" placeholder="sell $" value="${e.actualSellPrice != null ? e.actualSellPrice : ''}">
+           <div class="rwa-anet" data-anet-id="${e.id}">${e.actualNet != null ? fmtM(e.actualNet) : '—'}</div>`
+        : '—'}</td>
     </tr>`).join('');
     ledgerBody.innerHTML = `<table class="rwa-ledger-table">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
-        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th>
+        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
