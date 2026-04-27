@@ -1,6 +1,6 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-27 (Step A done)_
+_Last updated: 2026-04-27 (Step B done)_
 
 ---
 
@@ -8,19 +8,20 @@ _Last updated: 2026-04-27 (Step A done)_
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
 **Branch:** `claude/rw-auction-tool-next-step-A2b3A`
-**Version:** `1.22.0`
+**Version:** `1.23.0`
 
 ### Completed steps
 
 | Step | Description | Version |
 |------|-------------|---------|
-| 1 | Inline advisory strip — replaced floating panel with per-`<li>` injection | 1.17.0 |
-| 2 | `▼ Details` expandable context panel per listing | 1.18.0 |
-| 3 | Market/Bazaar split-column comp panel (top-5, live fetch, staleness) | 1.19.0 |
-| 4 | Settings modal polish — Data Sources section, API key mask/reveal, error feedback | 1.20.0 |
-| 5 | Ledger framework scaffold — Log button, sidebar panel, localStorage persistence | 1.21.0 |
-| 6 | CLAUDE.md documentation + memory.md final update | 1.21.1 |
-| **A** | **Result capture dropdown — —/Won/Lost/Passed per ledger row; delegated change listener persists to localStorage** | **1.22.0** |
+| 1 | Inline advisory strip | 1.17.0 |
+| 2 | `▼ Details` expandable context panel | 1.18.0 |
+| 3 | Market/Bazaar split-column comp panel | 1.19.0 |
+| 4 | Settings modal polish | 1.20.0 |
+| 5 | Ledger framework scaffold | 1.21.0 |
+| 6 | CLAUDE.md documentation + memory.md | 1.21.1 |
+| A | Result capture dropdown — —/Won/Lost/Passed per row | 1.22.0 |
+| **B** | **P&L — actualSellPrice input (Won rows only), actualNet computed on blur/Enter, in-place span update** | **1.23.0** |
 
 ### Key function locations
 
@@ -30,13 +31,16 @@ _Last updated: 2026-04-27 (Step A done)_
 | `injectAdvisoryStrip(listing)` | ~1340 | Builds `.rwa-strip`, wires all 4 buttons |
 | `buildContextPanel(listing)` | ~1500 | Returns `.rwa-context` div with 5 metric rows |
 | `buildCompsPanel(listing)` | ~1550 | Returns `.rwa-comps` 2-column panel with `_refreshCol` / `_isStale` |
-| `logListing(listing)` | ~1645 | Snapshots listing into MEM.ledger, persists |
-| `renderLedger()` | ~1665 | Rebuilds ledger table from MEM.ledger; renders result dropdown per row |
-| `refreshDataSources()` | ~1700 | Populates Data Sources section in settings modal |
-| `renderInline()` | ~1635 | Re-runs injectAdvisoryStrip for all listings |
-| `init()` | ~1760 | Main data pipeline: parse → BB rate → comps → enrich → render |
-| `safeInit()` | ~1790 | MutationObserver debounce wrapper with 30s cooldown |
-| ledgerBody change listener | ~1308 | Delegated handler for `.rwa-result-select`; updates entry.result + persists |
+| `logListing(listing)` | ~1695 | Snapshots listing into MEM.ledger; schema includes actualSellPrice/actualNet |
+| `renderLedger()` | ~1715 | Rebuilds ledger table; Won rows get sell-price input + data-anet-id span |
+| `commitSellPrice(input)` | ~1322 | Computes actualNet, persists, updates data-anet-id span in-place |
+| `refreshDataSources()` | ~1750 | Populates Data Sources section in settings modal |
+| `renderInline()` | ~1685 | Re-runs injectAdvisoryStrip for all listings |
+| `init()` | ~1810 | Main data pipeline: parse → BB rate → comps → enrich → render |
+| `safeInit()` | ~1840 | MutationObserver debounce wrapper with 30s cooldown |
+| ledgerBody change listener | ~1310 | result-select: updates entry.result, clears P&L if not Won, calls renderLedger() |
+| ledgerBody blur listener (capture) | ~1337 | Delegates to commitSellPrice for .rwa-sell-input |
+| ledgerBody keydown listener | ~1342 | Enter on .rwa-sell-input commits + blurs |
 
 ### DOM structure (final)
 
@@ -79,22 +83,22 @@ _Last updated: 2026-04-27 (Step A done)_
 | Step size limit: ~50–80 lines per edit | Prevents API stream idle timeout; each sub-step is a self-contained commit |
 | Delegated `change` listener on `ledgerBody` for result select | Container persists across `innerHTML` resets — no need to re-attach on each renderLedger call |
 | `sel.value || null` for result storage | Empty string (—) stored as null for consistent `!e.result` checks |
+| In-place `data-anet-id` span update (no full re-render on sell price commit) | Preserves scroll position; full re-render only needed when result dropdown changes (show/hide input column) |
+| Clear actualSellPrice/actualNet when result switches away from Won | Prevents stale P&L data on result edit |
 
 ---
 
 ## Open Questions / Blockers
 
-- None. Step A is committed and pushed.
-- Future ledger features (Steps B–E) are documented in `CLAUDE.md` under "Future ledger steps".
+- None. Steps A and B are committed and pushed.
 
 ---
 
 ## Concrete Next Steps
 
-1. **Step B — P&L calculation (→ 1.23.0)**: For `result === 'Won'` rows, add an "Actual sell price" input. On blur/enter compute `actualNet = sellPrice × (1 − marketFee) × (1 − mugBuffer) − entry.currentBid`. Persist `actualSellPrice` and `actualNet` to the entry schema.
-2. **Step C — CSV export (→ 1.24.0)**
-3. **Step D — Filtering (→ 1.25.0)**
-4. **Step E — Summary stats (→ 1.26.0)**
+1. **Step C — CSV export (→ 1.24.0)**: "Copy CSV" button in ledger header. Serialize all MEM.ledger entries to CSV (header + one row per entry, all columns). Copy via `navigator.clipboard.writeText()`. Brief "Copied!" label reset after 2s.
+2. **Step D — Filtering (→ 1.25.0)**
+3. **Step E — Summary stats (→ 1.26.0)**
 
 ---
 
