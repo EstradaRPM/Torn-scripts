@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.17.0
+// @version      1.18.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.17.0';
+  const SCRIPT_VERSION = '1.18.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1292,6 +1292,23 @@
     `;
 
     listing.el.appendChild(strip);
+
+    strip.querySelector('.rwa-btn-details').addEventListener('click', () => {
+      document.querySelectorAll('.rwa-context.rwa-open').forEach(p => {
+        if (p.closest('.rwa-strip') !== strip) {
+          p.classList.remove('rwa-open');
+          p.closest('.rwa-strip').querySelector('.rwa-btn-details').textContent = '▼ Details';
+        }
+      });
+      let ctx = strip.querySelector('.rwa-context');
+      if (!ctx) {
+        ctx = buildContextPanel(listing);
+        strip.appendChild(ctx);
+      }
+      ctx.classList.toggle('rwa-open');
+      strip.querySelector('.rwa-btn-details').textContent =
+        ctx.classList.contains('rwa-open') ? '▲ Details' : '▼ Details';
+    });
   }
 
   function buildContextPanel(listing) {
