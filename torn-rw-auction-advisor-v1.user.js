@@ -1627,6 +1627,56 @@
     }
   }
 
+  function logListing(listing) {
+    const { maxOffer, roi, bbFloor } = computeListingMetrics(listing);
+    const entry = {
+      id        : Date.now(),
+      timestamp : Date.now(),
+      itemName  : listing.name,
+      rarity    : listing.rarity ?? '—',
+      qualityPct: listing.qualityPct,
+      bonusPct  : listing.bonusPct,
+      tier      : listing.tier ?? null,
+      currentBid: listing.currentBid,
+      maxOffer  : maxOffer,
+      roi       : roi,
+      bbFloor   : bbFloor,
+      refPrice  : listing.refPrice ?? null,
+      result    : null,
+    };
+    MEM.ledger.unshift(entry);
+    Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    renderLedger();
+  }
+
+  function renderLedger() {
+    if (!MEM.ledger.length) {
+      ledgerBody.innerHTML = '<div class="rwa-ledger-empty">No entries logged yet</div>';
+      return;
+    }
+    const fmt = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const tierLabel = t => t === 'exceptional' ? 'EXCEP' : t === 'hq' ? 'HQ' : t === 'base' ? 'BASE' : '—';
+    const rows = MEM.ledger.map(e => `<tr>
+      <td style="color:#4a7060;font-size:10px">${escHtml(fmt(e.timestamp))}</td>
+      <td>${escHtml(e.itemName)}</td>
+      <td>${escHtml(e.rarity)}</td>
+      <td>${e.qualityPct != null ? e.qualityPct.toFixed(0) + '%' : '—'}</td>
+      <td>${e.bonusPct  != null ? e.bonusPct.toFixed(0)  + '%' : '—'}</td>
+      <td>${escHtml(tierLabel(e.tier))}</td>
+      <td>${escHtml(fmtM(e.currentBid))}</td>
+      <td>${escHtml(fmtM(e.maxOffer))}</td>
+      <td>${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
+      <td style="color:#2a5040">—</td>
+    </tr>`).join('');
+    ledgerBody.innerHTML = `<table class="rwa-ledger-table">
+      <thead><tr>
+        <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
+        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
   function refreshDataSources() {
     const rows = [];
     const bbTs = MEM.bbRate?.fetchedAt;
