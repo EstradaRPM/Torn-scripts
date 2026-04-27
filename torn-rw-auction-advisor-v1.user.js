@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.22.0
+// @version      1.23.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.22.0';
+  const SCRIPT_VERSION = '1.23.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1161,6 +1161,8 @@
     .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
     .rwa-result-select { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; cursor: pointer; }
     .rwa-result-select option { background: #0c1620; }
+    .rwa-sell-input { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; width: 72px; }
+    .rwa-anet { font-size: 10px; color: #4a9070; margin-top: 2px; }
     .rwa-ledger-table tr:last-child td { border-bottom: none; }
 
     /* ── Advisory strip (injected into each auction li) ── */
@@ -1312,7 +1314,35 @@
     const entry = MEM.ledger.find(x => x.id === id);
     if (!entry) return;
     entry.result = sel.value || null;
+    if (entry.result !== 'Won') { entry.actualSellPrice = null; entry.actualNet = null; }
     Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    renderLedger();
+  });
+
+  function commitSellPrice(input) {
+    const raw = parseFloat(input.value.replace(/[^0-9.]/g, ''));
+    if (isNaN(raw) || raw <= 0) return;
+    const id = parseInt(input.dataset.entryId, 10);
+    const entry = MEM.ledger.find(x => x.id === id);
+    if (!entry) return;
+    const marketFee = MEM.settings.sellViaTrade ? 0 : 0.05;
+    const mugBuffer = MEM.settings.mugBufferPct / 100;
+    entry.actualSellPrice = raw;
+    entry.actualNet = raw * (1 - marketFee) * (1 - mugBuffer) - entry.currentBid;
+    Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    const display = ledgerBody.querySelector(`[data-anet-id="${id}"]`);
+    if (display) display.textContent = fmtM(entry.actualNet);
+  }
+
+  ledgerBody.addEventListener('blur', ev => {
+    const inp = ev.target.closest('.rwa-sell-input');
+    if (inp) commitSellPrice(inp);
+  }, true);
+
+  ledgerBody.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter') return;
+    const inp = ev.target.closest('.rwa-sell-input');
+    if (inp) { commitSellPrice(inp); inp.blur(); }
   });
 
   function showError(msg) {
@@ -1655,7 +1685,9 @@
       roi       : roi,
       bbFloor   : bbFloor,
       refPrice  : listing.refPrice ?? null,
-      result    : null,
+      result         : null,
+      actualSellPrice: null,
+      actualNet      : null,
     };
     MEM.ledger.unshift(entry);
     Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
@@ -1685,11 +1717,15 @@
         <option value="Lost"   ${e.result === 'Lost'   ? 'selected' : ''}>Lost</option>
         <option value="Passed" ${e.result === 'Passed' ? 'selected' : ''}>Passed</option>
       </select></td>
+      <td>${e.result === 'Won'
+        ? `<input class="rwa-sell-input" data-entry-id="${e.id}" placeholder="sell $" value="${e.actualSellPrice != null ? e.actualSellPrice : ''}">
+           <div class="rwa-anet" data-anet-id="${e.id}">${e.actualNet != null ? fmtM(e.actualNet) : '—'}</div>`
+        : '—'}</td>
     </tr>`).join('');
     ledgerBody.innerHTML = `<table class="rwa-ledger-table">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
-        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th>
+        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
