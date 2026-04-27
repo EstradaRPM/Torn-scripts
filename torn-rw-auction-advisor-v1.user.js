@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.27.0
+// @version      1.28.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.27.0';
+  const SCRIPT_VERSION = '1.28.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1359,11 +1359,14 @@
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
-    .rwa-comps-age   { color: #2a5040; font-size: 10px; }
-    .rwa-comps-row   { align-items: baseline; display: flex; font-size: 11px; gap: 5px; }
-    .rwa-comps-price { color: #c0d0c8; font-weight: 600; }
-    .rwa-comps-meta  { color: #4a7060; font-size: 10px; }
-    .rwa-comps-empty { color: #2a5040; font-size: 11px; font-style: italic; }
+    .rwa-comps-age        { color: #2a5040; font-size: 10px; }
+    .rwa-comps-row        { align-items: baseline; display: flex; font-size: 11px; gap: 5px; }
+    .rwa-comps-row--this  { border-left: 2px solid #4a9070; padding-left: 4px; }
+    .rwa-comps-row--this .rwa-comps-price { color: #7fc8a8; }
+    .rwa-comps-row--this .rwa-comps-meta  { color: #7fc8a8; }
+    .rwa-comps-price      { color: #c0d0c8; font-weight: 600; }
+    .rwa-comps-meta       { color: #4a7060; font-size: 10px; }
+    .rwa-comps-empty      { color: #2a5040; font-size: 11px; font-style: italic; }
     .rwa-spinner     { animation: rwaSpin 0.6s linear infinite; display: inline-block; }
   `;
   document.head.appendChild(rwStyle);
@@ -1715,42 +1718,133 @@
     return panel;
   }
 
+  // Selects up to 4 comps centred around listing.qualityPct within bonusMatchRange.
+  // Primary sort: bonus proximity. Secondary: quality proximity.
+  // Returns comps sorted by quality ASC for display (caller inserts THIS row separately).
+  function pickWindow(listing, items, getBonus, getQuality) {
+    const lb     = listing.bonusPct;
+    const lq     = listing.qualityPct;
+    const bRange = MEM.settings.bonusMatchRange;
+
+    const matched = items.filter(c => {
+      const b = getBonus(c);
+      return b != null && lb != null && Math.abs(b - lb) <= bRange;
+    });
+
+    // Sort: bonus proximity primary, quality proximity secondary
+    matched.sort((a, b) => {
+      const bdA = Math.abs((getBonus(a)   ?? Infinity) - (lb ?? 0));
+      const bdB = Math.abs((getBonus(b)   ?? Infinity) - (lb ?? 0));
+      if (bdA !== bdB) return bdA - bdB;
+      const qdA = Math.abs((getQuality(a) ?? Infinity) - (lq ?? 0));
+      const qdB = Math.abs((getQuality(b) ?? Infinity) - (lq ?? 0));
+      return qdA - qdB;
+    });
+
+    if (lq == null) return matched.slice(0, 4);
+
+    // Split into quality bands relative to listing
+    const below = matched.filter(c => (getQuality(c) ?? lq) <  lq)
+                         .sort((a, b) => (getQuality(b) ?? -Infinity) - (getQuality(a) ?? -Infinity));
+    const above = matched.filter(c => (getQuality(c) ?? lq) >= lq)
+                         .sort((a, b) => (getQuality(a) ?? Infinity)  - (getQuality(b) ?? Infinity));
+
+    let selBelow = below.slice(0, 2);
+    let selAbove = above.slice(0, 2);
+
+    // Fill from the opposite side when one side is short
+    const shortBelow = 2 - selBelow.length;
+    const shortAbove = 2 - selAbove.length;
+    if (shortBelow > 0) selAbove = above.slice(0, 2 + shortBelow);
+    if (shortAbove > 0) selBelow = below.slice(0, 2 + shortAbove);
+
+    const selected = [...selBelow, ...selAbove];
+    // Final display order: quality ASC
+    selected.sort((a, b) => (getQuality(a) ?? Infinity) - (getQuality(b) ?? Infinity));
+    return selected;
+  }
+
   function buildCompsPanel(listing) {
     const itemId   = armorItemIds[listing.name];
     const w3bKey   = `${listing.armorSet}_${listing.rarity}`;
     const STALE_MS = 5 * 60 * 1000;
 
+    // Shared renderer — inserts "— this" row at the listing's quality position.
+    // qEstimated: when true, quality label uses ~ prefix to signal estimation.
+    // fallback: when true (no bonus-matched comps), skips THIS row entirely.
+    function renderCompRows(items, getBonus, getQuality, fallback) {
+      const lq = listing.qualityPct;
+      const lb = listing.bonusPct;
+      const rows = [];
+      let thisInserted = false;
+      for (const item of items) {
+        const cq = getQuality(item);
+        if (!thisInserted && !fallback && lq != null && (cq == null || cq >= lq)) {
+          rows.push({ _this: true });
+          thisInserted = true;
+        }
+        rows.push(item);
+      }
+      if (!thisInserted && !fallback && lq != null) rows.push({ _this: true });
+
+      return rows.map(item => {
+        if (item._this) {
+          const qPfx = listing.qualityEstimated ? '~' : 'Q';
+          const qStr = lq != null ? `${qPfx}${lq.toFixed(0)}%` : '';
+          const bStr = lb != null ? `${lb}%` : '';
+          const meta = [qStr, bStr].filter(Boolean).join(' ');
+          return `<div class="rwa-comps-row rwa-comps-row--this">
+            <span class="rwa-comps-price">— this</span>
+            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
+          </div>`;
+        }
+        const q = getQuality(item);
+        const b = getBonus(item);
+        const meta = [q != null ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
+        return `<div class="rwa-comps-row">
+          <span class="rwa-comps-price">${escHtml(fmtM(item.price))}</span>
+          ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
+        </div>`;
+      }).join('');
+    }
+
     function imRows() {
       const comp = MEM.itemMarketComps[itemId];
       if (!comp?.listings?.length) return '<span class="rwa-comps-empty">no data</span>';
-      return comp.listings
-        .slice().sort((a, b) => a.price - b.price).slice(0, 5)
-        .map(l => {
-          const q = l.item_details?.stats?.quality;
-          const b = l.item_details?.bonuses?.[0]?.value;
-          const meta = [q != null ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
-          return `<div class="rwa-comps-row">
-            <span class="rwa-comps-price">${escHtml(fmtM(l.price))}</span>
-            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
-          </div>`;
-        }).join('');
+
+      const getBonus   = l => l.item_details?.bonuses?.[0]?.value;
+      const getQuality = l => l.item_details?.stats?.quality;
+      let selected     = pickWindow(listing, comp.listings, getBonus, getQuality);
+
+      // No bonus-matched comps — fall back to 4 cheapest with a note
+      const fallback = !selected.length;
+      if (fallback) selected = comp.listings.slice().sort((a, b) => a.price - b.price).slice(0, 4);
+      if (!selected.length) return '<span class="rwa-comps-empty">no data</span>';
+
+      const html = renderCompRows(selected, getBonus, getQuality, fallback);
+      return fallback
+        ? `<span class="rwa-comps-empty" style="margin-bottom:3px">no bonus match</span>${html}`
+        : html;
     }
 
     function w3bRows() {
       const all = MEM.tornw3bComps[w3bKey];
       if (!all?.length) return '<span class="rwa-comps-empty">no data</span>';
-      return all
-        .filter(w => w.itemId === itemId)
-        .slice().sort((a, b) => a.price - b.price).slice(0, 5)
-        .map(w => {
-          const q = parseFloat(w.quality);
-          const b = Object.values(w.bonuses ?? {})[0]?.value;
-          const meta = [!isNaN(q) ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
-          return `<div class="rwa-comps-row">
-            <span class="rwa-comps-price">${escHtml(fmtM(w.price))}</span>
-            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
-          </div>`;
-        }).join('') || '<span class="rwa-comps-empty">no matches</span>';
+
+      const filtered   = all.filter(w => w.itemId === itemId);
+      const getBonus   = w => Object.values(w.bonuses ?? {})[0]?.value;
+      const getQuality = w => { const q = parseFloat(w.quality); return isNaN(q) ? null : q; };
+      let selected     = pickWindow(listing, filtered, getBonus, getQuality);
+
+      // No bonus-matched comps — fall back to 4 cheapest with a note
+      const fallback = !selected.length;
+      if (fallback) selected = filtered.slice().sort((a, b) => a.price - b.price).slice(0, 4);
+      if (!selected.length) return '<span class="rwa-comps-empty">no data</span>';
+
+      const html = renderCompRows(selected, getBonus, getQuality, fallback);
+      return fallback
+        ? `<span class="rwa-comps-empty" style="margin-bottom:3px">no bonus match</span>${html}`
+        : html;
     }
 
     const imAge  = MEM.itemMarketComps[itemId]?.fetchedAt;
