@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.17.0
+// @version      1.18.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.17.0';
+  const SCRIPT_VERSION = '1.18.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1104,6 +1104,39 @@
     }
     .rwa-btn:hover { border-color: #00ff88; color: #c0d0c8; }
     .rwa-strip-loading { color: #4a7060; font-size: 11px; font-style: italic; }
+    .rwa-context {
+      border-top: 1px solid #1a2a3a;
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      padding: 6px 8px 4px;
+    }
+    .rwa-context.rwa-open { display: flex; }
+    .rwa-context-row { align-items: baseline; display: flex; gap: 6px; }
+    .rwa-context-lbl {
+      color: #4a7060;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      min-width: 86px;
+      text-transform: uppercase;
+    }
+    .rwa-context-val { color: #c0d0c8; font-size: 12px; }
+    .rwa-badge {
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 1px 5px;
+      text-transform: uppercase;
+    }
+    .rwa-badge-src   { background: #0c2030; border: 1px solid #1a3a50; color: #5a9ab0; }
+    .rwa-badge-excep { background: #1a0c30; border: 1px solid #3a1a50; color: #b05af0; }
+    .rwa-badge-hq    { background: #0c1a10; border: 1px solid #1a3a20; color: #4ab060; }
+    .rwa-badge-cap   { background: #2a1800; border: 1px solid #4a3000; color: #f0a030; }
+    .rwa-rarity-yellow { color: #e8d070; }
+    .rwa-rarity-orange { color: #f0a030; }
+    .rwa-rarity-red    { color: #f04040; }
   `;
   document.head.appendChild(rwStyle);
 
@@ -1259,6 +1292,78 @@
     `;
 
     listing.el.appendChild(strip);
+
+    strip.querySelector('.rwa-btn-details').addEventListener('click', () => {
+      document.querySelectorAll('.rwa-context.rwa-open').forEach(p => {
+        if (p.closest('.rwa-strip') !== strip) {
+          p.classList.remove('rwa-open');
+          p.closest('.rwa-strip').querySelector('.rwa-btn-details').textContent = '▼ Details';
+        }
+      });
+      let ctx = strip.querySelector('.rwa-context');
+      if (!ctx) {
+        ctx = buildContextPanel(listing);
+        strip.appendChild(ctx);
+      }
+      ctx.classList.toggle('rwa-open');
+      strip.querySelector('.rwa-btn-details').textContent =
+        ctx.classList.contains('rwa-open') ? '▲ Details' : '▼ Details';
+    });
+  }
+
+  function buildContextPanel(listing) {
+    const { bbFloor, refPrice, netProfit } = computeListingMetrics(listing);
+    const { rarity, qualityPct, bonusPct, bonusType, tier, compSource, kingCap } = listing;
+
+    const rarityClass = rarity ? `rwa-rarity-${rarity}` : '';
+    const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
+    const tierBadge = tier === 'exceptional'
+      ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
+      : tier === 'hq'
+        ? `<span class="rwa-badge rwa-badge-hq">HQ</span>`
+        : '';
+    const profitColor = netProfit == null ? '#8aa898' : netProfit >= 0 ? '#00cc66' : '#ff4444';
+
+    const rows = [];
+
+    rows.push(`<div class="rwa-context-row">
+      <span class="rwa-context-lbl">BB Floor</span>
+      <span class="rwa-context-val ${rarityClass}">${escHtml(fmtM(bbFloor))}</span>
+    </div>`);
+
+    rows.push(`<div class="rwa-context-row">
+      <span class="rwa-context-lbl">Comp Price</span>
+      <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
+      <span class="rwa-badge rwa-badge-src">${escHtml(srcLabel)}</span>
+    </div>`);
+
+    if (qualityPct != null || bonusPct != null) {
+      const qStr = qualityPct != null ? `Q${qualityPct.toFixed(0)}%` : '';
+      const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Quality</span>
+        <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
+        ${tierBadge}
+      </div>`);
+    }
+
+    if (kingCap != null) {
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">King's Cap</span>
+        <span class="rwa-context-val">${escHtml(fmtM(kingCap))}</span>
+        <span class="rwa-badge rwa-badge-cap">!</span>
+      </div>`);
+    }
+
+    rows.push(`<div class="rwa-context-row">
+      <span class="rwa-context-lbl">Net Profit</span>
+      <span class="rwa-context-val" style="color:${escHtml(profitColor)}">${escHtml(fmtM(netProfit))}</span>
+    </div>`);
+
+    const panel = document.createElement('div');
+    panel.className = 'rwa-context';
+    panel.innerHTML = rows.join('');
+    return panel;
   }
 
   function renderInline() {
