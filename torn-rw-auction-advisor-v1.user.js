@@ -1234,6 +1234,7 @@
       <div class="rwa-field">
         <label for="rwa-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
         <input id="rwa-input-apikey" class="rwa-input" type="password" placeholder="paste key here" style="width:240px">
+        <span id="rwa-apikey-hint" class="rwa-field-hint"></span>
       </div>
       <div class="rwa-section-label">Pricing</div>
       <div class="rwa-field">
@@ -1250,6 +1251,10 @@
           <button id="rwa-toggle-trade" class="rwa-toggle" aria-label="Sell via trade"></button>
           <span id="rwa-toggle-trade-label" class="rwa-toggle-label">Off</span>
         </div>
+      </div>
+      <div class="rwa-section-label">Data Sources</div>
+      <div id="rwa-sources-body" style="margin-bottom:14px">
+        <span class="rwa-source-empty">not yet fetched</span>
       </div>
       <div class="rwa-section-label">Comp Tolerances</div>
       <div class="rwa-field">
@@ -1274,6 +1279,8 @@
   const apikeyInput     = settingsModal.querySelector('#rwa-input-apikey');
   const qualRangeInput  = settingsModal.querySelector('#rwa-input-quality-range');
   const bonusRangeInput = settingsModal.querySelector('#rwa-input-bonus-range');
+  const apikeyHint      = settingsModal.querySelector('#rwa-apikey-hint');
+  const sourcesBody     = settingsModal.querySelector('#rwa-sources-body');
 
   // ── Inline render ────────────────────────────────────────────────────────────
 
