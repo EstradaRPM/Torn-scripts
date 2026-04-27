@@ -1412,6 +1412,90 @@
     return panel;
   }
 
+  function buildCompsPanel(listing) {
+    const itemId   = armorItemIds[listing.name];
+    const w3bKey   = `${listing.armorSet}_${listing.rarity}`;
+    const STALE_MS = 5 * 60 * 1000;
+
+    function imRows() {
+      const comp = MEM.itemMarketComps[itemId];
+      if (!comp?.listings?.length) return '<span class="rwa-comps-empty">no data</span>';
+      return comp.listings
+        .slice().sort((a, b) => a.price - b.price).slice(0, 5)
+        .map(l => {
+          const q = l.item_details?.stats?.quality;
+          const b = l.item_details?.bonuses?.[0]?.value;
+          const meta = [q != null ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
+          return `<div class="rwa-comps-row">
+            <span class="rwa-comps-price">${escHtml(fmtM(l.price))}</span>
+            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
+          </div>`;
+        }).join('');
+    }
+
+    function w3bRows() {
+      const all = MEM.tornw3bComps[w3bKey];
+      if (!all?.length) return '<span class="rwa-comps-empty">no data</span>';
+      return all
+        .filter(w => w.itemId === itemId)
+        .slice().sort((a, b) => a.price - b.price).slice(0, 5)
+        .map(w => {
+          const q = parseFloat(w.quality);
+          const b = Object.values(w.bonuses ?? {})[0]?.value;
+          const meta = [!isNaN(q) ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
+          return `<div class="rwa-comps-row">
+            <span class="rwa-comps-price">${escHtml(fmtM(w.price))}</span>
+            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
+          </div>`;
+        }).join('') || '<span class="rwa-comps-empty">no matches</span>';
+    }
+
+    const imAge  = MEM.itemMarketComps[itemId]?.fetchedAt;
+    const w3bAge = MEM.tornw3bFetchedAt[w3bKey];
+
+    const panel = document.createElement('div');
+    panel.className = 'rwa-comps';
+    panel.innerHTML = `
+      <div class="rwa-comps-col" data-col="market">
+        <div class="rwa-comps-hdr">
+          <span class="rwa-comps-title">Item Market</span>
+          <span class="rwa-comps-age">${escHtml(fmtAgo(imAge))}</span>
+        </div>
+        <div class="rwa-comps-body">${imRows()}</div>
+      </div>
+      <div class="rwa-comps-col" data-col="bazaar">
+        <div class="rwa-comps-hdr">
+          <span class="rwa-comps-title">Bazaar</span>
+          <span class="rwa-comps-age">${escHtml(fmtAgo(w3bAge))}</span>
+        </div>
+        <div class="rwa-comps-body">${w3bRows()}</div>
+      </div>
+    `;
+
+    panel._refreshCol = async (col) => {
+      const colEl = panel.querySelector(`[data-col="${col}"]`);
+      const body  = colEl.querySelector('.rwa-comps-body');
+      const ageEl = colEl.querySelector('.rwa-comps-age');
+      body.innerHTML = '<span class="rwa-spinner">↻</span>';
+      if (col === 'market') {
+        await fetchItemMarketComp(itemId);
+        ageEl.textContent = fmtAgo(MEM.itemMarketComps[itemId]?.fetchedAt);
+        body.innerHTML = imRows();
+      } else {
+        await fetchTornW3BComp(listing.armorSet, listing.rarity);
+        ageEl.textContent = fmtAgo(MEM.tornw3bFetchedAt[w3bKey]);
+        body.innerHTML = w3bRows();
+      }
+    };
+
+    panel._isStale = (col) => {
+      const ts = col === 'market' ? MEM.itemMarketComps[itemId]?.fetchedAt : MEM.tornw3bFetchedAt[w3bKey];
+      return !ts || Date.now() - ts > STALE_MS;
+    };
+
+    return panel;
+  }
+
   function renderInline() {
     showError(MEM.fetchError);
     for (const listing of MEM.listings) {
