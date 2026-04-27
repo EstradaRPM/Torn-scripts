@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.18.0
+// @version      1.19.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.18.0';
+  const SCRIPT_VERSION = '1.19.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1355,6 +1355,21 @@
       strip.querySelector('.rwa-btn-details').textContent =
         ctx.classList.contains('rwa-open') ? '▲ Details' : '▼ Details';
     });
+
+    async function toggleCompCol(col) {
+      let comps = strip.querySelector('.rwa-comps');
+      if (!comps) {
+        comps = buildCompsPanel(listing);
+        strip.appendChild(comps);
+      }
+      const colEl = comps.querySelector(`[data-col="${col}"]`);
+      const wasVisible = colEl.classList.contains('rwa-col-visible');
+      colEl.classList.toggle('rwa-col-visible');
+      if (!wasVisible && comps._isStale(col)) await comps._refreshCol(col);
+    }
+
+    strip.querySelector('.rwa-btn-market').addEventListener('click', () => toggleCompCol('market'));
+    strip.querySelector('.rwa-btn-bazaar').addEventListener('click', () => toggleCompCol('bazaar'));
   }
 
   function buildContextPanel(listing) {
