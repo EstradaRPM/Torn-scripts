@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.28.1
+// @version      1.28.2
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.28.1';
+  const SCRIPT_VERSION = '1.28.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1364,6 +1364,8 @@
     .rwa-comps-row--this  { border-left: 2px solid #4a9070; padding-left: 4px; }
     .rwa-comps-row--this .rwa-comps-price { color: #7fc8a8; }
     .rwa-comps-row--this .rwa-comps-meta  { color: #7fc8a8; }
+    .rwa-comps-row--bid   { border-left: 2px solid #a07040; padding-left: 4px; }
+    .rwa-comps-row--bid .rwa-comps-price  { color: #e0a060; }
     .rwa-comps-price      { color: #c0d0c8; font-weight: 600; }
     .rwa-comps-meta       { color: #4a7060; font-size: 10px; }
     .rwa-comps-empty      { color: #2a5040; font-size: 11px; font-style: italic; }
@@ -1769,40 +1771,47 @@
     const w3bKey   = `${listing.armorSet}_${listing.rarity}`;
     const STALE_MS = 5 * 60 * 1000;
 
-    // Shared renderer — items sorted by price ASC; inserts "— this" row at the
-    // listing's refPrice position so the user can see where the piece would sell
-    // relative to the market. Skips THIS row in fallback mode (non-comparable comps)
-    // or when refPrice is not yet available.
+    // Renders comps price-sorted with two optional marker rows merged in:
+    //   ↓ bid  — where currentBid sits vs market (always shown when bid exists)
+    //   ↑ sell — estimated resale (refPrice); omitted in fallback or when unavailable
+    // Markers sort before real listings at identical price values.
     function renderCompRows(items, getBonus, getQuality, fallback) {
       const lb       = listing.bonusPct;
       const lq       = listing.qualityPct;
-      const refPrice = listing.refPrice ?? null;
+      const refPrice = listing.refPrice    ?? null;
+      const bidPrice = listing.currentBid  ?? null;
 
-      const sorted = items.slice().sort((a, b) => a.price - b.price);
-      const showThis = !fallback && refPrice != null;
+      // Build a flat array of comps + markers, then sort price ASC (markers first on tie)
+      const entries = items.map(item => ({ kind: 'comp', price: item.price, data: item }));
+      if (bidPrice != null)
+        entries.push({ kind: 'bid',  price: bidPrice });
+      if (!fallback && refPrice != null)
+        entries.push({ kind: 'sell', price: refPrice });
 
-      const rows = [];
-      let thisInserted = false;
-      for (const item of sorted) {
-        if (showThis && !thisInserted && item.price >= refPrice) {
-          rows.push({ _this: true });
-          thisInserted = true;
+      entries.sort((a, b) => {
+        if (a.price !== b.price) return a.price - b.price;
+        // Markers appear before comps at the same price; bid before sell
+        const rank = { bid: 0, sell: 1, comp: 2 };
+        return rank[a.kind] - rank[b.kind];
+      });
+
+      return entries.map(entry => {
+        if (entry.kind === 'bid') {
+          return `<div class="rwa-comps-row rwa-comps-row--bid">
+            <span class="rwa-comps-price">↓ bid  ${escHtml(fmtM(bidPrice))}</span>
+          </div>`;
         }
-        rows.push(item);
-      }
-      if (showThis && !thisInserted) rows.push({ _this: true });
-
-      return rows.map(item => {
-        if (item._this) {
+        if (entry.kind === 'sell') {
           const qPfx = listing.qualityEstimated ? '~' : 'Q';
           const qStr = lq != null ? `${qPfx}${lq.toFixed(0)}%` : '';
           const bStr = lb != null ? `${lb}%` : '';
           const meta = [qStr, bStr].filter(Boolean).join(' ');
           return `<div class="rwa-comps-row rwa-comps-row--this">
-            <span class="rwa-comps-price">— this ${escHtml(fmtM(refPrice))}</span>
+            <span class="rwa-comps-price">↑ sell ${escHtml(fmtM(refPrice))}</span>
             ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
           </div>`;
         }
+        const item = entry.data;
         const q = getQuality(item);
         const b = getBonus(item);
         const meta = [q != null ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
