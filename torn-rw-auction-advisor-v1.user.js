@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.26.1
+// @version      1.26.2
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.26.1';
+  const SCRIPT_VERSION = '1.26.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -818,6 +818,7 @@
   const RARITY_GLOWS  = ['red', 'orange', 'yellow'];
 
   const RE_QUALITY = /[Qq]uality[:\s]*([0-9]+(?:\.[0-9]+)?)\s*%/;
+  const RE_ARMOR   = /[Aa]rmor[:\s]*([0-9]+(?:\.[0-9]+)?)/;
   const RE_PRICE   = /\$\s*([0-9,]+)/;
 
   /**
@@ -875,13 +876,17 @@
           .trim() || null;
       }
 
-      // ── Quality % and bonus % ────────────────────────────────────────────
-      // qualityPct: from full listing text via regex.
+      // ── Quality %, bonus %, and armor stat ──────────────────────────────
+      // qualityPct: from full listing text via regex; null when DOM omits it.
+      // armorStat: likewise via regex; used downstream to estimate quality
+      //   from comp data when qualityPct is unavailable.
       // bonusPct: extracted from the already-parsed bonusType tooltip string —
       //   works for any armor set without naming specific bonus types.
       const liText     = li.textContent;
       const qualM      = liText.match(RE_QUALITY);
       const qualityPct = qualM ? parseFloat(qualM[1]) : null;
+      const armorM     = liText.match(RE_ARMOR);
+      const armorStat  = armorM ? parseFloat(armorM[1]) : null;
       const bonusPctM  = bonusType?.match(/(\d+(?:\.\d+)?)\s*%/);
       const bonusPct   = bonusPctM ? parseFloat(bonusPctM[1]) : null;
 
@@ -909,7 +914,7 @@
         if (timeM) timeRemaining = timeM[0].trim();
       }
 
-      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, uid, currentBid, timeRemaining, el: li });
+      results.push({ name, armorSet, pieceType, rarity, bonusType, bonusPct, qualityPct, armorStat, uid, currentBid, timeRemaining, el: li });
     }
 
     MEM.listings = results;
@@ -1586,7 +1591,7 @@
 
   function buildContextPanel(listing) {
     const { bbFloor, refPrice, netProfit } = computeListingMetrics(listing);
-    const { rarity, qualityPct, bonusPct, bonusType, tier, compSource, kingCap } = listing;
+    const { rarity, qualityPct, bonusPct, bonusType, tier, compSource, kingCap, qualityEstimated } = listing;
 
     const rarityClass = rarity ? `rwa-rarity-${rarity}` : '';
     const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
@@ -1611,7 +1616,7 @@
     </div>`);
 
     if (qualityPct != null || bonusPct != null) {
-      const qStr = qualityPct != null ? `Q${qualityPct.toFixed(0)}%` : '';
+      const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
       const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
       rows.push(`<div class="rwa-context-row">
         <span class="rwa-context-lbl">Quality</span>
@@ -2046,6 +2051,34 @@
     }
   }
 
+  /**
+   * Estimates quality % from an armor stat value using a linear model fit to
+   * item market comp listings for the same item (which carry both stats.armor
+   * and stats.quality). Returns null when fewer than 2 data points exist or
+   * when the model is degenerate (all comps share identical armor values).
+   * Result is clamped to [0, 100].
+   */
+  function estimateQualityFromArmorStat(armorStat, compListings) {
+    const pairs = compListings
+      .map(l => ({ a: l.item_details?.stats?.armor ?? null, q: l.item_details?.stats?.quality ?? null }))
+      .filter(p => p.a != null && p.q != null);
+    if (pairs.length < 2) return null;
+
+    const n    = pairs.length;
+    const sumA = pairs.reduce((s, p) => s + p.a, 0);
+    const sumQ = pairs.reduce((s, p) => s + p.q, 0);
+    const sumAQ = pairs.reduce((s, p) => s + p.a * p.q, 0);
+    const sumA2 = pairs.reduce((s, p) => s + p.a * p.a, 0);
+
+    const denom = n * sumA2 - sumA * sumA;
+    if (Math.abs(denom) < 1e-9) return null;
+
+    const slope = (n * sumAQ - sumA * sumQ) / denom;
+    const intercept = (sumQ - slope * sumA) / n;
+
+    return Math.max(0, Math.min(100, slope * armorStat + intercept));
+  }
+
   // Enriches each listing with refPrice and kingCap per King's RW Guide.
   //
   // refPrice — quality-aware resale estimate, same logic for all tiers:
@@ -2066,6 +2099,15 @@
     for (const listing of MEM.listings) {
       const itemId  = armorItemIds[listing.name];
       const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[listing.armorSet] ?? ARMOR_SCORING.Riot;
+
+      // ── Estimate quality from armor stat when DOM didn't expose it ────────
+      if (listing.qualityPct == null && listing.armorStat != null) {
+        const imRaw = MEM.itemMarketComps[itemId];
+        if (imRaw?.listings?.length >= 2) {
+          const est = estimateQualityFromArmorStat(listing.armorStat, imRaw.listings);
+          if (est != null) { listing.qualityPct = est; listing.qualityEstimated = true; }
+        }
+      }
 
       const tier = classifyArmorTier(listing.qualityPct, listing.bonusPct, baseBonusPct, highTierThreshold);
       listing.tier = tier;
