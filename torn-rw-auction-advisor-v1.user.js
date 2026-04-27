@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.18.0
+// @version      1.19.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.18.0';
+  const SCRIPT_VERSION = '1.19.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -59,6 +59,9 @@
     // TornW3B bazaar listings keyed by "ArmorSet_PieceType_Rarity"
     // { [key]: weapons[] } where weapons[] is the full TornW3B response array
     tornw3bComps: {},
+
+    // Fetch timestamps for TornW3B cache keyed by "ArmorSet_rarity"
+    tornw3bFetchedAt: {},
 
     // Weighted $/BB rate from all 5 combat caches
     // { rate, cachePrices: { name: price }, fetchedAt }
@@ -640,6 +643,7 @@
       const data = JSON.parse(text);
       const weapons = data?.weapons ?? null;
       MEM.tornw3bComps[cacheKey] = weapons;
+      MEM.tornw3bFetchedAt[cacheKey] = Date.now();
       return weapons;
     } catch (err) {
       MEM.tornw3bComps[cacheKey] = null;
@@ -903,6 +907,14 @@
 
   // ── Formatting helpers ───────────────────────────────────────────────────────
 
+  function fmtAgo(ts) {
+    if (!ts) return '';
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60)  return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
+  }
+
   function fmtM(n) {
     if (n == null || isNaN(n)) return '—';
     if (Math.abs(n) >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'b';
@@ -1137,6 +1149,40 @@
     .rwa-rarity-yellow { color: #e8d070; }
     .rwa-rarity-orange { color: #f0a030; }
     .rwa-rarity-red    { color: #f04040; }
+    .rwa-comps {
+      border-top: 1px solid #1a2a3a;
+      display: flex;
+      gap: 8px;
+      padding: 6px 8px;
+    }
+    .rwa-comps-col {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    .rwa-comps-col.rwa-col-visible { display: flex; }
+    .rwa-comps-hdr {
+      align-items: baseline;
+      display: flex;
+      gap: 6px;
+      justify-content: space-between;
+      margin-bottom: 2px;
+    }
+    .rwa-comps-title {
+      color: #4a7060;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .rwa-comps-age   { color: #2a5040; font-size: 10px; }
+    .rwa-comps-row   { align-items: baseline; display: flex; font-size: 11px; gap: 5px; }
+    .rwa-comps-price { color: #c0d0c8; font-weight: 600; }
+    .rwa-comps-meta  { color: #4a7060; font-size: 10px; }
+    .rwa-comps-empty { color: #2a5040; font-size: 11px; font-style: italic; }
+    .rwa-spinner     { animation: rwaSpin 0.6s linear infinite; display: inline-block; }
   `;
   document.head.appendChild(rwStyle);
 
@@ -1309,6 +1355,21 @@
       strip.querySelector('.rwa-btn-details').textContent =
         ctx.classList.contains('rwa-open') ? '▲ Details' : '▼ Details';
     });
+
+    async function toggleCompCol(col) {
+      let comps = strip.querySelector('.rwa-comps');
+      if (!comps) {
+        comps = buildCompsPanel(listing);
+        strip.appendChild(comps);
+      }
+      const colEl = comps.querySelector(`[data-col="${col}"]`);
+      const wasVisible = colEl.classList.contains('rwa-col-visible');
+      colEl.classList.toggle('rwa-col-visible');
+      if (!wasVisible && comps._isStale(col)) await comps._refreshCol(col);
+    }
+
+    strip.querySelector('.rwa-btn-market').addEventListener('click', () => toggleCompCol('market'));
+    strip.querySelector('.rwa-btn-bazaar').addEventListener('click', () => toggleCompCol('bazaar'));
   }
 
   function buildContextPanel(listing) {
@@ -1363,6 +1424,90 @@
     const panel = document.createElement('div');
     panel.className = 'rwa-context';
     panel.innerHTML = rows.join('');
+    return panel;
+  }
+
+  function buildCompsPanel(listing) {
+    const itemId   = armorItemIds[listing.name];
+    const w3bKey   = `${listing.armorSet}_${listing.rarity}`;
+    const STALE_MS = 5 * 60 * 1000;
+
+    function imRows() {
+      const comp = MEM.itemMarketComps[itemId];
+      if (!comp?.listings?.length) return '<span class="rwa-comps-empty">no data</span>';
+      return comp.listings
+        .slice().sort((a, b) => a.price - b.price).slice(0, 5)
+        .map(l => {
+          const q = l.item_details?.stats?.quality;
+          const b = l.item_details?.bonuses?.[0]?.value;
+          const meta = [q != null ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
+          return `<div class="rwa-comps-row">
+            <span class="rwa-comps-price">${escHtml(fmtM(l.price))}</span>
+            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
+          </div>`;
+        }).join('');
+    }
+
+    function w3bRows() {
+      const all = MEM.tornw3bComps[w3bKey];
+      if (!all?.length) return '<span class="rwa-comps-empty">no data</span>';
+      return all
+        .filter(w => w.itemId === itemId)
+        .slice().sort((a, b) => a.price - b.price).slice(0, 5)
+        .map(w => {
+          const q = parseFloat(w.quality);
+          const b = Object.values(w.bonuses ?? {})[0]?.value;
+          const meta = [!isNaN(q) ? `Q${q.toFixed(0)}%` : '', b != null ? `${b}%` : ''].filter(Boolean).join(' ');
+          return `<div class="rwa-comps-row">
+            <span class="rwa-comps-price">${escHtml(fmtM(w.price))}</span>
+            ${meta ? `<span class="rwa-comps-meta">${escHtml(meta)}</span>` : ''}
+          </div>`;
+        }).join('') || '<span class="rwa-comps-empty">no matches</span>';
+    }
+
+    const imAge  = MEM.itemMarketComps[itemId]?.fetchedAt;
+    const w3bAge = MEM.tornw3bFetchedAt[w3bKey];
+
+    const panel = document.createElement('div');
+    panel.className = 'rwa-comps';
+    panel.innerHTML = `
+      <div class="rwa-comps-col" data-col="market">
+        <div class="rwa-comps-hdr">
+          <span class="rwa-comps-title">Item Market</span>
+          <span class="rwa-comps-age">${escHtml(fmtAgo(imAge))}</span>
+        </div>
+        <div class="rwa-comps-body">${imRows()}</div>
+      </div>
+      <div class="rwa-comps-col" data-col="bazaar">
+        <div class="rwa-comps-hdr">
+          <span class="rwa-comps-title">Bazaar</span>
+          <span class="rwa-comps-age">${escHtml(fmtAgo(w3bAge))}</span>
+        </div>
+        <div class="rwa-comps-body">${w3bRows()}</div>
+      </div>
+    `;
+
+    panel._refreshCol = async (col) => {
+      const colEl = panel.querySelector(`[data-col="${col}"]`);
+      const body  = colEl.querySelector('.rwa-comps-body');
+      const ageEl = colEl.querySelector('.rwa-comps-age');
+      body.innerHTML = '<span class="rwa-spinner">↻</span>';
+      if (col === 'market') {
+        await fetchItemMarketComp(itemId);
+        ageEl.textContent = fmtAgo(MEM.itemMarketComps[itemId]?.fetchedAt);
+        body.innerHTML = imRows();
+      } else {
+        await fetchTornW3BComp(listing.armorSet, listing.rarity);
+        ageEl.textContent = fmtAgo(MEM.tornw3bFetchedAt[w3bKey]);
+        body.innerHTML = w3bRows();
+      }
+    };
+
+    panel._isStale = (col) => {
+      const ts = col === 'market' ? MEM.itemMarketComps[itemId]?.fetchedAt : MEM.tornw3bFetchedAt[w3bKey];
+      return !ts || Date.now() - ts > STALE_MS;
+    };
+
     return panel;
   }
 
