@@ -30,22 +30,20 @@ All floating panel code has been removed and replaced with inline injection per 
 
 ### New DOM structure (injected by script)
 
-```
-#rwa-gear-cluster          fixed bottom-right; contains:
-  #rwa-error-toast           hidden by default; shown via .rwa-visible
-  #rwa-refresh-btn           ↻ spins during init via .rwa-spinning
-  #rwa-gear-btn              ⚙ opens settings modal
+#rwa-gear-cluster fixed bottom-right; contains:
+#rwa-error-toast hidden by default; shown via .rwa-visible
+#rwa-refresh-btn ↻ spins during init via .rwa-spinning
+#rwa-gear-btn ⚙ opens settings modal
 
-#rwa-settings-modal        native <dialog>; all original settings fields preserved
-  .rwa-modal-header
-  .rwa-modal-body            API key, Pricing, Comp Tolerances sections
-  .rwa-modal-footer          version + data disclosure line
+#rwa-settings-modal native <dialog>; all original settings fields preserved
+.rwa-modal-header
+.rwa-modal-body API key, Pricing, Comp Tolerances sections
+.rwa-modal-footer version + data disclosure line
 
-.rwa-strip                 injected as last child of each auction <li>
-  .rwa-strip-main
-    .rwa-strip-offer         Max Offer label + value (green/red) + ROI %
-    .rwa-strip-actions       ▼ Details | Market | Bazaar | Log  ← UNWIRED (stubs)
-```
+.rwa-strip injected as last child of each auction <li>
+.rwa-strip-main
+.rwa-strip-offer Max Offer label + value (green/red) + ROI %
+.rwa-strip-actions ▼ Details | Market | Bazaar | Log ← UNWIRED (stubs)
 
 ### Removed in Step 1
 
