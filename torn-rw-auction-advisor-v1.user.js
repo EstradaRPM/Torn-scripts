@@ -1104,6 +1104,39 @@
     }
     .rwa-btn:hover { border-color: #00ff88; color: #c0d0c8; }
     .rwa-strip-loading { color: #4a7060; font-size: 11px; font-style: italic; }
+    .rwa-context {
+      border-top: 1px solid #1a2a3a;
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      padding: 6px 8px 4px;
+    }
+    .rwa-context.rwa-open { display: flex; }
+    .rwa-context-row { align-items: baseline; display: flex; gap: 6px; }
+    .rwa-context-lbl {
+      color: #4a7060;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      min-width: 86px;
+      text-transform: uppercase;
+    }
+    .rwa-context-val { color: #c0d0c8; font-size: 12px; }
+    .rwa-badge {
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 1px 5px;
+      text-transform: uppercase;
+    }
+    .rwa-badge-src   { background: #0c2030; border: 1px solid #1a3a50; color: #5a9ab0; }
+    .rwa-badge-excep { background: #1a0c30; border: 1px solid #3a1a50; color: #b05af0; }
+    .rwa-badge-hq    { background: #0c1a10; border: 1px solid #1a3a20; color: #4ab060; }
+    .rwa-badge-cap   { background: #2a1800; border: 1px solid #4a3000; color: #f0a030; }
+    .rwa-rarity-yellow { color: #e8d070; }
+    .rwa-rarity-orange { color: #f0a030; }
+    .rwa-rarity-red    { color: #f04040; }
   `;
   document.head.appendChild(rwStyle);
 
