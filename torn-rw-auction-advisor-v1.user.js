@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.20.0
+// @version      1.21.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.20.0';
+  const SCRIPT_VERSION = '1.21.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -35,6 +35,7 @@
     ARMOR_ITEM_IDS     : 'rw_armorItemIds',
     QUALITY_MATCH_RANGE: 'rw_qualityMatchRange',
     BONUS_MATCH_RANGE  : 'rw_bonusMatchRange',
+    LEDGER             : 'rw_ledger',
   };
 
   // ── Runtime state ───────────────────────────────────────────────────────────
@@ -62,6 +63,10 @@
 
     // Fetch timestamps for TornW3B cache keyed by "ArmorSet_rarity"
     tornw3bFetchedAt: {},
+
+    // Bid ledger entries persisted to localStorage
+    // [{ id, timestamp, itemName, rarity, qualityPct, bonusPct, tier, currentBid, maxOffer, roi, bbFloor, refPrice, result }]
+    ledger: (() => { try { return JSON.parse(Store.get(KEYS.LEDGER)) || []; } catch { return []; } })(),
 
     // Weighted $/BB rate from all 5 combat caches
     // { rate, cachePrices: { name: price }, fetchedAt }
@@ -1090,6 +1095,72 @@
     .rwa-field-hint.rwa-hint-error { color: #ff4444; }
     .rwa-input.rwa-input-error { border-color: #ff4444; }
 
+    .rwa-field-hint.rwa-hint-error { color: #ff4444; }
+    .rwa-input.rwa-input-error { border-color: #ff4444; }
+    #rwa-ledger-panel {
+      background: #060c16;
+      border-left: 1px solid #1a2a3a;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 12px;
+      position: fixed;
+      right: -420px;
+      top: 0;
+      transition: right 0.2s ease;
+      width: 420px;
+      z-index: 9000;
+    }
+    #rwa-ledger-panel.rwa-ledger-open { right: 0; }
+    .rwa-ledger-hdr {
+      align-items: center;
+      border-bottom: 1px solid #1a2a3a;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      padding: 10px 12px;
+    }
+    .rwa-ledger-title { color: #c0d0c8; font-size: 13px; font-weight: 600; }
+    .rwa-ledger-clear {
+      background: none;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    .rwa-ledger-clear:hover { border-color: #ff4444; color: #ff4444; }
+    .rwa-ledger-close {
+      background: none;
+      border: none;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .rwa-ledger-close:hover { color: #c0d0c8; }
+    .rwa-ledger-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+    .rwa-ledger-empty { color: #2a5040; font-size: 12px; font-style: italic; padding: 16px 12px; }
+    .rwa-ledger-table { border-collapse: collapse; min-width: 100%; }
+    .rwa-ledger-table th {
+      background: #060c16;
+      border-bottom: 1px solid #1a2a3a;
+      color: #4a7060;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 4px 8px;
+      position: sticky;
+      text-align: left;
+      text-transform: uppercase;
+      top: 0;
+    }
+    .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
+    .rwa-ledger-table tr:last-child td { border-bottom: none; }
+
     /* ── Advisory strip (injected into each auction li) ── */
     .rwa-strip {
       background: #060c16;
@@ -1208,14 +1279,29 @@
   gearCluster.id = 'rwa-gear-cluster';
   gearCluster.innerHTML = `
     <div id="rwa-error-toast"></div>
-    <button id="rwa-refresh-btn" class="rwa-cluster-btn" title="Refresh advisor data">↻</button>
-    <button id="rwa-gear-btn"    class="rwa-cluster-btn" title="Advisor settings">⚙</button>
+    <button id="rwa-refresh-btn"  class="rwa-cluster-btn" title="Refresh advisor data">↻</button>
+    <button id="rwa-ledger-btn"   class="rwa-cluster-btn" title="Bid ledger">&#9776;</button>
+    <button id="rwa-gear-btn"     class="rwa-cluster-btn" title="Advisor settings">⚙</button>
   `;
   document.body.appendChild(gearCluster);
 
+  const ledgerPanel = document.createElement('div');
+  ledgerPanel.id = 'rwa-ledger-panel';
+  ledgerPanel.innerHTML = `
+    <div class="rwa-ledger-hdr">
+      <span class="rwa-ledger-title">Bid Ledger</span>
+      <button id="rwa-ledger-clear" class="rwa-ledger-clear">Clear All</button>
+      <button id="rwa-ledger-close" class="rwa-ledger-close" title="Close">✕</button>
+    </div>
+    <div class="rwa-ledger-body" id="rwa-ledger-body"></div>
+  `;
+  document.body.appendChild(ledgerPanel);
+
   const rwaRefreshBtn = document.getElementById('rwa-refresh-btn');
+  const rwaLedgerBtn  = document.getElementById('rwa-ledger-btn');
   const rwaGearBtn    = document.getElementById('rwa-gear-btn');
   const rwaErrorToast = document.getElementById('rwa-error-toast');
+  const ledgerBody    = document.getElementById('rwa-ledger-body');
 
   function showError(msg) {
     if (!msg) { rwaErrorToast.classList.remove('rwa-visible'); return; }
@@ -1393,6 +1479,7 @@
 
     strip.querySelector('.rwa-btn-market').addEventListener('click', () => toggleCompCol('market'));
     strip.querySelector('.rwa-btn-bazaar').addEventListener('click', () => toggleCompCol('bazaar'));
+    strip.querySelector('.rwa-btn-log').addEventListener('click', () => logListing(listing));
   }
 
   function buildContextPanel(listing) {
@@ -1541,6 +1628,56 @@
     }
   }
 
+  function logListing(listing) {
+    const { maxOffer, roi, bbFloor } = computeListingMetrics(listing);
+    const entry = {
+      id        : Date.now(),
+      timestamp : Date.now(),
+      itemName  : listing.name,
+      rarity    : listing.rarity ?? '—',
+      qualityPct: listing.qualityPct,
+      bonusPct  : listing.bonusPct,
+      tier      : listing.tier ?? null,
+      currentBid: listing.currentBid,
+      maxOffer  : maxOffer,
+      roi       : roi,
+      bbFloor   : bbFloor,
+      refPrice  : listing.refPrice ?? null,
+      result    : null,
+    };
+    MEM.ledger.unshift(entry);
+    Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    renderLedger();
+  }
+
+  function renderLedger() {
+    if (!MEM.ledger.length) {
+      ledgerBody.innerHTML = '<div class="rwa-ledger-empty">No entries logged yet</div>';
+      return;
+    }
+    const fmt = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const tierLabel = t => t === 'exceptional' ? 'EXCEP' : t === 'hq' ? 'HQ' : t === 'base' ? 'BASE' : '—';
+    const rows = MEM.ledger.map(e => `<tr>
+      <td style="color:#4a7060;font-size:10px">${escHtml(fmt(e.timestamp))}</td>
+      <td>${escHtml(e.itemName)}</td>
+      <td>${escHtml(e.rarity)}</td>
+      <td>${e.qualityPct != null ? e.qualityPct.toFixed(0) + '%' : '—'}</td>
+      <td>${e.bonusPct  != null ? e.bonusPct.toFixed(0)  + '%' : '—'}</td>
+      <td>${escHtml(tierLabel(e.tier))}</td>
+      <td>${escHtml(fmtM(e.currentBid))}</td>
+      <td>${escHtml(fmtM(e.maxOffer))}</td>
+      <td>${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
+      <td style="color:#2a5040">—</td>
+    </tr>`).join('');
+    ledgerBody.innerHTML = `<table class="rwa-ledger-table">
+      <thead><tr>
+        <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
+        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
   function refreshDataSources() {
     const rows = [];
     const bbTs = MEM.bbRate?.fetchedAt;
@@ -1641,6 +1778,19 @@
   settingsModal.querySelector('.rwa-modal-close').addEventListener('click', () => settingsModal.close());
   settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
   rwaGearBtn.addEventListener('click', () => { refreshDataSources(); settingsModal.showModal(); });
+
+  rwaLedgerBtn.addEventListener('click', () => {
+    renderLedger();
+    ledgerPanel.classList.toggle('rwa-ledger-open');
+  });
+  document.getElementById('rwa-ledger-close').addEventListener('click', () => {
+    ledgerPanel.classList.remove('rwa-ledger-open');
+  });
+  document.getElementById('rwa-ledger-clear').addEventListener('click', () => {
+    MEM.ledger = [];
+    Store.set(KEYS.LEDGER, '[]');
+    renderLedger();
+  });
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
