@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.26.0
+// @version      1.26.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.26.0';
+  const SCRIPT_VERSION = '1.26.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -817,7 +817,7 @@
   const ARMOR_PIECES  = ['Helmet', 'Body', 'Vest', 'Mask', 'Pants', 'Gloves', 'Boots'];
   const RARITY_GLOWS  = ['red', 'orange', 'yellow'];
 
-  const RE_QUALITY = /[Qq]uality[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%/;
+  const RE_QUALITY = /[Qq]uality[:\s]*([0-9]+(?:\.[0-9]+)?)\s*%/;
   const RE_PRICE   = /\$\s*([0-9,]+)/;
 
   /**
@@ -2084,7 +2084,6 @@
       const anyQualityMatched = imQM || w3bQM;
 
       const winner = imPrice <= w3bPrice ? imComp : w3bComp;
-      if (listing.qualityPct == null) listing.qualityPct = winner?.avgQuality ?? null;
 
       let refPrice    = null;
       let compSource  = 'bonus-only';
