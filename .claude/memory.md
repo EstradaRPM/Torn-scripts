@@ -1,57 +1,68 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-26_
+_Last updated: 2026-04-27_
 
 ---
 
 ## Current WIP
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
-**Branch:** `claude/inline-auction-advisor-MxQCI` → PR #138 → `main`
-**Version:** `1.17.0`
-**Active plan file:** `/root/.claude/plans/analyze-the-torn-rw-auction-advisor-js-playful-gray.md`
+**Branch:** `claude/inline-auction-advisor-MxQCI` → open PR → `main`
+**Version:** `1.21.1`
 
-### Step currently completed: Step 1 — Inline advisory strip
+### All steps complete (Steps 1–6)
 
-All floating panel code has been removed and replaced with inline injection per auction listing. Verified working.
+| Step | Description | Version |
+|------|-------------|---------|
+| 1 | Inline advisory strip — replaced floating panel with per-`<li>` injection | 1.17.0 |
+| 2 | `▼ Details` expandable context panel per listing | 1.18.0 |
+| 3 | Market/Bazaar split-column comp panel (top-5, live fetch, staleness) | 1.19.0 |
+| 4 | Settings modal polish — Data Sources section, API key mask/reveal, error feedback | 1.20.0 |
+| 5 | Ledger framework scaffold — Log button, sidebar panel, localStorage persistence | 1.21.0 |
+| 6 | CLAUDE.md documentation + memory.md final update | 1.21.1 |
 
-### Key line numbers (post-Step 1)
+### Key function locations (final)
 
-| Symbol | Line | Notes |
-|--------|------|-------|
-| `parseAuctionListings()` | ~827 | Added `el: li` to each result object |
-| `computeListingMetrics(l)` | ~1188 | New — computes bbFloor, maxOffer, netProfit, roi, signalColor |
-| `injectAdvisoryStrip(listing)` | ~1228 | New — removes old strip, builds `.rwa-strip`, appends to `listing.el` |
-| `renderInline()` | ~1264 | New — calls `showError()` + `injectAdvisoryStrip()` for all listings |
-| `showError(msg)` | ~1130 | New — shows/hides `#rwa-error-toast` in gear cluster |
-| `enrichListingsFromMarketData()` | ~1446 | Unchanged logic; stale comment updated |
-| `init()` | ~1540 | Updated: all `render()` calls → `renderInline()`; error msg updated |
-| `safeInit()` | ~1564 | Updated: `refreshBtn` → `rwaRefreshBtn`; `rw-spinning` → `rwa-spinning` |
+| Symbol | Line (approx) | Notes |
+|--------|---------------|-------|
+| `computeListingMetrics(l)` | ~1300 | Returns bbFloor, maxOffer, netProfit, roi, signalColor |
+| `injectAdvisoryStrip(listing)` | ~1340 | Builds `.rwa-strip`, wires all 4 buttons |
+| `buildContextPanel(listing)` | ~1500 | Returns `.rwa-context` div with 5 metric rows |
+| `buildCompsPanel(listing)` | ~1550 | Returns `.rwa-comps` 2-column panel with `_refreshCol` / `_isStale` |
+| `logListing(listing)` | ~1640 | Snapshots listing into MEM.ledger, persists |
+| `renderLedger()` | ~1660 | Rebuilds ledger table from MEM.ledger |
+| `refreshDataSources()` | ~1690 | Populates Data Sources section in settings modal |
+| `renderInline()` | ~1630 | Re-runs injectAdvisoryStrip for all listings |
+| `init()` | ~1750 | Main data pipeline: parse → BB rate → comps → enrich → render |
+| `safeInit()` | ~1780 | MutationObserver debounce wrapper with 30s cooldown |
 
-### New DOM structure (injected by script)
+### DOM structure (final)
 
-#rwa-gear-cluster fixed bottom-right; contains:
-#rwa-error-toast hidden by default; shown via .rwa-visible
-#rwa-refresh-btn ↻ spins during init via .rwa-spinning
-#rwa-gear-btn ⚙ opens settings modal
+```
+#rwa-gear-cluster          fixed bottom-right
+  #rwa-error-toast           shown via .rwa-visible
+  #rwa-refresh-btn           ↻ spins via .rwa-spinning
+  #rwa-ledger-btn            ☰ toggles ledger sidebar
+  #rwa-gear-btn              ⚙ opens settings modal
 
-#rwa-settings-modal native <dialog>; all original settings fields preserved
-.rwa-modal-header
-.rwa-modal-body API key, Pricing, Comp Tolerances sections
-.rwa-modal-footer version + data disclosure line
+#rwa-ledger-panel           fixed full-height sidebar; slides in via .rwa-ledger-open
+  .rwa-ledger-hdr
+    #rwa-ledger-clear        wipes MEM.ledger + localStorage
+    #rwa-ledger-close
+  #rwa-ledger-body           renderLedger() target
 
-.rwa-strip injected as last child of each auction <li>
-.rwa-strip-main
-.rwa-strip-offer Max Offer label + value (green/red) + ROI %
-.rwa-strip-actions ▼ Details | Market | Bazaar | Log ← UNWIRED (stubs)
+#rwa-settings-modal         native <dialog>
+  .rwa-modal-body
+    API / Pricing / Data Sources / Comp Tolerances sections
+  .rwa-modal-footer
 
-### Removed in Step 1
-
-- `#rw-panel` floating panel (CSS, HTML, element refs, tabs, collapse logic)
-- `render()` function (145-line table renderer)
-- Drag code (`clampPos`, `applyPos`, `savePos`, all mouse/touch handlers)
-- `KEYS.COLLAPSED`, `KEYS.POSITION`
-- `MEM.collapsed`, `MEM.position`
+.rwa-strip                  per auction <li>
+  .rwa-strip-main
+    .rwa-strip-offer         Max Offer + ROI %
+    .rwa-strip-actions       ▼ Details | Market | Bazaar | Log
+  .rwa-context               toggled via .rwa-open (one at a time)
+  .rwa-comps                 market col + bazaar col, each toggled independently
+```
 
 ---
 
@@ -59,48 +70,29 @@ All floating panel code has been removed and replaced with inline injection per 
 
 | Decision | Rationale |
 |----------|-----------|
-| Native `<dialog>` for settings modal | Handles Escape key and backdrop automatically; no z-index fighting with Torn's own modals |
-| `computeListingMetrics()` extracted as standalone helper | Steps 2 and 3 will reuse it for the context panel and comp panel without duplicating pricing logic |
-| Function declarations for `renderInline`, `injectAdvisoryStrip`, `computeListingMetrics` | Hoisted within IIFE — safe to reference in event handlers defined earlier in the file |
-| `escHtml()` applied to inline style color values | Defensive; signalColor is derived from internal logic but keeps XSS surface area at zero |
-| Step 1 split into 6 sub-steps (1a–1f) | Required after API stream idle timeout on large single-write attempts; each sub-step is a self-contained commit |
-| Placeholder buttons rendered but unwired | Avoids partial-feature commits; each button gets wired in its designated step |
+| Native `<dialog>` for settings modal | Handles Escape + backdrop automatically |
+| `computeListingMetrics()` as standalone helper | Reused by strip, context panel, log snapshot — no duplicated pricing logic |
+| Function declarations (not const arrows) for render/build fns | Hoisted within IIFE — safe to reference from event handlers defined earlier |
+| `buildCompsPanel._refreshCol()` / `._isStale()` as panel-attached methods | Keeps fetch logic co-located with the panel it modifies; avoids closure over strip |
+| Step size limit: ~50–80 lines per edit | Prevents API stream idle timeout; each sub-step is a self-contained commit |
+| Ledger result column left as `—` placeholder | Future Step A; structure complete, no partial logic committed |
 
 ---
 
 ## Open Questions / Blockers
 
-- None currently blocking. All design decisions for Steps 2–5 are settled in the plan file.
-- Step 3 (comp panel) will need to decide whether Market and Bazaar panels can both be open simultaneously per listing, or exclusive — plan says simultaneous is fine.
+- None. All 6 steps are committed and pushed.
+- Future ledger features (Steps A–E) are documented in `CLAUDE.md` under "Future ledger steps".
 
 ---
 
 ## Concrete Next Steps
 
-Follow the 6-step plan in `/root/.claude/plans/analyze-the-torn-rw-auction-advisor-js-playful-gray.md`.
-Each step requires user confirmation before starting.
+The inline advisor is feature-complete at v1.21.1. Next actions:
 
-### Step 2 — Expandable ROI/context panel (version → 1.18.0)
-Wire the `▼ Details` button per listing to toggle a `.rwa-context` panel inside the `<li>` showing:
-- BB floor (rarity-colored)
-- Market comp price + source badge (`interp` / `floor` / `ceil` / `~`)
-- Quality score + tier badge (`EXCEP` / `HQ`)
-- King's cap warning (amber `!` badge) if applicable
-- Net profit value
-
-Only one context panel open at a time (opening one collapses any other). Toggle via CSS class, no re-render.
-
-### Step 3 — Comp listings split-column panel (version → 1.19.0)
-Wire `Market` and `Bazaar` buttons to fetch and display top-5 lowest-priced comps from each source in a two-column `.rwa-comps` panel. Loading spinner per column, cache staleness timestamp.
-
-### Step 4 — Settings modal polish (version → 1.20.0)
-Add Data Sources section (cache freshness per data type), API key mask/reveal on focus, full field validation feedback.
-
-### Step 5 — Ledger framework scaffold (version → 1.21.0)
-Add `KEYS.ledger = 'rw_ledger'` and `MEM.ledger = []`. Wire `Log` button to snapshot listing data. Ledger sidebar panel with table skeleton (Date | Item | Rarity | Q% | Bonus% | Score | Bid | Max Offer | ROI | Result). Result column empty — future.
-
-### Step 6 — CLAUDE.md future ledger steps + final cleanup (version → 1.21.1)
-Document 5 remaining ledger features in CLAUDE.md (result capture, P&L, CSV export, filtering, summary stats). Final version bump and cleanup.
+1. **Merge the open PR** into `main`
+2. **Future ledger work** — see CLAUDE.md "Future ledger steps" for Steps A–E (result capture, P&L, CSV export, filtering, summary stats)
+3. Each future step follows the same iterative sub-step pattern with user confirmation before starting
 
 ---
 
