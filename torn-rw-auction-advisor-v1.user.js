@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.19.0
+// @version      1.20.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.19.0';
+  const SCRIPT_VERSION = '1.20.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -431,6 +431,9 @@
       // Incorrect key (2) or key owner banned (13) — stop using it
       Store.remove(KEYS.BB_RATE);
       Store.remove(KEYS.CACHE_ITEM_IDS);
+      apikeyInput.classList.add('rwa-input-error');
+      apikeyHint.textContent = err.code === 2 ? 'Invalid key — paste a new one' : 'Key owner banned';
+      apikeyHint.classList.add('rwa-hint-error');
     }
   }
 
@@ -1073,6 +1076,19 @@
       padding: 8px 16px;
       text-align: right;
     }
+    .rwa-source-row {
+      align-items: baseline;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .rwa-source-name  { color: #8aa898; font-size: 11px; }
+    .rwa-source-age   { color: #4a7060; font-size: 11px; }
+    .rwa-source-empty { color: #2a5040; font-size: 11px; font-style: italic; }
+    .rwa-field-hint   { color: #4a7060; font-size: 11px; margin-top: 2px; }
+    .rwa-field-hint.rwa-hint-error { color: #ff4444; }
+    .rwa-input.rwa-input-error { border-color: #ff4444; }
 
     /* ── Advisory strip (injected into each auction li) ── */
     .rwa-strip {
@@ -1221,6 +1237,7 @@
       <div class="rwa-field">
         <label for="rwa-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
         <input id="rwa-input-apikey" class="rwa-input" type="password" placeholder="paste key here" style="width:240px">
+        <span id="rwa-apikey-hint" class="rwa-field-hint"></span>
       </div>
       <div class="rwa-section-label">Pricing</div>
       <div class="rwa-field">
@@ -1237,6 +1254,10 @@
           <button id="rwa-toggle-trade" class="rwa-toggle" aria-label="Sell via trade"></button>
           <span id="rwa-toggle-trade-label" class="rwa-toggle-label">Off</span>
         </div>
+      </div>
+      <div class="rwa-section-label">Data Sources</div>
+      <div id="rwa-sources-body" style="margin-bottom:14px">
+        <span class="rwa-source-empty">not yet fetched</span>
       </div>
       <div class="rwa-section-label">Comp Tolerances</div>
       <div class="rwa-field">
@@ -1261,6 +1282,8 @@
   const apikeyInput     = settingsModal.querySelector('#rwa-input-apikey');
   const qualRangeInput  = settingsModal.querySelector('#rwa-input-quality-range');
   const bonusRangeInput = settingsModal.querySelector('#rwa-input-bonus-range');
+  const apikeyHint      = settingsModal.querySelector('#rwa-apikey-hint');
+  const sourcesBody     = settingsModal.querySelector('#rwa-sources-body');
 
   // ── Inline render ────────────────────────────────────────────────────────────
 
@@ -1518,6 +1541,33 @@
     }
   }
 
+  function refreshDataSources() {
+    const rows = [];
+    const bbTs = MEM.bbRate?.fetchedAt;
+    rows.push(`<div class="rwa-source-row">
+      <span class="rwa-source-name">BB Rate</span>
+      <span class="rwa-source-age">${escHtml(bbTs ? fmtAgo(bbTs) : 'not fetched')}</span>
+    </div>`);
+    const imEntries = Object.entries(MEM.itemMarketComps).filter(([, v]) => v?.fetchedAt);
+    for (const [id, comp] of imEntries) {
+      const name = Object.keys(armorItemIds).find(k => armorItemIds[k] === parseInt(id, 10)) ?? `ID ${id}`;
+      rows.push(`<div class="rwa-source-row">
+        <span class="rwa-source-name">${escHtml(name)}</span>
+        <span class="rwa-source-age">${escHtml(fmtAgo(comp.fetchedAt))}</span>
+      </div>`);
+    }
+    const w3bEntries = Object.entries(MEM.tornw3bFetchedAt);
+    for (const [key, ts] of w3bEntries) {
+      rows.push(`<div class="rwa-source-row">
+        <span class="rwa-source-name">Bazaar ${escHtml(key)}</span>
+        <span class="rwa-source-age">${escHtml(fmtAgo(ts))}</span>
+      </div>`);
+    }
+    sourcesBody.innerHTML = rows.length
+      ? rows.join('')
+      : '<span class="rwa-source-empty">not yet fetched</span>';
+  }
+
   // ── Settings event wiring ────────────────────────────────────────────────────
 
   if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
@@ -1547,12 +1597,18 @@
     renderInline();
   });
 
+  apikeyInput.addEventListener('focus', () => { apikeyInput.type = 'text'; });
+  apikeyInput.addEventListener('blur',  () => { if (!apikeyInput.value) apikeyInput.type = 'password'; });
   apikeyInput.addEventListener('change', () => {
     const val = apikeyInput.value.trim();
     if (val) {
       Store.set('rw_apikey', val);
       apikeyInput.value       = '';
+      apikeyInput.type        = 'password';
       apikeyInput.placeholder = '(key saved)';
+      apikeyInput.classList.remove('rwa-input-error');
+      apikeyHint.textContent  = '';
+      apikeyHint.classList.remove('rwa-hint-error');
     }
   });
 
@@ -1584,7 +1640,7 @@
 
   settingsModal.querySelector('.rwa-modal-close').addEventListener('click', () => settingsModal.close());
   settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.close(); });
-  rwaGearBtn.addEventListener('click', () => settingsModal.showModal());
+  rwaGearBtn.addEventListener('click', () => { refreshDataSources(); settingsModal.showModal(); });
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
