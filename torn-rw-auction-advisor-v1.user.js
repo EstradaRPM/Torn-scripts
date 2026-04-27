@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.28.2
+// @version      1.28.3
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.28.2';
+  const SCRIPT_VERSION = '1.28.3';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1720,50 +1720,28 @@
     return panel;
   }
 
-  // Selects up to 4 comps centred around listing.qualityPct within bonusMatchRange.
-  // Primary sort: bonus proximity. Secondary: quality proximity.
-  // Returns comps sorted by quality ASC for display (caller inserts THIS row separately).
-  function pickWindow(listing, items, getBonus, getQuality) {
-    const lb     = listing.bonusPct;
-    const lq     = listing.qualityPct;
-    const bRange = MEM.settings.bonusMatchRange;
+  // Selects up to 4 bonus-matched comps centred around refPrice in price space:
+  //   2 comps with price < refPrice (closest from below, i.e. your undercut threat)
+  //   2 comps with price > refPrice (cheapest above, i.e. alternatives buyers consider)
+  // The comp AT refPrice is excluded — it is shown via the ↑ sell marker in renderCompRows.
+  // Falls back to 4 cheapest if refPrice is unknown or no comps are available on one side.
+  function priceWindow(bonusMatchedComps, refPrice) {
+    if (!bonusMatchedComps.length) return [];
+    if (refPrice == null) return bonusMatchedComps.slice().sort((a, b) => a.price - b.price).slice(0, 4);
 
-    const matched = items.filter(c => {
-      const b = getBonus(c);
-      return b != null && lb != null && Math.abs(b - lb) <= bRange;
-    });
-
-    // Sort: bonus proximity primary, quality proximity secondary
-    matched.sort((a, b) => {
-      const bdA = Math.abs((getBonus(a)   ?? Infinity) - (lb ?? 0));
-      const bdB = Math.abs((getBonus(b)   ?? Infinity) - (lb ?? 0));
-      if (bdA !== bdB) return bdA - bdB;
-      const qdA = Math.abs((getQuality(a) ?? Infinity) - (lq ?? 0));
-      const qdB = Math.abs((getQuality(b) ?? Infinity) - (lq ?? 0));
-      return qdA - qdB;
-    });
-
-    if (lq == null) return matched.slice(0, 4);
-
-    // Split into quality bands relative to listing
-    const below = matched.filter(c => (getQuality(c) ?? lq) <  lq)
-                         .sort((a, b) => (getQuality(b) ?? -Infinity) - (getQuality(a) ?? -Infinity));
-    const above = matched.filter(c => (getQuality(c) ?? lq) >= lq)
-                         .sort((a, b) => (getQuality(a) ?? Infinity)  - (getQuality(b) ?? Infinity));
+    const below = bonusMatchedComps.filter(c => c.price < refPrice)
+                                   .sort((a, b) => b.price - a.price); // desc: closest-to-refPrice first
+    const above = bonusMatchedComps.filter(c => c.price > refPrice)
+                                   .sort((a, b) => a.price - b.price); // asc: closest-to-refPrice first
 
     let selBelow = below.slice(0, 2);
     let selAbove = above.slice(0, 2);
-
-    // Fill from the opposite side when one side is short
     const shortBelow = 2 - selBelow.length;
     const shortAbove = 2 - selAbove.length;
     if (shortBelow > 0) selAbove = above.slice(0, 2 + shortBelow);
     if (shortAbove > 0) selBelow = below.slice(0, 2 + shortAbove);
 
-    const selected = [...selBelow, ...selAbove];
-    // Final display order: quality ASC
-    selected.sort((a, b) => (getQuality(a) ?? Infinity) - (getQuality(b) ?? Infinity));
-    return selected;
+    return [...selBelow, ...selAbove].sort((a, b) => a.price - b.price);
   }
 
   function buildCompsPanel(listing) {
@@ -1828,11 +1806,15 @@
 
       const getBonus   = l => l.item_details?.bonuses?.[0]?.value;
       const getQuality = l => l.item_details?.stats?.quality;
-      let selected     = pickWindow(listing, comp.listings, getBonus, getQuality);
+      const bRange     = MEM.settings.bonusMatchRange;
+      const matched    = comp.listings.filter(l => {
+        const b = getBonus(l);
+        return b != null && listing.bonusPct != null && Math.abs(b - listing.bonusPct) <= bRange;
+      });
 
-      // No bonus-matched comps — fall back to 4 cheapest with a note
-      const fallback = !selected.length;
-      if (fallback) selected = comp.listings.slice().sort((a, b) => a.price - b.price).slice(0, 4);
+      const fallback = !matched.length;
+      const pool     = fallback ? comp.listings : matched;
+      const selected = priceWindow(pool, listing.refPrice);
       if (!selected.length) return '<span class="rwa-comps-empty">no data</span>';
 
       const html = renderCompRows(selected, getBonus, getQuality, fallback);
@@ -1848,11 +1830,15 @@
       const filtered   = all.filter(w => w.itemId === itemId);
       const getBonus   = w => Object.values(w.bonuses ?? {})[0]?.value;
       const getQuality = w => { const q = parseFloat(w.quality); return isNaN(q) ? null : q; };
-      let selected     = pickWindow(listing, filtered, getBonus, getQuality);
+      const bRange     = MEM.settings.bonusMatchRange;
+      const matched    = filtered.filter(w => {
+        const b = getBonus(w);
+        return b != null && listing.bonusPct != null && Math.abs(b - listing.bonusPct) <= bRange;
+      });
 
-      // No bonus-matched comps — fall back to 4 cheapest with a note
-      const fallback = !selected.length;
-      if (fallback) selected = filtered.slice().sort((a, b) => a.price - b.price).slice(0, 4);
+      const fallback = !matched.length;
+      const pool     = fallback ? filtered : matched;
+      const selected = priceWindow(pool, listing.refPrice);
       if (!selected.length) return '<span class="rwa-comps-empty">no data</span>';
 
       const html = renderCompRows(selected, getBonus, getQuality, fallback);
