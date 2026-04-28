@@ -14,6 +14,27 @@ Keep the file under 300 lines. Replace stale entries rather than appending indef
 
 ---
 
+## Shell & CLI Constraints (Windows)
+
+PowerShell 5.1 (the shell available here) cannot pass long strings to native executables via here-strings — arguments over ~893 bytes are silently truncated or cause a parse error.
+
+**Rule: never use `--body` or `--title` with long inline strings when calling `gh`.** Instead, write the body to a temp file and use `--body-file`:
+
+```powershell
+$body = @'
+## Summary
+...
+'@
+$tmp = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($tmp, $body, [System.Text.Encoding]::UTF8)
+& "C:\Program Files\GitHub CLI\gh.exe" pr create --title "..." --body-file $tmp
+Remove-Item $tmp
+```
+
+**`gh` is only available via full path** (`C:\Program Files\GitHub CLI\gh.exe`) in PowerShell. It is not on the PATH in Bash. Always use the full path in PowerShell tool calls.
+
+---
+
 ## Repository Purpose
 
 Personal collection of scripts for the browser game **Torn City** (torn.com). Scripts range from Tampermonkey/Greasemonkey userscripts (`.user.js`) to standalone tools and utilities. All scripts are Torn-specific.
