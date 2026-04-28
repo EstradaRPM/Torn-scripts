@@ -1698,7 +1698,7 @@
     if (!listing.el) return;
     listing.el.querySelector('.rwa-strip')?.remove();
 
-    const { maxOffer, roi, signalColor, classification } = computeListingMetrics(listing);
+    const { maxOffer, roi, signalColor, classification, bbFloor } = computeListingMetrics(listing);
     const isLoading = maxOffer == null && !MEM.fetchError;
 
     const strip = document.createElement('div');
@@ -1716,6 +1716,9 @@
     const sparseBadgeHtml = classification === 'sparse'
       ? `<span class="rwa-badge rwa-badge-sparse">Sparse</span>`
       : '';
+    const twoBBHtml = (!isLoading && bbFloor != null && maxOffer != null && maxOffer > 2 * bbFloor)
+      ? `<span class="rwa-badge rwa-badge-cap">2×BB</span>`
+      : '';
 
     strip.innerHTML = `
       <div class="rwa-strip-main">
@@ -1724,6 +1727,7 @@
           ${offerHtml}
           ${roiHtml}
           ${sparseBadgeHtml}
+          ${twoBBHtml}
         </div>
         <div class="rwa-strip-actions">
           <button class="rwa-btn rwa-btn-details">&#9660; Details</button>
