@@ -1853,7 +1853,9 @@
       </div>`);
     } else {
       // Standard display (hq / gap / sparse)
-      const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
+      const srcLabel = classification === 'hq'
+        ? 'comp'
+        : ({ interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~');
       const tierBadge = tier === 'exceptional'
         ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
         : tier === 'hq'
