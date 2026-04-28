@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.33.0
+// @version      1.33.1
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.33.0';
+  const SCRIPT_VERSION = '1.33.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -2001,6 +2001,7 @@
     const itemId   = armorItemIds[listing.name];
     const w3bKey   = `${listing.armorSet}_${listing.rarity}`;
     const STALE_MS = 5 * 60 * 1000;
+    const { refPrice } = computeListingMetrics(listing);
 
     // Renders comps price-sorted with two optional marker rows merged in:
     //   ↓ bid  — where currentBid sits vs market (always shown when bid exists)
@@ -2009,7 +2010,6 @@
     function renderCompRows(items, getBonus, getQuality, fallback) {
       const lb       = listing.bonusPct;
       const lq       = listing.qualityPct;
-      const refPrice = listing.refPrice    ?? null;
       const bidPrice = listing.currentBid  ?? null;
 
       // Build a flat array of comps + markers, then sort price ASC (markers first on tie)
@@ -2067,7 +2067,7 @@
 
       const fallback = !matched.length;
       const pool     = fallback ? comp.listings : matched;
-      const selected = priceWindow(pool, listing.refPrice);
+      const selected = priceWindow(pool, refPrice);
       if (!selected.length) return '<span class="rwa-comps-empty">no data</span>';
 
       const html = renderCompRows(selected, getBonus, getQuality, fallback);
@@ -2091,7 +2091,7 @@
 
       const fallback = !matched.length;
       const pool     = fallback ? filtered : matched;
-      const selected = priceWindow(pool, listing.refPrice);
+      const selected = priceWindow(pool, refPrice);
       if (!selected.length) return '<span class="rwa-comps-empty">no data</span>';
 
       const html = renderCompRows(selected, getBonus, getQuality, fallback);
