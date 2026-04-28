@@ -1,14 +1,14 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-27 (PRD filed; ready to begin v1.29.0)_
+_Last updated: 2026-04-27 (v1.29.0 implemented, PR pending)_
 
 ---
 
 ## Current WIP
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
-**Branch:** `claude/clever-heyrovsky-8ce863` (current worktree)
-**Version:** `1.28.3` (live on main)
+**Branch:** `claude/nifty-yalow-f26e10` (current worktree)
+**Version:** `1.29.0` (implemented this session, not yet merged to main)
 
 ### Completed steps
 
@@ -28,86 +28,74 @@ _Last updated: 2026-04-27 (PRD filed; ready to begin v1.29.0)_
 | F | Quality debug: RE_QUALITY/RE_ARMOR fixed for live DOM | 1.26.1–1.26.4 |
 | G | Settings persistence fix | 1.27.0 |
 | H1–H5 | Comp panel: median-window, THIS row, price-sorted, dual markers, price-window | 1.27.1–1.28.3 |
+| I | Dynamic floor pricing: detectFloorCluster, classifyListing, floor flip display, gap interpolation, min floor profit setting | 1.29.0 |
 
 ---
 
-## Key Decisions Made This Session
+## Key Decisions Made This Session (v1.29.0)
 
-### PRD filed as GitHub issue #158
-Full PRD at `docs/prd-steps-i-through-l.md` and https://github.com/EstradaRPM/Torn-scripts/issues/158
+### Algorithm implemented as PRD specified
 
-### Dynamic pricing algorithm (replaces hardcoded Steps I + J)
+- **`detectFloorCluster(comps, threshold=0.12)`** — pure function. Cluster = listings within 12% of cheapest. Returns `{ floorPrice, bestQualityPct, bestBonusPct, clusterSize, isValid }`. `isValid` = clusterSize >= 3.
 
-The grill-me session fundamentally changed the approach. No hardcoded quality/bonus thresholds. Classification is fully dynamic from live comp data.
+- **`classifyListing(listing, floorCluster, allComps)`** — pure function. Returns 'floor'|'gap'|'hq'|'sparse'. Gap = beats floor cluster but no premium comps within 20pp quality / 4pp bonus. HQ = beats floor and near premium comps exist.
 
-**The algorithm:**
-1. Fetch all comps (item market + bazaar) for this piece type
-2. Sort by price ascending, detect **floor cluster** — listings within 10–15% of cheapest
-3. Identify **best piece in floor cluster** (highest qualityPct AND bonusPct available at floor)
-4. Classify current listing:
+- **`calcFloorFlipMaxBid(floorPrice, minFloorProfit, marketFee)`** — pure function. `maxBid = floorPrice - minFloorProfit`. `bazaarNet = minFloorProfit` (no fee). `marketNet = round(floorPrice * 0.95) - maxBid`.
 
-| Scenario | Classification |
-|----------|---------------|
-| quality AND bonus ≤ floor cluster best | `floor` — quick flip |
-| beats floor cluster, comps exist above | `hq` — Step H median comp pricing |
-| beats floor cluster, no close comps above | `gap` — interpolate toward floor anchor (~25–30%) |
-| fewer than 3 comps total | `sparse` — show comps, no auto recommendation |
-| max offer > 2× BB floor | any tier — add ⚠ 2× BB warning badge |
+- **`interpolateGapPrice(floorAnchor, premiumAnchor, lean=0.27)`** — pure function. Leans 27% toward floor anchor (not midpoint). Fallback premiumAnchor = `floorPrice * 2.0` when no premium comps exist.
 
-**Floor flip display:**
-- Shows bazaar net and market net separately
-- Max bid = `floor_price − minFloorProfit` (one setting, pre-fee, absolute $)
-- Mug buffer defaults 0% for floor flips (open question, flagged)
-- Target profit % ignored entirely for floor pieces
+- **`buildNormalizedComps(listing)`** — helper. Gathers all raw item-market + W3B comps for this item (by itemId), normalized to `{ price, qualityPct, bonusPct }`. Called early in `enrichListingsFromMarketData` loop before the `continue` check.
 
-**Exceptional tier:** Not a separate formula — HQ logic + 2× BB warning badge only
+### Classification stored on listing
 
-**Gap interpolation:** Lean 25–30% toward floor anchor (not midpoint). Validated by real trading: gap pieces priced close to floor sell faster than midpoint-priced ones.
+`enrichListingsFromMarketData` now sets:
+- `listing.floorCluster` — full cluster object (even when `isValid=false`)
+- `listing.classification` — 'floor'|'gap'|'hq'|'sparse'
+- `listing.gapPremiumAnchor` — cheapest comp above floor cluster (null for non-gap)
 
-### New setting: Min floor profit
-Single absolute dollar amount (e.g. $5M). Stored as `KEYS.MIN_FLOOR_PROFIT`. Appears in settings modal alongside existing profit % and mug buffer.
+The floor cluster detection runs BEFORE the `continue` (no-comps) check so every listing gets classified.
 
-### Ubiquitous language glossary
-Written to `UBIQUITOUS_LANGUAGE.md`. Defer standardisation cleanup until after Step J (v1.30.0) lands — new pricing code will introduce base/HQ/exceptional tier terms naturally.
+### computeListingMetrics branching
 
-### Tooling setup this session
-- `gh` CLI installed and authenticated (HTTPS, GitHub.com)
-- PATH updated: `C:\Program Files\GitHub CLI` added to User PATH
-- All 21 mattpocock/skills installed globally (~/.agents/skills/) and locally
-- `engineering-principles` skill created at ~/.agents/skills/engineering-principles/
-- `UBIQUITOUS_LANGUAGE.md` written to repo root
+- `classification === 'floor'` → `calcFloorFlipMaxBid`, returns `bazaarNet` + `marketNet`, `roi: null`, skips target profit % and mug buffer
+- `classification === 'gap'` → `interpolateGapPrice` overrides `refPrice`, then existing `calcMaxOffer` formula
+- `hq` / `sparse` / null → existing formula unchanged
+
+### UI changes
+
+- `injectAdvisoryStrip`: label changes to "Max Bid (Floor)" / "Max Bid (Est.)" / "Max Offer" per classification. ROI% hidden for floor pieces.
+- `buildContextPanel`: floor shows "Floor Price" + "Bazaar Net" + "Market Net" rows; King's cap hidden. Gap shows "Est. Price" badge instead of comp source badge.
+- Settings modal: new "Min floor profit ($M)" field added between mug buffer and sell-via-trade. Stored in `KEYS.MIN_FLOOR_PROFIT`, default $5M.
 
 ---
 
-## New Pure Function Modules (to be built in v1.29.0–v1.30.0)
+## Key Function Locations (v1.29.0)
 
-| Function | Signature | Priority |
-|----------|-----------|----------|
-| `detectFloorCluster(comps)` | `→ { floorPrice, bestQualityPct, bestBonusPct, clusterSize, isValid }` | Highest — root of algorithm |
-| `classifyListing(listing, floorCluster)` | `→ 'floor' \| 'gap' \| 'hq' \| 'sparse'` | High |
-| `interpolateGapPrice(listing, floorAnchor, premiumAnchor)` | `→ suggestedResalePrice` | Medium |
-| `calcFloorFlipMaxBid(floorPrice, minFloorProfit, marketFee)` | `→ { maxBid, bazaarNet, marketNet }` | Medium |
+| Symbol | Line (approx) | Notes |
+|--------|---------------|-------|
+| `RE_QUALITY` / `RE_ARMOR` | ~900 | Confirmed live DOM format |
+| `detectFloorCluster` | ~400 | Pure function — root of dynamic algorithm |
+| `classifyListing` | ~432 | Pure function |
+| `calcFloorFlipMaxBid` | ~467 | Pure function |
+| `interpolateGapPrice` | ~484 | Pure function |
+| `buildNormalizedComps` | ~2434 | Helper for all-comps normalization |
+| `computeListingMetrics(l)` | ~1631 | Branches on classification |
+| `injectAdvisoryStrip(listing)` | ~1696 | Label + ROI conditional |
+| `buildContextPanel(listing)` | ~1800 | Floor/gap branched display |
+| `enrichListingsFromMarketData()` | ~2478 | Sets floorCluster + classification on each listing |
+| `logListing(listing)` | ~2090 | Snapshot schema — unchanged |
+| `renderLedger()` | ~2100 | Unchanged |
+| `init()` | ~2620 | Main pipeline |
 
 ---
 
 ## Concrete Next Steps
 
-### v1.29.0 — Dynamic floor flip (next session)
-- New setting: `Min floor profit` in settings modal + `KEYS.MIN_FLOOR_PROFIT`
-- `detectFloorCluster(comps)` pure function
-- `classifyListing(listing, floorCluster)` pure function
-- `calcFloorFlipMaxBid(floorPrice, minFloorProfit, marketFee)` pure function
-- `interpolateGapPrice(listing, floorAnchor, premiumAnchor)` pure function
-- `computeListingMetrics(l)` — branch on classification for floor and gap cases
-- `buildContextPanel(listing)` — floor flip display (bazaar net + market net + max bid)
-- Advisory strip — show floor flip label; hide target margin for floor pieces
-- Mug buffer: default 0% for floor flip path
-
 ### v1.30.0 — HQ + exceptional integration
-- `classifyListing` hq branch → hand off to existing Step H comp panel ref price
-- 2× BB warning badge on strip when maxOffer > 2× bbFloor
-- Sparse market badge + comp display with no auto recommendation
-- Context panel: show both item market and bazaar max offers for HQ pieces
+- `classifyListing` hq branch → hand off to existing Step H comp panel ref price (already works via existing formula, but needs explicit label/badge)
+- 2× BB warning badge on strip when `maxOffer > 2 × bbFloor`
+- Sparse market badge on strip ("Sparse") + comp display with no auto recommendation
+- Context panel for HQ: note it uses median comp pricing (existing)
 
 ### v1.31.0 — Manual ledger entry (Step K)
 - `buildAddEntryForm()` inline form above ledger table
@@ -122,25 +110,15 @@ Written to `UBIQUITOUS_LANGUAGE.md`. Defer standardisation cleanup until after S
 
 ---
 
-## Key Function Locations (v1.28.3)
+## Open Questions
 
-| Symbol | Line (approx) | Notes |
-|--------|---------------|-------|
-| `RE_QUALITY` / `RE_ARMOR` | ~820 | Confirmed live DOM format |
-| `computeListingMetrics(l)` | ~1480 | Central pricing calculator — to be branched |
-| `injectAdvisoryStrip(listing)` | ~1518 | Builds strip; to receive floor/gap/hq label |
-| `buildContextPanel(listing)` | ~1592 | To receive floor flip display |
-| `buildCompsPanel(listing)` | ~1650 | Already has Step H median-window logic |
-| `enrichListingsFromMarketData()` | ~2098 | Calls comp fetches; floor cluster detection goes here |
-| `logListing(listing)` | ~1733 | Snapshot schema — manual entry must match |
-| `renderLedger()` | ~1750 | To receive column toggle + P&L redesign |
-| `init()` | ~2215 | Main pipeline |
-| `safeInit()` | ~2260 | MutationObserver debounce |
+- Cluster tightness (12% used): may need tuning after seeing live data. Easy to adjust — just change the default parameter in `detectFloorCluster`.
+- Gap "near premium" thresholds (20pp quality, 4pp bonus): empirical — watch for mis-classifications on live listings.
+- Mug buffer for floor flips: hardcoded 0% in `calcFloorFlipMaxBid`. Community doesn't price it in at $80–125M. Consider adding a per-path toggle later.
+- `gh` CLI: only available in PowerShell currently; restart terminal to get it in Bash.
 
 ---
 
-## Open Questions
+## PRD Reference
 
-- Mug buffer for floor flips: community doesn't appear to price it in at $80–125M floor prices. Default 0%, add toggle later.
-- Exact cluster tightness parameter (10–15%) — may need tuning after seeing live data through the algorithm.
-- `gh` CLI only available in PowerShell currently; restart terminal to get it in Bash.
+Full PRD at `docs/prd-steps-i-through-l.md` and https://github.com/EstradaRPM/Torn-scripts/issues/158

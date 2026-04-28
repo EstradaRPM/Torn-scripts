@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.28.3
+// @version      1.29.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.28.3';
+  const SCRIPT_VERSION = '1.29.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -36,6 +36,7 @@
     QUALITY_MATCH_RANGE: 'rw_qualityMatchRange',
     BONUS_MATCH_RANGE  : 'rw_bonusMatchRange',
     LEDGER             : 'rw_ledger',
+    MIN_FLOOR_PROFIT   : 'rw_minFloorProfit',
   };
 
   // ── Runtime state ───────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@
       sellViaTrade     : Store.get(KEYS.SELL_VIA_TRADE) === 'true',
       qualityMatchRange: parseNum(Store.get(KEYS.QUALITY_MATCH_RANGE), 10),
       bonusMatchRange  : parseNum(Store.get(KEYS.BONUS_MATCH_RANGE),    2),
+      minFloorProfit   : parseNum(Store.get(KEYS.MIN_FLOOR_PROFIT), 5_000_000),
     },
 
     // Current parsed auction house listings (supported RW armor sets)
@@ -382,6 +384,106 @@
       );
     });
   })();
+
+  // ── Dynamic pricing: pure algorithm modules ─────────────────────────────────
+
+  /**
+   * Detects the market floor cluster from a normalized comp array.
+   * Cluster = all listings within clusterThreshold (12%) of the cheapest price.
+   * Returns the cheapest price, the best quality and bonus available at that floor,
+   * and a validity flag (isValid = clusterSize >= 3).
+   *
+   * @param {{ price: number, qualityPct: number|null, bonusPct: number|null }[]} comps
+   * @param {number} [clusterThreshold=0.12]
+   * @returns {{ floorPrice: number|null, bestQualityPct: number|null, bestBonusPct: number|null, clusterSize: number, isValid: boolean }}
+   */
+  function detectFloorCluster(comps, clusterThreshold = 0.12) {
+    if (!comps.length) {
+      return { floorPrice: null, bestQualityPct: null, bestBonusPct: null, clusterSize: 0, isValid: false };
+    }
+    const sorted   = comps.slice().sort((a, b) => a.price - b.price);
+    const cheapest = sorted[0].price;
+    const cutoff   = cheapest * (1 + clusterThreshold);
+    const cluster  = sorted.filter(c => c.price <= cutoff);
+    const qs = cluster.map(c => c.qualityPct).filter(q => q != null);
+    const bs = cluster.map(c => c.bonusPct).filter(b => b != null);
+    return {
+      floorPrice    : cheapest,
+      bestQualityPct: qs.length ? Math.max(...qs) : null,
+      bestBonusPct  : bs.length ? Math.max(...bs) : null,
+      clusterSize   : cluster.length,
+      isValid       : cluster.length >= 3,
+    };
+  }
+
+  /**
+   * Classifies a listing relative to the floor cluster and all comps for the piece.
+   *
+   * 'sparse' — fewer than 3 comps in the floor cluster (market too thin for auto-recommendation)
+   * 'floor'  — listing's quality AND bonus are both at or below the floor cluster's best
+   * 'gap'    — listing beats the floor cluster but no close comps exist above it
+   * 'hq'     — listing beats the floor cluster and premium comps near its quality/bonus exist
+   *
+   * @param {{ qualityPct: number|null, bonusPct: number|null }} listing
+   * @param {{ floorPrice: number, bestQualityPct: number|null, bestBonusPct: number|null, isValid: boolean }} floorCluster
+   * @param {{ price: number, qualityPct: number|null, bonusPct: number|null }[]} allComps
+   * @returns {'floor'|'gap'|'hq'|'sparse'}
+   */
+  function classifyListing(listing, floorCluster, allComps) {
+    if (!floorCluster.isValid) return 'sparse';
+
+    const qualBeatsFloor  = listing.qualityPct  != null && floorCluster.bestQualityPct != null
+      && listing.qualityPct  > floorCluster.bestQualityPct;
+    const bonusBeatsFloor = listing.bonusPct    != null && floorCluster.bestBonusPct   != null
+      && listing.bonusPct    > floorCluster.bestBonusPct;
+
+    if (!qualBeatsFloor && !bonusBeatsFloor) return 'floor';
+
+    // Find comps above the floor cluster
+    const clusterCeil   = floorCluster.floorPrice * 1.12;
+    const premiumComps  = allComps.filter(c => c.price > clusterCeil);
+
+    // A "near" premium comp: quality within 20pp OR bonus within 4pp of listing
+    const hasNearPremium = premiumComps.some(c => {
+      const qNear = listing.qualityPct == null || c.qualityPct == null
+        || Math.abs(c.qualityPct - listing.qualityPct) <= 20;
+      const bNear = listing.bonusPct   == null || c.bonusPct   == null
+        || Math.abs(c.bonusPct   - listing.bonusPct)   <= 4;
+      return qNear && bNear;
+    });
+
+    return hasNearPremium ? 'hq' : 'gap';
+  }
+
+  /**
+   * Calculates max bid and channel-specific nets for a floor flip.
+   * Mug buffer is intentionally 0% for floor pieces — the market does not price it in.
+   *
+   * @param {number} floorPrice
+   * @param {number} minFloorProfit  - absolute minimum profit required (pre-fee, in $)
+   * @param {number} marketFee       - e.g. 0.05
+   * @returns {{ maxBid: number, bazaarNet: number, marketNet: number }}
+   */
+  function calcFloorFlipMaxBid(floorPrice, minFloorProfit, marketFee) {
+    const maxBid    = floorPrice - minFloorProfit;
+    const bazaarNet = minFloorProfit;                                   // no fee in bazaar
+    const marketNet = Math.round(floorPrice * (1 - marketFee)) - maxBid;
+    return { maxBid, bazaarNet, marketNet };
+  }
+
+  /**
+   * Interpolates a suggested resale price for a gap piece.
+   * Leans 25–30% toward the floor anchor (default 27%) so the piece reads as a deal
+   * relative to the premium market while still commanding a meaningful premium over floor.
+   *
+   * @param {number} floorAnchor    - floor cluster price (cheapest comp)
+   * @param {number} premiumAnchor  - cheapest comp above the floor cluster
+   * @param {number} [lean=0.27]    - fraction of the floor→premium range to add to floor
+   * @returns {number}
+   */
+  function interpolateGapPrice(floorAnchor, premiumAnchor, lean = 0.27) {
+    return Math.round(floorAnchor + lean * (premiumAnchor - floorAnchor));
+  }
 
   // ── API key helper ──────────────────────────────────────────────────────────
 
@@ -1483,6 +1585,10 @@
         <input id="rwa-input-mug" class="rwa-input" type="number" min="0" max="30" step="1">
       </div>
       <div class="rwa-field">
+        <label for="rwa-input-min-floor-profit">Min floor profit <span style="font-weight:400;color:#4a6070">($M — floor flips only)</span></label>
+        <input id="rwa-input-min-floor-profit" class="rwa-input" type="number" min="0" step="0.5">
+      </div>
+      <div class="rwa-field">
         <label>Sell via trade <span style="font-weight:400;color:#4a6070">(skips 5% market fee)</span></label>
         <div class="rwa-toggle-row">
           <button id="rwa-toggle-trade" class="rwa-toggle" aria-label="Sell via trade"></button>
@@ -1509,28 +1615,55 @@
 
   // ── Element refs ─────────────────────────────────────────────────────────────
 
-  const profitInput     = settingsModal.querySelector('#rwa-input-profit');
-  const mugInput        = settingsModal.querySelector('#rwa-input-mug');
-  const tradeToggle     = settingsModal.querySelector('#rwa-toggle-trade');
-  const tradeLabel      = settingsModal.querySelector('#rwa-toggle-trade-label');
-  const apikeyInput     = settingsModal.querySelector('#rwa-input-apikey');
-  const qualRangeInput  = settingsModal.querySelector('#rwa-input-quality-range');
-  const bonusRangeInput = settingsModal.querySelector('#rwa-input-bonus-range');
-  const apikeyHint      = settingsModal.querySelector('#rwa-apikey-hint');
-  const sourcesBody     = settingsModal.querySelector('#rwa-sources-body');
+  const profitInput         = settingsModal.querySelector('#rwa-input-profit');
+  const mugInput            = settingsModal.querySelector('#rwa-input-mug');
+  const minFloorProfitInput = settingsModal.querySelector('#rwa-input-min-floor-profit');
+  const tradeToggle         = settingsModal.querySelector('#rwa-toggle-trade');
+  const tradeLabel          = settingsModal.querySelector('#rwa-toggle-trade-label');
+  const apikeyInput         = settingsModal.querySelector('#rwa-input-apikey');
+  const qualRangeInput      = settingsModal.querySelector('#rwa-input-quality-range');
+  const bonusRangeInput     = settingsModal.querySelector('#rwa-input-bonus-range');
+  const apikeyHint          = settingsModal.querySelector('#rwa-apikey-hint');
+  const sourcesBody         = settingsModal.querySelector('#rwa-sources-body');
 
   // ── Inline render ────────────────────────────────────────────────────────────
 
   function computeListingMetrics(l) {
-    const { baseBonusPct, highTierThreshold } = ARMOR_SCORING[l.armorSet] ?? ARMOR_SCORING.Riot;
     const bbRate = MEM.bbRate?.rate ?? null;
 
     const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
       ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
       : null;
 
-    const refPrice     = l.refPrice ?? null;
-    const kingCap      = l.kingCap  ?? null;
+    const classification = l.classification ?? null;
+    const bid            = l.currentBid;
+
+    // ── Floor flip: bypass target margin and mug buffer entirely ──────────────
+    if (classification === 'floor' && l.floorCluster?.floorPrice != null) {
+      const { maxBid, bazaarNet, marketNet } = calcFloorFlipMaxBid(
+        l.floorCluster.floorPrice,
+        MEM.settings.minFloorProfit,
+        0.05
+      );
+      const signalColor = bid != null
+        ? (bid < maxBid ? '#00cc66' : '#ff4444')
+        : '#8aa898';
+      return {
+        bbFloor, refPrice: l.floorCluster.floorPrice,
+        maxOffer: maxBid, bazaarNet, marketNet,
+        netProfit: marketNet, roi: null, signalColor, classification,
+      };
+    }
+
+    // ── Gap: interpolate resale price between floor anchor and cheapest premium comp ──
+    let refPrice = l.refPrice ?? null;
+    if (classification === 'gap' && l.floorCluster?.floorPrice != null) {
+      const premiumAnchor = l.gapPremiumAnchor ?? (l.floorCluster.floorPrice * 2.0);
+      refPrice = interpolateGapPrice(l.floorCluster.floorPrice, premiumAnchor);
+    }
+
+    // ── HQ / sparse / unclassified: existing formula ──────────────────────────
+    const kingCap      = l.kingCap ?? null;
     const formulaOffer = refPrice != null
       ? calcMaxOffer({
           refPrice,
@@ -1544,7 +1677,6 @@
       ? Math.min(formulaOffer, kingCap)
       : formulaOffer;
 
-    const bid = l.currentBid;
     let netProfit = null, roi = null;
     if (bid != null && refPrice != null) {
       const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
@@ -1558,30 +1690,33 @@
       ? (bid < maxOffer ? '#00cc66' : '#ff4444')
       : '#8aa898';
 
-    return { bbFloor, refPrice, maxOffer, netProfit, roi, signalColor };
+    return { bbFloor, refPrice, maxOffer, bazaarNet: null, marketNet: null, netProfit, roi, signalColor, classification };
   }
 
   function injectAdvisoryStrip(listing) {
     if (!listing.el) return;
     listing.el.querySelector('.rwa-strip')?.remove();
 
-    const { maxOffer, roi, signalColor } = computeListingMetrics(listing);
+    const { maxOffer, roi, signalColor, classification } = computeListingMetrics(listing);
     const isLoading = maxOffer == null && !MEM.fetchError;
 
     const strip = document.createElement('div');
     strip.className = 'rwa-strip';
 
+    const offerLabel = classification === 'floor' ? 'Max Bid (Floor)'
+                     : classification === 'gap'   ? 'Max Bid (Est.)'
+                     : 'Max Offer';
     const offerHtml = isLoading
       ? `<span class="rwa-strip-loading">fetching…</span>`
       : `<span class="rwa-strip-val" style="color:${escHtml(signalColor)}">${escHtml(fmtM(maxOffer))}</span>`;
-    const roiHtml = (!isLoading && roi != null)
+    const roiHtml = (!isLoading && roi != null && classification !== 'floor')
       ? `<span class="rwa-strip-roi" style="color:${escHtml(signalColor)}">${roi.toFixed(1)}%</span>`
       : '';
 
     strip.innerHTML = `
       <div class="rwa-strip-main">
         <div class="rwa-strip-offer">
-          <span class="rwa-strip-label">Max Offer</span>
+          <span class="rwa-strip-label">${escHtml(offerLabel)}</span>
           ${offerHtml}
           ${roiHtml}
         </div>
@@ -1666,53 +1801,88 @@
   }
 
   function buildContextPanel(listing) {
-    const { bbFloor, refPrice, netProfit } = computeListingMetrics(listing);
+    const { bbFloor, refPrice, netProfit, bazaarNet, marketNet, classification } = computeListingMetrics(listing);
     const { rarity, qualityPct, bonusPct, bonusType, tier, compSource, kingCap, qualityEstimated } = listing;
 
-    const rarityClass = rarity ? `rwa-rarity-${rarity}` : '';
-    const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
-    const tierBadge = tier === 'exceptional'
-      ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
-      : tier === 'hq'
-        ? `<span class="rwa-badge rwa-badge-hq">HQ</span>`
-        : '';
-    const profitColor = netProfit == null ? '#8aa898' : netProfit >= 0 ? '#00cc66' : '#ff4444';
+    const rarityClass  = rarity ? `rwa-rarity-${rarity}` : '';
+    const profitColor  = netProfit  == null ? '#8aa898' : netProfit  >= 0 ? '#00cc66' : '#ff4444';
+    const bazaarColor  = bazaarNet  == null ? '#8aa898' : bazaarNet  >= 0 ? '#00cc66' : '#ff4444';
+    const marketColor  = marketNet  == null ? '#8aa898' : marketNet  >= 0 ? '#00cc66' : '#ff4444';
 
     const rows = [];
 
+    // BB Floor — always shown
     rows.push(`<div class="rwa-context-row">
       <span class="rwa-context-lbl">BB Floor</span>
       <span class="rwa-context-val ${rarityClass}">${escHtml(fmtM(bbFloor))}</span>
     </div>`);
 
-    rows.push(`<div class="rwa-context-row">
-      <span class="rwa-context-lbl">Comp Price</span>
-      <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
-      <span class="rwa-badge rwa-badge-src">${escHtml(srcLabel)}</span>
-    </div>`);
-
-    if (qualityPct != null || bonusPct != null) {
-      const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
-      const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
+    if (classification === 'floor') {
+      // Floor flip display: floor price + quality + channel-specific nets
       rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">Quality</span>
-        <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
-        ${tierBadge}
+        <span class="rwa-context-lbl">Floor Price</span>
+        <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
+        <span class="rwa-badge rwa-badge-src">floor</span>
+      </div>`);
+
+      if (qualityPct != null || bonusPct != null) {
+        const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
+        const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
+        rows.push(`<div class="rwa-context-row">
+          <span class="rwa-context-lbl">Quality</span>
+          <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
+        </div>`);
+      }
+
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Bazaar Net</span>
+        <span class="rwa-context-val" style="color:${escHtml(bazaarColor)}">${escHtml(fmtM(bazaarNet))}</span>
+      </div>`);
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Market Net</span>
+        <span class="rwa-context-val" style="color:${escHtml(marketColor)}">${escHtml(fmtM(marketNet))}</span>
+      </div>`);
+    } else {
+      // Standard display (hq / gap / sparse)
+      const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
+      const tierBadge = tier === 'exceptional'
+        ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
+        : tier === 'hq'
+          ? `<span class="rwa-badge rwa-badge-hq">HQ</span>`
+          : '';
+      const isGap = classification === 'gap';
+
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">${isGap ? 'Est. Price' : 'Comp Price'}</span>
+        <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
+        ${isGap
+          ? `<span class="rwa-badge rwa-badge-src">est.</span>`
+          : `<span class="rwa-badge rwa-badge-src">${escHtml(srcLabel)}</span>`}
+      </div>`);
+
+      if (qualityPct != null || bonusPct != null) {
+        const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
+        const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
+        rows.push(`<div class="rwa-context-row">
+          <span class="rwa-context-lbl">Quality</span>
+          <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
+          ${tierBadge}
+        </div>`);
+      }
+
+      if (kingCap != null) {
+        rows.push(`<div class="rwa-context-row">
+          <span class="rwa-context-lbl">King's Cap</span>
+          <span class="rwa-context-val">${escHtml(fmtM(kingCap))}</span>
+          <span class="rwa-badge rwa-badge-cap">!</span>
+        </div>`);
+      }
+
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Net Profit</span>
+        <span class="rwa-context-val" style="color:${escHtml(profitColor)}">${escHtml(fmtM(netProfit))}</span>
       </div>`);
     }
-
-    if (kingCap != null) {
-      rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">King's Cap</span>
-        <span class="rwa-context-val">${escHtml(fmtM(kingCap))}</span>
-        <span class="rwa-badge rwa-badge-cap">!</span>
-      </div>`);
-    }
-
-    rows.push(`<div class="rwa-context-row">
-      <span class="rwa-context-lbl">Net Profit</span>
-      <span class="rwa-context-val" style="color:${escHtml(profitColor)}">${escHtml(fmtM(netProfit))}</span>
-    </div>`);
 
     const panel = document.createElement('div');
     panel.className = 'rwa-context';
@@ -2102,10 +2272,11 @@
 
   if (Store.get('rw_apikey')) apikeyInput.placeholder = '(key saved)';
 
-  profitInput.value     = MEM.settings.targetProfitPct;
-  mugInput.value        = MEM.settings.mugBufferPct;
-  qualRangeInput.value  = MEM.settings.qualityMatchRange;
-  bonusRangeInput.value = MEM.settings.bonusMatchRange;
+  profitInput.value         = MEM.settings.targetProfitPct;
+  mugInput.value            = MEM.settings.mugBufferPct;
+  minFloorProfitInput.value = MEM.settings.minFloorProfit / 1_000_000;
+  qualRangeInput.value      = MEM.settings.qualityMatchRange;
+  bonusRangeInput.value     = MEM.settings.bonusMatchRange;
   if (MEM.settings.sellViaTrade) {
     tradeToggle.classList.add('rwa-on');
     tradeLabel.textContent = 'On';
@@ -2124,6 +2295,14 @@
     if (isNaN(v) || v < 0 || v > 30) return;
     MEM.settings.mugBufferPct = v;
     Store.set(KEYS.MUG_BUFFER_PCT, String(v));
+    renderInline();
+  });
+
+  minFloorProfitInput.addEventListener('change', () => {
+    const v = parseFloat(minFloorProfitInput.value);
+    if (isNaN(v) || v < 0) return;
+    MEM.settings.minFloorProfit = Math.round(v * 1_000_000);
+    Store.set(KEYS.MIN_FLOOR_PROFIT, String(MEM.settings.minFloorProfit));
     renderInline();
   });
 
@@ -2244,6 +2423,47 @@
     return Math.max(0, Math.min(100, slope * armorStat + intercept));
   }
 
+  /**
+   * Builds a flat array of all raw comp listings for a specific armor piece
+   * (by itemId) from both the item market and TornW3B bazaar caches.
+   * Normalised to { price, qualityPct, bonusPct } for use by detectFloorCluster.
+   *
+   * @param {object} listing - a MEM.listings entry
+   * @returns {{ price: number, qualityPct: number|null, bonusPct: number|null }[]}
+   */
+  function buildNormalizedComps(listing) {
+    const itemId = armorItemIds[listing.name];
+    const w3bKey = `${listing.armorSet}_${listing.rarity}`;
+    const result = [];
+
+    const imRaw = itemId != null ? MEM.itemMarketComps[itemId] : null;
+    if (imRaw?.listings) {
+      for (const l of imRaw.listings) {
+        result.push({
+          price     : l.price,
+          qualityPct: l.item_details?.stats?.quality              ?? null,
+          bonusPct  : l.item_details?.bonuses?.[0]?.value         ?? null,
+        });
+      }
+    }
+
+    const w3bAll = MEM.tornw3bComps[w3bKey];
+    if (w3bAll && itemId != null) {
+      for (const w of w3bAll) {
+        if (w.itemId !== itemId) continue;
+        const q    = parseFloat(w.quality);
+        const bVal = Object.values(w.bonuses ?? {})[0]?.value ?? null;
+        result.push({
+          price     : w.price,
+          qualityPct: isNaN(q) ? null : q,
+          bonusPct  : bVal,
+        });
+      }
+    }
+
+    return result;
+  }
+
   // Enriches each listing with refPrice and kingCap per King's RW Guide.
   //
   // refPrice — quality-aware resale estimate, same logic for all tiers:
@@ -2277,6 +2497,11 @@
       const tier = classifyArmorTier(listing.qualityPct, listing.bonusPct, baseBonusPct, highTierThreshold);
       listing.tier = tier;
 
+      // ── Floor cluster detection (runs before the early-exit so every listing gets classified) ──
+      const allComps     = buildNormalizedComps(listing);
+      const floorCluster = detectFloorCluster(allComps);
+      listing.floorCluster = floorCluster;
+
       // ── Quality-aware refPrice (identical logic for all tiers) ──────────────
       const imComp  = getItemMarketComp(itemId, listing.bonusPct, listing.qualityPct);
       const w3bComp = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, listing.qualityPct);
@@ -2284,7 +2509,11 @@
       const imPrice  = imComp?.price  ?? Infinity;
       const w3bPrice = w3bComp?.price ?? Infinity;
 
-      if (imPrice === Infinity && w3bPrice === Infinity) continue;
+      if (imPrice === Infinity && w3bPrice === Infinity) {
+        listing.classification   = classifyListing(listing, floorCluster, allComps);
+        listing.gapPremiumAnchor = null;
+        continue;
+      }
 
       const imQM  = imComp?.qualityMatched  ?? false;
       const w3bQM = w3bComp?.qualityMatched ?? false;
@@ -2374,6 +2603,16 @@
       listing.interpUpper   = interpUpper;
       listing.imPrice       = imPrice  === Infinity ? null : imPrice;
       listing.w3bPrice      = w3bPrice === Infinity ? null : w3bPrice;
+
+      // ── Classify listing relative to floor cluster ──────────────────────────
+      listing.classification = classifyListing(listing, floorCluster, allComps);
+      if (listing.classification === 'gap') {
+        const clusterCeil   = floorCluster.floorPrice * 1.12;
+        const premiumPrices = allComps.filter(c => c.price > clusterCeil).map(c => c.price);
+        listing.gapPremiumAnchor = premiumPrices.length ? Math.min(...premiumPrices) : null;
+      } else {
+        listing.gapPremiumAnchor = null;
+      }
     }
   }
 
