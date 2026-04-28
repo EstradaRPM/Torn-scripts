@@ -1,12 +1,14 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-28 (v1.32.0 merged to main, PRD Steps I–L complete)_
+_Last updated: 2026-04-28 (v1.32.0 on main; pricing engine redesign PRD filed as issue #170)_
 
 ---
 
 ## Current WIP
 
-Nothing in progress. All PRD steps (I through L) are merged to main at v1.32.0.
+Nothing in active development. All PRD steps (I through L) are merged to main at v1.32.0.
+
+**Next planned work:** Pricing engine redesign (issue #170) — see PRD for full spec.
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
 **Branch:** `main`
@@ -31,29 +33,57 @@ Nothing in progress. All PRD steps (I through L) are merged to main at v1.32.0.
 | G | Settings persistence fix | 1.27.0 |
 | H1–H5 | Comp panel: median-window, THIS row, price-sorted, dual markers, price-window | 1.27.1–1.28.3 |
 | I | Dynamic floor pricing: detectFloorCluster, classifyListing, floor flip display, gap interpolation, min floor profit setting | 1.29.0 |
-| J | HQ + sparse UI badges: Sparse badge on strip, 2×BB warning badge, hq 'comp' source label, sparse context panel note row | 1.30.0 |
-| K | Manual ledger entry form: buildAddEntryForm, openAddEntryForm, buildManualEntry, submitAddEntryForm | 1.31.0 |
-| L | Ledger UI/UX overhaul: z-index fix, BB Floor + Ref Price columns, column visibility toggle, P&L formula fix, Net P&L alignment | 1.32.0 |
+| J | HQ + sparse UI badges | 1.30.0 |
+| K | Manual ledger entry form | 1.31.0 |
+| L | Ledger UI/UX overhaul: z-index, column toggle, P&L formula fix, Net P&L alignment | 1.32.0 |
 
 ---
 
-## Key Decisions Made (v1.32.0)
+## Pricing Engine Redesign — Key Decisions (issue #170, not yet implemented)
 
-### Step L — display + formula fixes only, no algorithm changes
+Full PRD at https://github.com/EstradaRPM/Torn-scripts/issues/170
 
-- **Z-index**: `#rwa-ledger-panel` raised from 9000 to 10000 to clear Torn navigation.
-- **BB Floor + Ref Price columns**: added to ledger table; hidden by default as secondary columns.
-- **Column visibility toggle**: "Show more ▾" / "Show less ▴" button in ledger header. Secondary columns = Score, BB Floor, Ref Price, ROI. Preference stored in `MEM.ledgerShowMore` (session-only, not persisted).
-- **P&L formula**: `actualNet = actualSellPrice − currentBid`. No fee, no mug buffer. Both `commitSellPrice` and `buildManualEntry` use this formula. Mug buffer and market fee belong only in the advisory strip / context panel (max offer, target margin calculations) — never in post-trade ledger accounting.
-- **Net P&L column**: `min-width: 96px; text-align: right` via `.rwa-col-net` class.
+### What changes
 
-### Ledger P&L is strictly sell minus bid
+The floor/gap/hq/sparse classification system is scrapped. Replaced by:
 
-This is a hard rule. The ledger records completed trades. `actualNet = actualSellPrice - currentBid`. No automatic fee deductions, no mug buffer. If the user enters a sell price, it is what they received. The net is received minus paid.
+1. **`isNearBase(listing, armorSet)`** — `qualityPct <= 20 AND bonusPct <= baseBonusPct + 2` → floor flip path
+2. **`isFloorPositioned(listing, floorCluster)`** — listing price within floor cluster range → floor flip path (flagged "market-priced at floor")
+3. **`findNearestComp(listing, allComps, bonusWeight=1.0)`** — nearest comp by quality+bonus Euclidean distance; `BONUS_WEIGHT = 1.0` tunable constant
+4. **`calcSuggestedBid(currentBid, maxBid, lean=0.30)`** — 30% into gap from current bid
+5. **`addBidNoise(baseBid)`** — sub-million randomization: `$71M → $71,347,832`
+6. **`calcNonFloorMaxBid(resalePrice, targetProfitPct, marketFee)`** — mug buffer excluded from ceiling
+7. **`calcProfitMatrix(...)`** — 2×2: (suggested/max) × (bazaar/market) × (clean/mugged)
 
-### BB rate is NOT a user setting
+### What stays
 
-`MEM.bbRate` is auto-calculated by `fetchBBRate()` from the weighted average of the 5 combat cache market prices. `KEYS.BB_RATE` is where the computed value persists — not a user input field.
+- `detectFloorCluster()` — unchanged
+- `calcFloorFlipMaxBid()` — unchanged
+- `ARMOR_SCORING` — unchanged
+- Ledger — untouched
+
+### What is removed
+
+- `classifyListing()` — deleted
+- `interpolateGapPrice()` — deleted
+- `classification` / `gapPremiumAnchor` fields on listing objects
+
+### Display
+
+Every listing gets the same layout:
+- Suggested bid (re-noised on each render) + Max bid
+- 2×2 profit matrix at both bid levels
+- Confidence flag when comps are thin ("1 comp — low confidence" / "BB floor only")
+
+### Test plan (node-based, same pattern as test-manual-entry.js)
+
+Pure functions to test: `isNearBase`, `isFloorPositioned`, `findNearestComp`, `calcSuggestedBid`, `calcProfitMatrix`
+
+---
+
+## Deferred — Needs Own Grill Session
+
+**Ledger UI overhaul** — user is not satisfied with the current ledger UI but it's a UI concern, not algorithmic. Must do a dedicated grill-me session before implementing. Do not design or implement ledger changes without it.
 
 ---
 
@@ -61,38 +91,25 @@ This is a hard rule. The ledger records completed trades. `actualNet = actualSel
 
 | Symbol | Line | Notes |
 |--------|------|-------|
-| `detectFloorCluster` | 403 | Pure function |
-| `classifyListing` | 435 | Pure function |
-| `calcFloorFlipMaxBid` | 470 | Pure function |
-| `interpolateGapPrice` | 487 | Pure function |
-| `fetchBBRate()` | 852 | Auto-calculates $/BB from cache market prices |
-| `commitSellPrice` | 1592 | actualNet = raw − currentBid (no fee/mug) |
-| `computeListingMetrics(l)` | 1700 | Branches on classification; returns bbFloor |
-| `injectAdvisoryStrip(listing)` | 1765 | Sparse + 2×BB badges |
-| `buildContextPanel(listing)` | 1880 | Sparse note row + hq srcLabel override |
-| `logListing(listing)` | 2160 | Snapshot schema |
-| `buildAddEntryForm()` | 2235 | Manual entry form HTML |
-| `renderLedger()` | 2362 | Full re-render; syncs Show more toggle label |
-| `buildNormalizedComps` | 2657 | Helper for all-comps normalization |
-| `enrichListingsFromMarketData()` | 2706 | Sets floorCluster + classification on each listing |
+| `ARMOR_SCORING` | 152 | baseBonusPct per set — source of truth |
+| `detectFloorCluster` | 403 | Pure function — retained in redesign |
+| `classifyListing` | 435 | TO BE DELETED in redesign |
+| `calcFloorFlipMaxBid` | 470 | Pure function — retained |
+| `interpolateGapPrice` | 487 | TO BE DELETED in redesign |
+| `fetchBBRate()` | 852 | Auto-calculates $/BB |
+| `computeListingMetrics(l)` | 1700 | Core branching — major rewrite target |
+| `injectAdvisoryStrip(listing)` | 1765 | UI rewrite target |
+| `buildContextPanel(listing)` | 1880 | UI rewrite target |
+| `logListing(listing)` | 2160 | Unchanged |
+| `buildAddEntryForm()` | 2235 | Unchanged |
+| `renderLedger()` | 2362 | Unchanged |
+| `enrichListingsFromMarketData()` | 2706 | Sets floorCluster — retained; classification field removed |
 | `init()` | 2846 | Main pipeline |
-
----
-
-## Concrete Next Steps
-
-PRD Steps I–L are complete. No next step is defined. Next session should start by reviewing live usage feedback before planning further iterations.
 
 ---
 
 ## Open Questions
 
-- Cluster tightness (12% used): may need tuning after seeing live data. Easy to adjust — change the default parameter in `detectFloorCluster`.
-- Gap "near premium" thresholds (20pp quality, 4pp bonus): empirical — watch for mis-classifications on live listings.
-- Mug buffer for floor flips: hardcoded 0% in `calcFloorFlipMaxBid`. Consider adding a per-path toggle later if community feedback suggests it.
-
----
-
-## PRD Reference
-
-Full PRD at `docs/prd-steps-i-through-l.md` and https://github.com/EstradaRPM/Torn-scripts/issues/158
+- `BONUS_WEIGHT = 1.0`: equal weight between quality and bonus distance. Tune after live observation.
+- Floor cluster threshold (12%): keep fixed for now, tune after live data.
+- Ledger UI: deferred — needs grill session.
