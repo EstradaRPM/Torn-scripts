@@ -1,14 +1,14 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-27 (v1.29.0 implemented, PR pending)_
+_Last updated: 2026-04-28 (v1.30.0 implemented, PR #163 open)_
 
 ---
 
 ## Current WIP
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
-**Branch:** `claude/nifty-yalow-f26e10` (current worktree)
-**Version:** `1.29.0` (implemented this session, not yet merged to main)
+**Branch:** `claude/engineering-principles-claude-md`
+**Version:** `1.30.0` (PR #163 open, not yet merged to main)
 
 ### Completed steps
 
@@ -29,60 +29,40 @@ _Last updated: 2026-04-27 (v1.29.0 implemented, PR pending)_
 | G | Settings persistence fix | 1.27.0 |
 | H1–H5 | Comp panel: median-window, THIS row, price-sorted, dual markers, price-window | 1.27.1–1.28.3 |
 | I | Dynamic floor pricing: detectFloorCluster, classifyListing, floor flip display, gap interpolation, min floor profit setting | 1.29.0 |
+| J | HQ + sparse UI badges: Sparse badge on strip, 2×BB warning badge, hq 'comp' source label, sparse context panel note row | 1.30.0 |
 
 ---
 
-## Key Decisions Made This Session (v1.29.0)
+## Key Decisions Made (v1.30.0)
 
-### Algorithm implemented as PRD specified
+### Step J — display layer only, no algorithm changes
 
-- **`detectFloorCluster(comps, threshold=0.12)`** — pure function. Cluster = listings within 12% of cheapest. Returns `{ floorPrice, bestQualityPct, bestBonusPct, clusterSize, isValid }`. `isValid` = clusterSize >= 3.
+All classification data already existed on each listing from v1.29.0. Step J adds UI signals on top:
 
-- **`classifyListing(listing, floorCluster, allComps)`** — pure function. Returns 'floor'|'gap'|'hq'|'sparse'. Gap = beats floor cluster but no premium comps within 20pp quality / 4pp bonus. HQ = beats floor and near premium comps exist.
+- **`injectAdvisoryStrip`**: destructures `bbFloor` from `computeListingMetrics` (was already returned, not consumed). `sparseBadgeHtml` (amber `.rwa-badge-sparse`) shown when `classification === 'sparse'`. `twoBBHtml` (orange `.rwa-badge-cap`) shown when `maxOffer > 2 × bbFloor` — classification-agnostic, fires for any piece.
+- **`buildContextPanel`**: `srcLabel` overridden to `'comp'` when `classification === 'hq'` (was falling through to `'~'`). Sparse note row (`Data: Sparse`) prepended to `rows` array before BB Floor row when `classification === 'sparse'`.
 
-- **`calcFloorFlipMaxBid(floorPrice, minFloorProfit, marketFee)`** — pure function. `maxBid = floorPrice - minFloorProfit`. `bazaarNet = minFloorProfit` (no fee). `marketNet = round(floorPrice * 0.95) - maxBid`.
+### BB rate is NOT a user setting
 
-- **`interpolateGapPrice(floorAnchor, premiumAnchor, lean=0.27)`** — pure function. Leans 27% toward floor anchor (not midpoint). Fallback premiumAnchor = `floorPrice * 2.0` when no premium comps exist.
-
-- **`buildNormalizedComps(listing)`** — helper. Gathers all raw item-market + W3B comps for this item (by itemId), normalized to `{ price, qualityPct, bonusPct }`. Called early in `enrichListingsFromMarketData` loop before the `continue` check.
-
-### Classification stored on listing
-
-`enrichListingsFromMarketData` now sets:
-- `listing.floorCluster` — full cluster object (even when `isValid=false`)
-- `listing.classification` — 'floor'|'gap'|'hq'|'sparse'
-- `listing.gapPremiumAnchor` — cheapest comp above floor cluster (null for non-gap)
-
-The floor cluster detection runs BEFORE the `continue` (no-comps) check so every listing gets classified.
-
-### computeListingMetrics branching
-
-- `classification === 'floor'` → `calcFloorFlipMaxBid`, returns `bazaarNet` + `marketNet`, `roi: null`, skips target profit % and mug buffer
-- `classification === 'gap'` → `interpolateGapPrice` overrides `refPrice`, then existing `calcMaxOffer` formula
-- `hq` / `sparse` / null → existing formula unchanged
-
-### UI changes
-
-- `injectAdvisoryStrip`: label changes to "Max Bid (Floor)" / "Max Bid (Est.)" / "Max Offer" per classification. ROI% hidden for floor pieces.
-- `buildContextPanel`: floor shows "Floor Price" + "Bazaar Net" + "Market Net" rows; King's cap hidden. Gap shows "Est. Price" badge instead of comp source badge.
-- Settings modal: new "Min floor profit ($M)" field added between mug buffer and sell-via-trade. Stored in `KEYS.MIN_FLOOR_PROFIT`, default $5M.
+`MEM.bbRate` is auto-calculated by `fetchBBRate()` from the weighted average of the 5 combat cache market prices. `KEYS.BB_RATE` is where the computed value persists — not a user input field. To test the 2×BB badge manually: set `MEM.bbRate.rate` to a low value in the browser console.
 
 ---
 
-## Key Function Locations (v1.29.0)
+## Key Function Locations (v1.30.0)
 
 | Symbol | Line (approx) | Notes |
 |--------|---------------|-------|
 | `RE_QUALITY` / `RE_ARMOR` | ~900 | Confirmed live DOM format |
-| `detectFloorCluster` | ~400 | Pure function — root of dynamic algorithm |
+| `detectFloorCluster` | ~400 | Pure function |
 | `classifyListing` | ~432 | Pure function |
 | `calcFloorFlipMaxBid` | ~467 | Pure function |
 | `interpolateGapPrice` | ~484 | Pure function |
 | `buildNormalizedComps` | ~2434 | Helper for all-comps normalization |
-| `computeListingMetrics(l)` | ~1631 | Branches on classification |
-| `injectAdvisoryStrip(listing)` | ~1696 | Label + ROI conditional |
-| `buildContextPanel(listing)` | ~1800 | Floor/gap branched display |
+| `computeListingMetrics(l)` | ~1631 | Branches on classification; returns bbFloor |
+| `injectAdvisoryStrip(listing)` | ~1696 | Sparse + 2×BB badges added here |
+| `buildContextPanel(listing)` | ~1803 | Sparse note row + hq srcLabel override |
 | `enrichListingsFromMarketData()` | ~2478 | Sets floorCluster + classification on each listing |
+| `fetchBBRate()` | ~849 | Auto-calculates $/BB from cache market prices |
 | `logListing(listing)` | ~2090 | Snapshot schema — unchanged |
 | `renderLedger()` | ~2100 | Unchanged |
 | `init()` | ~2620 | Main pipeline |
@@ -90,12 +70,6 @@ The floor cluster detection runs BEFORE the `continue` (no-comps) check so every
 ---
 
 ## Concrete Next Steps
-
-### v1.30.0 — HQ + exceptional integration
-- `classifyListing` hq branch → hand off to existing Step H comp panel ref price (already works via existing formula, but needs explicit label/badge)
-- 2× BB warning badge on strip when `maxOffer > 2 × bbFloor`
-- Sparse market badge on strip ("Sparse") + comp display with no auto recommendation
-- Context panel for HQ: note it uses median comp pricing (existing)
 
 ### v1.31.0 — Manual ledger entry (Step K)
 - `buildAddEntryForm()` inline form above ledger table
@@ -115,7 +89,6 @@ The floor cluster detection runs BEFORE the `continue` (no-comps) check so every
 - Cluster tightness (12% used): may need tuning after seeing live data. Easy to adjust — just change the default parameter in `detectFloorCluster`.
 - Gap "near premium" thresholds (20pp quality, 4pp bonus): empirical — watch for mis-classifications on live listings.
 - Mug buffer for floor flips: hardcoded 0% in `calcFloorFlipMaxBid`. Community doesn't price it in at $80–125M. Consider adding a per-path toggle later.
-- `gh` CLI: only available in PowerShell currently; restart terminal to get it in Bash.
 
 ---
 
