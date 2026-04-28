@@ -1,0 +1,326 @@
+// node test-pricing-engine.js
+// Tests for the pricing engine pure functions (issue #170 redesign).
+// Copy each function body here; keep in sync with the IIFE implementation.
+
+'use strict';
+
+// ── ARMOR_SCORING (source of truth — mirrors the IIFE constant) ───────────────
+
+const ARMOR_SCORING = {
+  Riot    : { baseBonusPct: 20, highTierThreshold: 26 },
+  Assault : { baseBonusPct: 20, highTierThreshold: 26 },
+  Dune    : { baseBonusPct: 30, highTierThreshold: 37 },
+};
+
+// ── Functions under test ──────────────────────────────────────────────────────
+
+function isNearBase(listing, armorSet) {
+  const scoring = ARMOR_SCORING[armorSet];
+  if (!scoring) return false;
+  if (listing.qualityPct == null || listing.bonusPct == null) return false;
+  return listing.qualityPct <= 20 && listing.bonusPct <= scoring.baseBonusPct + 2;
+}
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+let passed = 0;
+let failed = 0;
+
+function assert(label, condition) {
+  if (condition) {
+    console.log(`  ✓ ${label}`);
+    passed++;
+  } else {
+    console.error(`  ✗ ${label}`);
+    failed++;
+  }
+}
+
+function assertEq(label, a, b) {
+  if (a === b) {
+    console.log(`  ✓ ${label}`);
+    passed++;
+  } else {
+    console.error(`  ✗ ${label}  (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
+    failed++;
+  }
+}
+
+function calcProfitMatrix(bid, resalePrice, marketFee, mugBuffer) {
+  const marketNet    = Math.round(resalePrice * (1 - marketFee));
+  const bazaarClean  = resalePrice - bid;
+  const bazaarMugged = Math.round(resalePrice * (1 - mugBuffer)) - bid;
+  const marketClean  = marketNet - bid;
+  const marketMugged = Math.round(marketNet  * (1 - mugBuffer)) - bid;
+  return { bazaarClean, bazaarMugged, marketClean, marketMugged };
+}
+
+function findNearestComp(listing, allComps, bonusWeight = 1.0) {
+  if (!allComps.length) return null;
+  let nearest = null;
+  let minDist = Infinity;
+  for (const comp of allComps) {
+    const qDiff = (listing.qualityPct ?? 0) - (comp.qualityPct ?? 0);
+    const bDiff = (listing.bonusPct   ?? 0) - (comp.bonusPct   ?? 0);
+    const dist  = Math.sqrt(qDiff * qDiff + (bonusWeight * bDiff) * (bonusWeight * bDiff));
+    if (dist < minDist) { minDist = dist; nearest = comp; }
+  }
+  return nearest;
+}
+
+function calcNonFloorMaxBid(resalePrice, targetProfitPct, marketFee) {
+  return Math.round(resalePrice * (1 - marketFee - targetProfitPct));
+}
+
+function addBidNoise(baseBid) {
+  return baseBid + Math.floor(Math.random() * 1_000_000);
+}
+
+function calcSuggestedBid(currentBid, maxBid, lean = 0.30) {
+  return Math.round(currentBid + lean * (maxBid - currentBid));
+}
+
+function isFloorPositioned(listing, floorCluster) {
+  if (!floorCluster.isValid || floorCluster.floorPrice == null) return false;
+  return listing.price <= floorCluster.floorPrice * 1.12;
+}
+
+// ── isNearBase ────────────────────────────────────────────────────────────────
+
+// ── calcProfitMatrix ──────────────────────────────────────────────────────────
+
+console.log('\ncalcProfitMatrix — Behavior 1: bazaarClean = resalePrice − bid (no fee)');
+{
+  // bid=60M, resale=100M, fee=0.05, mug=0.05
+  // bazaarClean = 100M − 60M = 40M
+  const m = calcProfitMatrix(60_000_000, 100_000_000, 0.05, 0.05);
+  assertEq('bazaarClean', m.bazaarClean, 40_000_000);
+}
+
+console.log('\ncalcProfitMatrix — Behavior 2: all four cells');
+{
+  // bid=60M, resale=100M, fee=0.05, mug=0.05
+  // bazaarClean  = 100M − 60M = 40M
+  // bazaarMugged = round(100M×0.95) − 60M = 95M − 60M = 35M
+  // marketClean  = round(100M×0.95) − 60M = 95M − 60M = 35M
+  // marketMugged = round(95M×0.95) − 60M  = 90_250_000 − 60M = 30_250_000
+  const m = calcProfitMatrix(60_000_000, 100_000_000, 0.05, 0.05);
+  assertEq('bazaarClean',  m.bazaarClean,  40_000_000);
+  assertEq('bazaarMugged', m.bazaarMugged, 35_000_000);
+  assertEq('marketClean',  m.marketClean,  35_000_000);
+  assertEq('marketMugged', m.marketMugged, 30_250_000);
+}
+
+console.log('\ncalcProfitMatrix — Behavior 3: mugBuffer=0 → mugged rows equal clean rows');
+{
+  const m = calcProfitMatrix(60_000_000, 100_000_000, 0.05, 0);
+  assertEq('bazaarMugged === bazaarClean', m.bazaarMugged, m.bazaarClean);
+  assertEq('marketMugged === marketClean', m.marketMugged, m.marketClean);
+}
+
+console.log('\ncalcProfitMatrix — Behavior 4: negative net (overbid) is preserved');
+{
+  // bid=98M, resale=100M, fee=0.05, mug=0 → marketClean = 95M − 98M = −3M
+  const m = calcProfitMatrix(98_000_000, 100_000_000, 0.05, 0);
+  assertEq('marketClean is negative', m.marketClean, -3_000_000);
+}
+
+// ── findNearestComp ───────────────────────────────────────────────────────────
+
+console.log('\nfindNearestComp — Behavior 1: returns the closest comp by quality+bonus distance');
+{
+  const listing = { qualityPct: 50, bonusPct: 25 };
+  const comps = [
+    { price: 80_000_000, qualityPct: 70, bonusPct: 30 },  // dist = sqrt(400+25) ≈ 20.6
+    { price: 60_000_000, qualityPct: 52, bonusPct: 26 },  // dist = sqrt(4+1)    ≈ 2.2  ← nearest
+    { price: 90_000_000, qualityPct: 90, bonusPct: 40 },  // dist = sqrt(1600+225) ≈ 42.7
+  ];
+  const result = findNearestComp(listing, comps);
+  assertEq('returns nearest comp price', result?.price, 60_000_000);
+}
+
+console.log('\nfindNearestComp — Behavior 2: empty comps → null');
+{
+  const result = findNearestComp({ qualityPct: 50, bonusPct: 25 }, []);
+  assert('returns null', result === null);
+}
+
+console.log('\nfindNearestComp — Behavior 3: single comp → returns it');
+{
+  const comp = { price: 70_000_000, qualityPct: 60, bonusPct: 28 };
+  const result = findNearestComp({ qualityPct: 50, bonusPct: 25 }, [comp]);
+  assertEq('returns the only comp', result?.price, 70_000_000);
+}
+
+console.log('\nfindNearestComp — Behavior 4: bonusWeight amplifies bonus axis distance');
+{
+  const listing = { qualityPct: 50, bonusPct: 25 };
+  // compA: qualDiff=5, bonusDiff=1 → default dist=sqrt(25+1)≈5.1; weighted(2) dist=sqrt(25+4)≈5.4
+  // compB: qualDiff=6, bonusDiff=0 → default dist=6; weighted(2) dist=6
+  // With bonusWeight=2: compA dist≈5.4, compB dist=6 → compA still nearest
+  // But with bonusWeight=10: compA dist=sqrt(25+100)≈11.2, compB dist=6 → compB nearest
+  const compA = { price: 70_000_000, qualityPct: 55, bonusPct: 26 };
+  const compB = { price: 80_000_000, qualityPct: 56, bonusPct: 25 };
+  const resultDefault = findNearestComp(listing, [compA, compB], 1.0);
+  const resultHighWeight = findNearestComp(listing, [compA, compB], 10.0);
+  assertEq('bonusWeight=1 → compA nearest (lower total dist)', resultDefault?.price,    70_000_000);
+  assertEq('bonusWeight=10 → compB nearest (bonus axis penalised)', resultHighWeight?.price, 80_000_000);
+}
+
+console.log('\nfindNearestComp — Behavior 5: null qualityPct/bonusPct treated as 0 in distance');
+{
+  const listing = { qualityPct: null, bonusPct: null };
+  const comps = [
+    { price: 60_000_000, qualityPct: 5,  bonusPct: 3  },  // dist=sqrt(25+9)≈5.8
+    { price: 70_000_000, qualityPct: 10, bonusPct: 10 },  // dist=sqrt(100+100)≈14.1
+  ];
+  const result = findNearestComp(listing, comps);
+  assertEq('picks comp closer to 0,0', result?.price, 60_000_000);
+}
+
+// ── calcNonFloorMaxBid ────────────────────────────────────────────────────────
+
+console.log('\ncalcNonFloorMaxBid — Behavior 1: standard case');
+{
+  // resale=100M, targetProfitPct=0.10, marketFee=0.05
+  // maxBid = 100M × (1 − 0.05 − 0.10) = 100M × 0.85 = 85M
+  assertEq('returns 85M', calcNonFloorMaxBid(100_000_000, 0.10, 0.05), 85_000_000);
+}
+
+console.log('\ncalcNonFloorMaxBid — Behavior 2: zero target profit (fee only)');
+{
+  // maxBid = 100M × (1 − 0.05 − 0) = 95M
+  assertEq('returns 95M', calcNonFloorMaxBid(100_000_000, 0, 0.05), 95_000_000);
+}
+
+console.log('\ncalcNonFloorMaxBid — Behavior 3: mug buffer is NOT subtracted');
+{
+  // Confirm that passing a mugBuffer separately has no effect — not part of this function's contract.
+  // maxBid with targetProfitPct=0.15, marketFee=0.05 → 100M × 0.80 = 80M
+  assertEq('returns 80M (no mug deduction)', calcNonFloorMaxBid(100_000_000, 0.15, 0.05), 80_000_000);
+}
+
+console.log('\ncalcNonFloorMaxBid — Behavior 4: fractional result is rounded');
+{
+  // 75M × (1 − 0.05 − 0.10) = 75M × 0.85 = 63_750_000
+  assertEq('rounds correctly', calcNonFloorMaxBid(75_000_000, 0.10, 0.05), 63_750_000);
+}
+
+// ── addBidNoise ───────────────────────────────────────────────────────────────
+
+console.log('\naddBidNoise — Behavior 1: result is >= baseBid');
+{
+  const result = addBidNoise(71_000_000);
+  assert('result >= baseBid', result >= 71_000_000);
+}
+
+console.log('\naddBidNoise — Behavior 2: result is < baseBid + 1_000_000');
+{
+  const result = addBidNoise(71_000_000);
+  assert('result < baseBid + 1M', result < 72_000_000);
+}
+
+console.log('\naddBidNoise — Behavior 3: noise is integer (no fractional dollars)');
+{
+  const result = addBidNoise(71_000_000);
+  assert('result is integer', Number.isInteger(result));
+}
+
+// ── calcSuggestedBid ──────────────────────────────────────────────────────────
+
+console.log('\ncalcSuggestedBid — Behavior 1: 30% into gap with default lean');
+{
+  // currentBid=50M, maxBid=100M → 50M + 0.30×50M = 65M
+  assertEq('returns 65M', calcSuggestedBid(50_000_000, 100_000_000), 65_000_000);
+}
+
+console.log('\ncalcSuggestedBid — Behavior 2: custom lean');
+{
+  // currentBid=60M, maxBid=100M, lean=0.5 → 80M
+  assertEq('returns 80M', calcSuggestedBid(60_000_000, 100_000_000, 0.5), 80_000_000);
+}
+
+console.log('\ncalcSuggestedBid — Behavior 3: currentBid already at maxBid → returns maxBid');
+{
+  assertEq('returns maxBid', calcSuggestedBid(100_000_000, 100_000_000), 100_000_000);
+}
+
+console.log('\ncalcSuggestedBid — Behavior 4: fractional result is rounded');
+{
+  // 50M + 0.30×33M = 59.9M → rounds to 59_900_000
+  assertEq('rounds correctly', calcSuggestedBid(50_000_000, 83_000_000), 59_900_000);
+}
+
+// ── isFloorPositioned ─────────────────────────────────────────────────────────
+
+console.log('\nisFloorPositioned — Behavior 1: listing price within cluster range');
+{
+  const cluster = { floorPrice: 100_000_000, isValid: true };
+  assert('returns true', isFloorPositioned({ price: 105_000_000 }, cluster) === true);
+}
+
+console.log('\nisFloorPositioned — Behavior 2: listing at exact cluster ceiling (floorPrice × 1.12)');
+{
+  const cluster = { floorPrice: 100_000_000, isValid: true };
+  assert('returns true at boundary', isFloorPositioned({ price: 112_000_000 }, cluster) === true);
+}
+
+console.log('\nisFloorPositioned — Behavior 3: listing one dollar above cluster ceiling');
+{
+  const cluster = { floorPrice: 100_000_000, isValid: true };
+  assert('returns false', isFloorPositioned({ price: 112_000_001 }, cluster) === false);
+}
+
+console.log('\nisFloorPositioned — Behavior 4: invalid cluster (isValid=false) → false');
+{
+  const cluster = { floorPrice: 100_000_000, isValid: false };
+  assert('returns false', isFloorPositioned({ price: 105_000_000 }, cluster) === false);
+}
+
+// ── isNearBase ────────────────────────────────────────────────────────────────
+
+console.log('\nisNearBase — Behavior 1: clear near-base Riot listing');
+{
+  // qualityPct=15, bonusPct=21 (baseBonusPct=20, threshold=22) → true
+  assert('returns true', isNearBase({ qualityPct: 15, bonusPct: 21 }, 'Riot') === true);
+}
+
+console.log('\nisNearBase — Behavior 2: bonusPct exactly at threshold (baseBonusPct + 2)');
+{
+  assert('returns true at boundary', isNearBase({ qualityPct: 10, bonusPct: 22 }, 'Riot') === true);
+}
+
+console.log('\nisNearBase — Behavior 3: bonusPct one above threshold');
+{
+  assert('returns false', isNearBase({ qualityPct: 10, bonusPct: 23 }, 'Riot') === false);
+}
+
+console.log('\nisNearBase — Behavior 4: qualityPct exactly at threshold (20)');
+{
+  assert('returns true at boundary', isNearBase({ qualityPct: 20, bonusPct: 21 }, 'Riot') === true);
+}
+
+console.log('\nisNearBase — Behavior 5: qualityPct one above threshold');
+{
+  assert('returns false', isNearBase({ qualityPct: 21, bonusPct: 21 }, 'Riot') === false);
+}
+
+console.log('\nisNearBase — Behavior 6: null qualityPct → false');
+{
+  assert('returns false', isNearBase({ qualityPct: null, bonusPct: 21 }, 'Riot') === false);
+}
+
+console.log('\nisNearBase — Behavior 7: null bonusPct → false');
+{
+  assert('returns false', isNearBase({ qualityPct: 15, bonusPct: null }, 'Riot') === false);
+}
+
+console.log('\nisNearBase — Behavior 8: Dune set uses its own baseBonusPct (30)');
+{
+  assert('bonusPct=32 true for Dune',  isNearBase({ qualityPct: 10, bonusPct: 32 }, 'Dune') === true);
+  assert('bonusPct=33 false for Dune', isNearBase({ qualityPct: 10, bonusPct: 33 }, 'Dune') === false);
+}
+
+console.log('\n── summary ──────────────────────────────────────────────────────────────────');
+console.log(`${passed + failed} tests: ${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);
