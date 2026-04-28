@@ -1256,7 +1256,7 @@
       top: 0;
       transition: right 0.2s ease;
       width: 420px;
-      z-index: 9000;
+      z-index: 10000;
     }
     #rwa-ledger-panel.rwa-ledger-open { right: 0; }
     .rwa-ledger-hdr {
