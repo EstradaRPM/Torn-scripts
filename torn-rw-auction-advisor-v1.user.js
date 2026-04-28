@@ -1594,10 +1594,8 @@
     const id = parseInt(input.dataset.entryId, 10);
     const entry = MEM.ledger.find(x => x.id === id);
     if (!entry) return;
-    const marketFee = MEM.settings.sellViaTrade ? 0 : 0.05;
-    const mugBuffer = MEM.settings.mugBufferPct / 100;
     entry.actualSellPrice = raw;
-    entry.actualNet = raw * (1 - marketFee) * (1 - mugBuffer) - entry.currentBid;
+    entry.actualNet = raw - entry.currentBid;
     Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
     const display = ledgerBody.querySelector(`[data-anet-id="${id}"]`);
     if (display) display.textContent = fmtM(entry.actualNet);
