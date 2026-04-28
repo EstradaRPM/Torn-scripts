@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.30.0
+// @version      1.31.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.30.0';
+  const SCRIPT_VERSION = '1.31.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1298,6 +1298,56 @@
       padding: 0 2px;
     }
     .rwa-ledger-close:hover { color: #c0d0c8; }
+    .rwa-ledger-add {
+      background: none;
+      border: 1px solid #2a5040;
+      border-radius: 4px;
+      color: #5a9070;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    .rwa-ledger-add:hover:not(:disabled) { border-color: #5a9070; color: #a0c0b0; }
+    .rwa-ledger-add:disabled { opacity: 0.4; cursor: default; }
+    .rwa-add-form {
+      border-bottom: 1px solid #1a2a3a;
+      display: grid;
+      gap: 6px;
+      padding: 10px 12px;
+    }
+    .rwa-add-row { align-items: center; display: flex; gap: 8px; }
+    .rwa-add-row label { color: #4a7060; font-size: 11px; min-width: 70px; text-align: right; }
+    .rwa-add-row input, .rwa-add-row select {
+      background: #0a1a14;
+      border: 1px solid #1a2a3a;
+      border-radius: 3px;
+      color: #c0d0c8;
+      font-size: 12px;
+      padding: 3px 6px;
+      width: 160px;
+    }
+    .rwa-add-actions { align-items: center; display: flex; gap: 8px; padding-left: 78px; }
+    .rwa-add-submit {
+      background: #1a3a2a;
+      border: 1px solid #2a5040;
+      border-radius: 4px;
+      color: #5a9070;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 3px 12px;
+    }
+    .rwa-add-submit:hover { border-color: #5a9070; color: #a0c0b0; }
+    .rwa-add-cancel {
+      background: none;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 3px 10px;
+    }
+    .rwa-add-cancel:hover { border-color: #4a7060; color: #c0d0c8; }
+    .rwa-add-error { color: #ff8888; font-size: 11px; }
     .rwa-ledger-body { flex: 1; overflow-y: auto; padding: 8px 0; }
     .rwa-ledger-empty { color: #2a5040; font-size: 12px; font-style: italic; padding: 16px 12px; }
     .rwa-summary-bar {
@@ -1493,7 +1543,8 @@
   ledgerPanel.innerHTML = `
     <div class="rwa-ledger-hdr">
       <span class="rwa-ledger-title">Bid Ledger</span>
-      <button id="rwa-ledger-csv" class="rwa-ledger-csv">Copy CSV</button>
+      <button id="rwa-ledger-add"   class="rwa-ledger-add">+ Add Entry</button>
+      <button id="rwa-ledger-csv"   class="rwa-ledger-csv">Copy CSV</button>
       <button id="rwa-ledger-clear" class="rwa-ledger-clear">Clear All</button>
       <button id="rwa-ledger-close" class="rwa-ledger-close" title="Close">✕</button>
     </div>
@@ -2164,6 +2215,133 @@
     </div>`;
   }
 
+  function buildAddEntryForm() {
+    const datalistOpts = Object.keys(armorItemIds)
+      .map(n => `<option value="${escHtml(n)}">`)
+      .join('');
+    return `<form id="rwa-add-form" class="rwa-add-form">
+      <datalist id="rwa-add-names">${datalistOpts}</datalist>
+      <div class="rwa-add-row">
+        <label>Item</label>
+        <input id="rwa-add-name" list="rwa-add-names" placeholder="e.g. Riot Helmet" autocomplete="off">
+      </div>
+      <div class="rwa-add-row">
+        <label>Rarity</label>
+        <select id="rwa-add-rarity">
+          <option value="">—</option>
+          <option value="yellow">yellow</option>
+          <option value="orange">orange</option>
+          <option value="red">red</option>
+        </select>
+      </div>
+      <div class="rwa-add-row">
+        <label>Quality %</label>
+        <input id="rwa-add-quality" type="number" min="0" max="100" step="0.1" placeholder="optional">
+      </div>
+      <div class="rwa-add-row">
+        <label>Bonus %</label>
+        <input id="rwa-add-bonus" type="number" min="0" max="100" step="0.1" placeholder="optional">
+      </div>
+      <div class="rwa-add-row">
+        <label>Bid $</label>
+        <input id="rwa-add-bid" type="number" min="1" step="1" placeholder="required">
+      </div>
+      <div class="rwa-add-row">
+        <label>Result</label>
+        <select id="rwa-add-result">
+          <option value="Won">Won</option>
+          <option value="Lost">Lost</option>
+          <option value="Passed">Passed</option>
+        </select>
+      </div>
+      <div class="rwa-add-row" id="rwa-add-saleprice-row">
+        <label>Sale $ (net)</label>
+        <input id="rwa-add-saleprice" type="number" min="0" step="1" placeholder="optional">
+      </div>
+      <div class="rwa-add-actions">
+        <button type="submit" class="rwa-add-submit">Add</button>
+        <button type="button" id="rwa-add-cancel" class="rwa-add-cancel">Cancel</button>
+        <span id="rwa-add-error" class="rwa-add-error"></span>
+      </div>
+    </form>`;
+  }
+
+  function openAddEntryForm() {
+    if (document.getElementById('rwa-add-form')) return;
+    const addBtn = document.getElementById('rwa-ledger-add');
+    addBtn.disabled = true;
+
+    const formEl = document.createElement('div');
+    formEl.innerHTML = buildAddEntryForm();
+    ledgerBody.prepend(formEl.firstElementChild);
+
+    const form       = document.getElementById('rwa-add-form');
+    const resultSel  = document.getElementById('rwa-add-result');
+    const salePriceRow = document.getElementById('rwa-add-saleprice-row');
+
+    function syncSalePriceVisibility() {
+      salePriceRow.style.display = resultSel.value === 'Won' ? '' : 'none';
+    }
+    syncSalePriceVisibility();
+    resultSel.addEventListener('change', syncSalePriceVisibility);
+
+    document.getElementById('rwa-add-cancel').addEventListener('click', () => {
+      form.remove();
+      addBtn.disabled = false;
+    });
+
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      submitAddEntryForm(form, addBtn);
+    });
+  }
+
+  function buildManualEntry({ itemName, rarity, qualityPct, bonusPct, bid, result, salePrice }) {
+    if (!(bid > 0)) return null;
+    const sp = salePrice > 0 ? salePrice : null;
+    return {
+      id             : Date.now(),
+      timestamp      : Date.now(),
+      itemName       : itemName  ?? '',
+      rarity         : rarity    ?? '—',
+      qualityPct     : qualityPct != null ? qualityPct : null,
+      bonusPct       : bonusPct  != null ? bonusPct   : null,
+      tier           : null,
+      currentBid     : bid,
+      maxOffer       : null,
+      roi            : null,
+      bbFloor        : null,
+      refPrice       : null,
+      result         : result    ?? null,
+      actualSellPrice: sp,
+      actualNet      : (result === 'Won' && sp != null) ? sp - bid : null,
+    };
+  }
+
+  function submitAddEntryForm(form, addBtn) {
+    const bid = parseFloat(document.getElementById('rwa-add-bid').value);
+    const entry = buildManualEntry({
+      itemName  : document.getElementById('rwa-add-name').value.trim(),
+      rarity    : document.getElementById('rwa-add-rarity').value || null,
+      qualityPct: parseFloat(document.getElementById('rwa-add-quality').value) || null,
+      bonusPct  : parseFloat(document.getElementById('rwa-add-bonus').value)   || null,
+      bid,
+      result    : document.getElementById('rwa-add-result').value || null,
+      salePrice : parseFloat(document.getElementById('rwa-add-saleprice').value) || null,
+    });
+
+    if (!entry) {
+      document.getElementById('rwa-add-error').textContent = 'Bid must be a positive number.';
+      return;
+    }
+
+    MEM.ledger.unshift(entry);
+    Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
+    form.remove();
+    addBtn.disabled = false;
+    renderLedger();
+  }
+
   function renderLedger() {
     const summaryBar = buildSummaryBar();
     const filterBar = `<div class="rwa-filter-bar">
@@ -2383,6 +2561,7 @@
     renderLedger();
   });
   document.getElementById('rwa-ledger-csv').addEventListener('click', copyCsv);
+  document.getElementById('rwa-ledger-add').addEventListener('click', openAddEntryForm);
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
