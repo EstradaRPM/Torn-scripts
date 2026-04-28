@@ -1423,6 +1423,7 @@
     .rwa-result-select option { background: #0c1620; }
     .rwa-sell-input { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; width: 72px; }
     .rwa-anet { font-size: 10px; color: #4a9070; margin-top: 2px; }
+    .rwa-col-net { min-width: 96px; text-align: right; }
     .rwa-ledger-table tr:last-child td { border-bottom: none; }
 
     /* ── Advisory strip (injected into each auction li) ── */
@@ -2440,7 +2441,7 @@
         <option value="Lost"   ${e.result === 'Lost'   ? 'selected' : ''}>Lost</option>
         <option value="Passed" ${e.result === 'Passed' ? 'selected' : ''}>Passed</option>
       </select></td>
-      <td>${e.result === 'Won'
+      <td class="rwa-col-net">${e.result === 'Won'
         ? `<input class="rwa-sell-input" data-entry-id="${e.id}" placeholder="sell $" value="${e.actualSellPrice != null ? e.actualSellPrice : ''}">
            <div class="rwa-anet" data-anet-id="${e.id}">${e.actualNet != null ? fmtM(e.actualNet) : '—'}</div>`
         : '—'}</td>
@@ -2452,7 +2453,7 @@
     ledgerBody.innerHTML = summaryBar + filterBar + `<table class="rwa-ledger-table${MEM.ledgerShowMore ? ' rwa-cols-expanded' : ''}">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
-        <th class="rwa-col-secondary">Score</th><th class="rwa-col-secondary">BB Floor</th><th class="rwa-col-secondary">Ref Price</th><th>Bid</th><th>Max Offer</th><th class="rwa-col-secondary">ROI</th><th>Result</th><th>Actual Net</th>
+        <th class="rwa-col-secondary">Score</th><th class="rwa-col-secondary">BB Floor</th><th class="rwa-col-secondary">Ref Price</th><th>Bid</th><th>Max Offer</th><th class="rwa-col-secondary">ROI</th><th>Result</th><th class="rwa-col-net">Actual Net</th>
       </tr></thead>
       <tbody>${rows || emptyRow}</tbody>
     </table>`;
