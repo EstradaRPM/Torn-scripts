@@ -1820,6 +1820,14 @@
 
     const rows = [];
 
+    // Sparse note — prepended so it's the first thing visible when Details opens
+    if (classification === 'sparse') {
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Data</span>
+        <span class="rwa-badge rwa-badge-sparse">Sparse</span>
+      </div>`);
+    }
+
     // BB Floor — always shown
     rows.push(`<div class="rwa-context-row">
       <span class="rwa-context-lbl">BB Floor</span>
