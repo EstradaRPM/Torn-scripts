@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.29.0
+// @version      1.30.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.29.0';
+  const SCRIPT_VERSION = '1.30.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -1426,10 +1426,11 @@
       padding: 1px 5px;
       text-transform: uppercase;
     }
-    .rwa-badge-src   { background: #0c2030; border: 1px solid #1a3a50; color: #5a9ab0; }
-    .rwa-badge-excep { background: #1a0c30; border: 1px solid #3a1a50; color: #b05af0; }
-    .rwa-badge-hq    { background: #0c1a10; border: 1px solid #1a3a20; color: #4ab060; }
-    .rwa-badge-cap   { background: #2a1800; border: 1px solid #4a3000; color: #f0a030; }
+    .rwa-badge-src    { background: #0c2030; border: 1px solid #1a3a50; color: #5a9ab0; }
+    .rwa-badge-excep  { background: #1a0c30; border: 1px solid #3a1a50; color: #b05af0; }
+    .rwa-badge-hq     { background: #0c1a10; border: 1px solid #1a3a20; color: #4ab060; }
+    .rwa-badge-cap    { background: #2a1800; border: 1px solid #4a3000; color: #f0a030; }
+    .rwa-badge-sparse { background: #1a1800; border: 1px solid #3a3000; color: #c8a820; }
     .rwa-rarity-yellow { color: #e8d070; }
     .rwa-rarity-orange { color: #f0a030; }
     .rwa-rarity-red    { color: #f04040; }
@@ -1697,7 +1698,7 @@
     if (!listing.el) return;
     listing.el.querySelector('.rwa-strip')?.remove();
 
-    const { maxOffer, roi, signalColor, classification } = computeListingMetrics(listing);
+    const { maxOffer, roi, signalColor, classification, bbFloor } = computeListingMetrics(listing);
     const isLoading = maxOffer == null && !MEM.fetchError;
 
     const strip = document.createElement('div');
@@ -1712,6 +1713,12 @@
     const roiHtml = (!isLoading && roi != null && classification !== 'floor')
       ? `<span class="rwa-strip-roi" style="color:${escHtml(signalColor)}">${roi.toFixed(1)}%</span>`
       : '';
+    const sparseBadgeHtml = classification === 'sparse'
+      ? `<span class="rwa-badge rwa-badge-sparse">Sparse</span>`
+      : '';
+    const twoBBHtml = (!isLoading && bbFloor != null && maxOffer != null && maxOffer > 2 * bbFloor)
+      ? `<span class="rwa-badge rwa-badge-cap">2×BB</span>`
+      : '';
 
     strip.innerHTML = `
       <div class="rwa-strip-main">
@@ -1719,6 +1726,8 @@
           <span class="rwa-strip-label">${escHtml(offerLabel)}</span>
           ${offerHtml}
           ${roiHtml}
+          ${sparseBadgeHtml}
+          ${twoBBHtml}
         </div>
         <div class="rwa-strip-actions">
           <button class="rwa-btn rwa-btn-details">&#9660; Details</button>
@@ -1811,6 +1820,14 @@
 
     const rows = [];
 
+    // Sparse note — prepended so it's the first thing visible when Details opens
+    if (classification === 'sparse') {
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Data</span>
+        <span class="rwa-badge rwa-badge-sparse">Sparse</span>
+      </div>`);
+    }
+
     // BB Floor — always shown
     rows.push(`<div class="rwa-context-row">
       <span class="rwa-context-lbl">BB Floor</span>
@@ -1844,7 +1861,9 @@
       </div>`);
     } else {
       // Standard display (hq / gap / sparse)
-      const srcLabel = { interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~';
+      const srcLabel = classification === 'hq'
+        ? 'comp'
+        : ({ interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~');
       const tierBadge = tier === 'exceptional'
         ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
         : tier === 'hq'
