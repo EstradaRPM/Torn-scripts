@@ -2413,6 +2413,8 @@
       <td>${e.qualityPct != null ? e.qualityPct.toFixed(0) + '%' : '—'}</td>
       <td>${e.bonusPct  != null ? e.bonusPct.toFixed(0)  + '%' : '—'}</td>
       <td>${escHtml(tierLabel(e.tier))}</td>
+      <td>${escHtml(fmtM(e.bbFloor))}</td>
+      <td>${escHtml(fmtM(e.refPrice))}</td>
       <td>${escHtml(fmtM(e.currentBid))}</td>
       <td>${escHtml(fmtM(e.maxOffer))}</td>
       <td>${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
@@ -2428,11 +2430,11 @@
         : '—'}</td>
     </tr>`).join('');
 
-    const emptyRow = filtered.length ? '' : '<tr><td colspan="11" class="rwa-ledger-empty">No matching entries</td></tr>';
+    const emptyRow = filtered.length ? '' : '<tr><td colspan="13" class="rwa-ledger-empty">No matching entries</td></tr>';
     ledgerBody.innerHTML = summaryBar + filterBar + `<table class="rwa-ledger-table">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
-        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
+        <th>Score</th><th>BB Floor</th><th>Ref Price</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
       </tr></thead>
       <tbody>${rows || emptyRow}</tbody>
     </table>`;
