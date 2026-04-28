@@ -1426,10 +1426,11 @@
       padding: 1px 5px;
       text-transform: uppercase;
     }
-    .rwa-badge-src   { background: #0c2030; border: 1px solid #1a3a50; color: #5a9ab0; }
-    .rwa-badge-excep { background: #1a0c30; border: 1px solid #3a1a50; color: #b05af0; }
-    .rwa-badge-hq    { background: #0c1a10; border: 1px solid #1a3a20; color: #4ab060; }
-    .rwa-badge-cap   { background: #2a1800; border: 1px solid #4a3000; color: #f0a030; }
+    .rwa-badge-src    { background: #0c2030; border: 1px solid #1a3a50; color: #5a9ab0; }
+    .rwa-badge-excep  { background: #1a0c30; border: 1px solid #3a1a50; color: #b05af0; }
+    .rwa-badge-hq     { background: #0c1a10; border: 1px solid #1a3a20; color: #4ab060; }
+    .rwa-badge-cap    { background: #2a1800; border: 1px solid #4a3000; color: #f0a030; }
+    .rwa-badge-sparse { background: #1a1800; border: 1px solid #3a3000; color: #c8a820; }
     .rwa-rarity-yellow { color: #e8d070; }
     .rwa-rarity-orange { color: #f0a030; }
     .rwa-rarity-red    { color: #f04040; }
@@ -1712,6 +1713,9 @@
     const roiHtml = (!isLoading && roi != null && classification !== 'floor')
       ? `<span class="rwa-strip-roi" style="color:${escHtml(signalColor)}">${roi.toFixed(1)}%</span>`
       : '';
+    const sparseBadgeHtml = classification === 'sparse'
+      ? `<span class="rwa-badge rwa-badge-sparse">Sparse</span>`
+      : '';
 
     strip.innerHTML = `
       <div class="rwa-strip-main">
@@ -1719,6 +1723,7 @@
           <span class="rwa-strip-label">${escHtml(offerLabel)}</span>
           ${offerHtml}
           ${roiHtml}
+          ${sparseBadgeHtml}
         </div>
         <div class="rwa-strip-actions">
           <button class="rwa-btn rwa-btn-details">&#9660; Details</button>
