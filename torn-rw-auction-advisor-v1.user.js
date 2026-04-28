@@ -73,6 +73,9 @@
     // [{ id, timestamp, itemName, rarity, qualityPct, bonusPct, tier, currentBid, maxOffer, roi, bbFloor, refPrice, result }]
     ledger: (() => { try { return JSON.parse(Store.get(KEYS.LEDGER)) || []; } catch { return []; } })(),
 
+    // Session-only column visibility preference (not persisted)
+    ledgerShowMore: false,
+
     // Weighted $/BB rate from all 5 combat caches
     // { rate, cachePrices: { name: price }, fetchedAt }
     bbRate: (() => {
@@ -1402,6 +1405,20 @@
       top: 0;
     }
     .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
+    .rwa-ledger-table th.rwa-col-secondary,
+    .rwa-ledger-table td.rwa-col-secondary { display: none; }
+    .rwa-ledger-table.rwa-cols-expanded th.rwa-col-secondary,
+    .rwa-ledger-table.rwa-cols-expanded td.rwa-col-secondary { display: table-cell; }
+    .rwa-ledger-cols {
+      background: none;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    .rwa-ledger-cols:hover { border-color: #4a7060; color: #c0d0c8; }
     .rwa-result-select { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; cursor: pointer; }
     .rwa-result-select option { background: #0c1620; }
     .rwa-sell-input { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; width: 72px; }
@@ -1546,6 +1563,7 @@
       <button id="rwa-ledger-add"   class="rwa-ledger-add">+ Add Entry</button>
       <button id="rwa-ledger-csv"   class="rwa-ledger-csv">Copy CSV</button>
       <button id="rwa-ledger-clear" class="rwa-ledger-clear">Clear All</button>
+      <button id="rwa-ledger-cols"  class="rwa-ledger-cols">Show more ▾</button>
       <button id="rwa-ledger-close" class="rwa-ledger-close" title="Close">✕</button>
     </div>
     <div class="rwa-ledger-body" id="rwa-ledger-body"></div>
@@ -2412,12 +2430,12 @@
       <td>${escHtml(e.rarity)}</td>
       <td>${e.qualityPct != null ? e.qualityPct.toFixed(0) + '%' : '—'}</td>
       <td>${e.bonusPct  != null ? e.bonusPct.toFixed(0)  + '%' : '—'}</td>
-      <td>${escHtml(tierLabel(e.tier))}</td>
-      <td>${escHtml(fmtM(e.bbFloor))}</td>
-      <td>${escHtml(fmtM(e.refPrice))}</td>
+      <td class="rwa-col-secondary">${escHtml(tierLabel(e.tier))}</td>
+      <td class="rwa-col-secondary">${escHtml(fmtM(e.bbFloor))}</td>
+      <td class="rwa-col-secondary">${escHtml(fmtM(e.refPrice))}</td>
       <td>${escHtml(fmtM(e.currentBid))}</td>
       <td>${escHtml(fmtM(e.maxOffer))}</td>
-      <td>${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
+      <td class="rwa-col-secondary">${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
       <td><select class="rwa-result-select" data-entry-id="${e.id}">
         <option value="" ${!e.result ? 'selected' : ''}>—</option>
         <option value="Won"    ${e.result === 'Won'    ? 'selected' : ''}>Won</option>
@@ -2431,10 +2449,12 @@
     </tr>`).join('');
 
     const emptyRow = filtered.length ? '' : '<tr><td colspan="13" class="rwa-ledger-empty">No matching entries</td></tr>';
-    ledgerBody.innerHTML = summaryBar + filterBar + `<table class="rwa-ledger-table">
+    const colsBtn = document.getElementById('rwa-ledger-cols');
+    if (colsBtn) colsBtn.textContent = MEM.ledgerShowMore ? 'Show less ▴' : 'Show more ▾';
+    ledgerBody.innerHTML = summaryBar + filterBar + `<table class="rwa-ledger-table${MEM.ledgerShowMore ? ' rwa-cols-expanded' : ''}">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
-        <th>Score</th><th>BB Floor</th><th>Ref Price</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
+        <th class="rwa-col-secondary">Score</th><th class="rwa-col-secondary">BB Floor</th><th class="rwa-col-secondary">Ref Price</th><th>Bid</th><th>Max Offer</th><th class="rwa-col-secondary">ROI</th><th>Result</th><th>Actual Net</th>
       </tr></thead>
       <tbody>${rows || emptyRow}</tbody>
     </table>`;
@@ -2564,6 +2584,10 @@
   });
   document.getElementById('rwa-ledger-csv').addEventListener('click', copyCsv);
   document.getElementById('rwa-ledger-add').addEventListener('click', openAddEntryForm);
+  document.getElementById('rwa-ledger-cols').addEventListener('click', () => {
+    MEM.ledgerShowMore = !MEM.ledgerShowMore;
+    renderLedger();
+  });
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
