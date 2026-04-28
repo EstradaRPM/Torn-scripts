@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.32.0
+// @version      1.33.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.32.0';
+  const SCRIPT_VERSION = '1.33.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -420,45 +420,6 @@
   }
 
   /**
-   * Classifies a listing relative to the floor cluster and all comps for the piece.
-   *
-   * 'sparse' — fewer than 3 comps in the floor cluster (market too thin for auto-recommendation)
-   * 'floor'  — listing's quality AND bonus are both at or below the floor cluster's best
-   * 'gap'    — listing beats the floor cluster but no close comps exist above it
-   * 'hq'     — listing beats the floor cluster and premium comps near its quality/bonus exist
-   *
-   * @param {{ qualityPct: number|null, bonusPct: number|null }} listing
-   * @param {{ floorPrice: number, bestQualityPct: number|null, bestBonusPct: number|null, isValid: boolean }} floorCluster
-   * @param {{ price: number, qualityPct: number|null, bonusPct: number|null }[]} allComps
-   * @returns {'floor'|'gap'|'hq'|'sparse'}
-   */
-  function classifyListing(listing, floorCluster, allComps) {
-    if (!floorCluster.isValid) return 'sparse';
-
-    const qualBeatsFloor  = listing.qualityPct  != null && floorCluster.bestQualityPct != null
-      && listing.qualityPct  > floorCluster.bestQualityPct;
-    const bonusBeatsFloor = listing.bonusPct    != null && floorCluster.bestBonusPct   != null
-      && listing.bonusPct    > floorCluster.bestBonusPct;
-
-    if (!qualBeatsFloor && !bonusBeatsFloor) return 'floor';
-
-    // Find comps above the floor cluster
-    const clusterCeil   = floorCluster.floorPrice * 1.12;
-    const premiumComps  = allComps.filter(c => c.price > clusterCeil);
-
-    // A "near" premium comp: quality within 20pp OR bonus within 4pp of listing
-    const hasNearPremium = premiumComps.some(c => {
-      const qNear = listing.qualityPct == null || c.qualityPct == null
-        || Math.abs(c.qualityPct - listing.qualityPct) <= 20;
-      const bNear = listing.bonusPct   == null || c.bonusPct   == null
-        || Math.abs(c.bonusPct   - listing.bonusPct)   <= 4;
-      return qNear && bNear;
-    });
-
-    return hasNearPremium ? 'hq' : 'gap';
-  }
-
-  /**
    * Calculates max bid and channel-specific nets for a floor flip.
    * Mug buffer is intentionally 0% for floor pieces — the market does not price it in.
    *
@@ -474,18 +435,62 @@
     return { maxBid, bazaarNet, marketNet };
   }
 
-  /**
-   * Interpolates a suggested resale price for a gap piece.
-   * Leans 25–30% toward the floor anchor (default 27%) so the piece reads as a deal
-   * relative to the premium market while still commanding a meaningful premium over floor.
-   *
-   * @param {number} floorAnchor    - floor cluster price (cheapest comp)
-   * @param {number} premiumAnchor  - cheapest comp above the floor cluster
-   * @param {number} [lean=0.27]    - fraction of the floor→premium range to add to floor
-   * @returns {number}
-   */
-  function interpolateGapPrice(floorAnchor, premiumAnchor, lean = 0.27) {
-    return Math.round(floorAnchor + lean * (premiumAnchor - floorAnchor));
+  // ── New pricing engine (issue #170) ─────────────────────────────────────────
+
+  // true when listing stats are near-base: qualityPct ≤ 20 AND bonusPct ≤ baseBonusPct+2
+  // Returns false when either stat is null — unknown data never routes to floor flip.
+  function isNearBase(listing, armorSet) {
+    const scoring = ARMOR_SCORING[armorSet];
+    if (!scoring) return false;
+    if (listing.qualityPct == null || listing.bonusPct == null) return false;
+    return listing.qualityPct <= 20 && listing.bonusPct <= scoring.baseBonusPct + 2;
+  }
+
+  // true when the listing's auction price sits within the floor cluster range (≤ floorPrice × 1.12).
+  function isFloorPositioned(listing, floorCluster) {
+    if (!floorCluster.isValid || floorCluster.floorPrice == null) return false;
+    return listing.price <= floorCluster.floorPrice * 1.12;
+  }
+
+  // Returns the comp from allComps whose (quality, bonus) coords are closest to the listing,
+  // using Euclidean distance with a tunable bonusWeight. Returns null for empty comp arrays.
+  const BONUS_WEIGHT = 1.0;
+  function findNearestComp(listing, allComps, bonusWeight = BONUS_WEIGHT) {
+    if (!allComps.length) return null;
+    let nearest = null;
+    let minDist = Infinity;
+    for (const comp of allComps) {
+      const qDiff = (listing.qualityPct ?? 0) - (comp.qualityPct ?? 0);
+      const bDiff = (listing.bonusPct   ?? 0) - (comp.bonusPct   ?? 0);
+      const dist  = Math.sqrt(qDiff * qDiff + (bonusWeight * bDiff) * (bonusWeight * bDiff));
+      if (dist < minDist) { minDist = dist; nearest = comp; }
+    }
+    return nearest;
+  }
+
+  // 30% into the gap from currentBid toward maxBid.
+  function calcSuggestedBid(currentBid, maxBid, lean = 0.30) {
+    return Math.round(currentBid + lean * (maxBid - currentBid));
+  }
+
+  // Adds a random sub-million offset so bids don't all land on round numbers.
+  function addBidNoise(baseBid) {
+    return baseBid + Math.floor(Math.random() * 1_000_000);
+  }
+
+  // Max bid for non-floor pieces. Mug buffer is advisory-only and excluded from the ceiling.
+  function calcNonFloorMaxBid(resalePrice, targetProfitPct, marketFee) {
+    return Math.round(resalePrice * (1 - marketFee - targetProfitPct));
+  }
+
+  // 2×2 profit matrix: bazaar/market × clean/mugged at a given bid and resale price.
+  function calcProfitMatrix(bid, resalePrice, marketFee, mugBuffer) {
+    const marketNet    = Math.round(resalePrice * (1 - marketFee));
+    const bazaarClean  = resalePrice - bid;
+    const bazaarMugged = Math.round(resalePrice * (1 - mugBuffer)) - bid;
+    const marketClean  = marketNet - bid;
+    const marketMugged = Math.round(marketNet  * (1 - mugBuffer)) - bid;
+    return { bazaarClean, bazaarMugged, marketClean, marketMugged };
   }
 
   // ── API key helper ──────────────────────────────────────────────────────────
@@ -1698,103 +1703,110 @@
   // ── Inline render ────────────────────────────────────────────────────────────
 
   function computeListingMetrics(l) {
-    const bbRate = MEM.bbRate?.rate ?? null;
-
+    const bbRate  = MEM.bbRate?.rate ?? null;
     const bbFloor = (BB_FLOOR_SETS.has(l.armorSet) && bbRate && l.rarity)
       ? calculateBBFloor(l.armorSet, l.rarity, bbRate)
       : null;
 
-    const classification = l.classification ?? null;
-    const bid            = l.currentBid;
+    const marketFee = 0.05;
+    const mugBuffer = MEM.settings.mugBufferPct / 100;
+    const profitPct = MEM.settings.targetProfitPct;
+    const bid       = l.currentBid;
 
-    // ── Floor flip: bypass target margin and mug buffer entirely ──────────────
-    if (classification === 'floor' && l.floorCluster?.floorPrice != null) {
+    // ── Floor path: near-base stats OR price positioned within floor cluster ──
+    const floorCluster = l.floorCluster ?? null;
+    const isFloor = isNearBase(l, l.armorSet) ||
+      (floorCluster?.isValid && isFloorPositioned({ price: l.currentBid }, floorCluster));
+
+    if (isFloor && floorCluster?.floorPrice != null) {
       const { maxBid, bazaarNet, marketNet } = calcFloorFlipMaxBid(
-        l.floorCluster.floorPrice,
-        MEM.settings.minFloorProfit,
-        0.05
+        floorCluster.floorPrice, MEM.settings.minFloorProfit, marketFee
       );
-      const signalColor = bid != null
-        ? (bid < maxBid ? '#00cc66' : '#ff4444')
-        : '#8aa898';
+      const suggestedBid = bid != null ? addBidNoise(calcSuggestedBid(bid, maxBid)) : null;
+      const matrixSugg   = suggestedBid != null
+        ? calcProfitMatrix(suggestedBid, floorCluster.floorPrice, marketFee, mugBuffer)
+        : null;
+      const matrixMax    = calcProfitMatrix(maxBid, floorCluster.floorPrice, marketFee, mugBuffer);
+      const signalColor  = bid != null ? (bid < maxBid ? '#00cc66' : '#ff4444') : '#8aa898';
       return {
-        bbFloor, refPrice: l.floorCluster.floorPrice,
-        maxOffer: maxBid, bazaarNet, marketNet,
-        netProfit: marketNet, roi: null, signalColor, classification,
+        bbFloor, isFloor: true,
+        refPrice: floorCluster.floorPrice,
+        nearestComp: null, compCount: 0,
+        maxBid, suggestedBid, matrixSugg, matrixMax,
+        signalColor,
       };
     }
 
-    // ── Gap: interpolate resale price between floor anchor and cheapest premium comp ──
-    let refPrice = l.refPrice ?? null;
-    if (classification === 'gap' && l.floorCluster?.floorPrice != null) {
-      const premiumAnchor = l.gapPremiumAnchor ?? (l.floorCluster.floorPrice * 2.0);
-      refPrice = interpolateGapPrice(l.floorCluster.floorPrice, premiumAnchor);
-    }
+    // ── Non-floor path: nearest comp by quality+bonus distance ────────────────
+    const allComps    = l.allComps ?? [];
+    const nearestComp = findNearestComp(l, allComps);
+    const resalePrice = nearestComp?.price ?? bbFloor ?? null;
 
-    // ── HQ / sparse / unclassified: existing formula ──────────────────────────
-    const kingCap      = l.kingCap ?? null;
-    const formulaOffer = refPrice != null
-      ? calcMaxOffer({
-          refPrice,
-          bbFloor        : BB_FLOOR_SETS.has(l.armorSet) ? bbFloor : null,
-          targetProfitPct: MEM.settings.targetProfitPct,
-          mugBufferPct   : MEM.settings.mugBufferPct,
-          sellViaTrade   : MEM.settings.sellViaTrade,
-        })
+    const rawMaxBid   = resalePrice != null
+      ? calcNonFloorMaxBid(resalePrice, profitPct, marketFee)
       : null;
-    const maxOffer = (formulaOffer != null && kingCap != null)
-      ? Math.min(formulaOffer, kingCap)
-      : formulaOffer;
+    const kingCap     = l.kingCap ?? null;
+    const maxBid      = (rawMaxBid != null && kingCap != null)
+      ? Math.min(rawMaxBid, kingCap)
+      : rawMaxBid;
 
-    let netProfit = null, roi = null;
-    if (bid != null && refPrice != null) {
-      const marketFee   = MEM.settings.sellViaTrade ? 0 : 0.05;
-      const mugBuffer   = MEM.settings.mugBufferPct / 100;
-      const netReceived = refPrice * (1 - marketFee) * (1 - mugBuffer);
-      netProfit         = Math.round(netReceived - bid);
-      roi               = bid > 0 ? (netProfit / bid) * 100 : null;
-    }
-
-    const signalColor = bid != null && maxOffer != null
-      ? (bid < maxOffer ? '#00cc66' : '#ff4444')
+    const suggestedBid = (bid != null && maxBid != null)
+      ? addBidNoise(calcSuggestedBid(bid, maxBid))
+      : null;
+    const matrixSugg   = (suggestedBid != null && resalePrice != null)
+      ? calcProfitMatrix(suggestedBid, resalePrice, marketFee, mugBuffer)
+      : null;
+    const matrixMax    = (maxBid != null && resalePrice != null)
+      ? calcProfitMatrix(maxBid, resalePrice, marketFee, mugBuffer)
+      : null;
+    const signalColor  = bid != null && maxBid != null
+      ? (bid < maxBid ? '#00cc66' : '#ff4444')
       : '#8aa898';
 
-    return { bbFloor, refPrice, maxOffer, bazaarNet: null, marketNet: null, netProfit, roi, signalColor, classification };
+    return {
+      bbFloor, isFloor: false,
+      refPrice: resalePrice,
+      nearestComp, compCount: allComps.length,
+      maxBid, suggestedBid, matrixSugg, matrixMax,
+      signalColor,
+    };
   }
 
   function injectAdvisoryStrip(listing) {
     if (!listing.el) return;
     listing.el.querySelector('.rwa-strip')?.remove();
 
-    const { maxOffer, roi, signalColor, classification, bbFloor } = computeListingMetrics(listing);
-    const isLoading = maxOffer == null && !MEM.fetchError;
+    const { maxBid, suggestedBid, signalColor, isFloor, bbFloor } = computeListingMetrics(listing);
 
     const strip = document.createElement('div');
     strip.className = 'rwa-strip';
 
-    const offerLabel = classification === 'floor' ? 'Max Bid (Floor)'
-                     : classification === 'gap'   ? 'Max Bid (Est.)'
-                     : 'Max Offer';
-    const offerHtml = isLoading
-      ? `<span class="rwa-strip-loading">fetching…</span>`
-      : `<span class="rwa-strip-val" style="color:${escHtml(signalColor)}">${escHtml(fmtM(maxOffer))}</span>`;
-    const roiHtml = (!isLoading && roi != null && classification !== 'floor')
-      ? `<span class="rwa-strip-roi" style="color:${escHtml(signalColor)}">${roi.toFixed(1)}%</span>`
+    const isLoading = maxBid == null && !MEM.fetchError;
+    const floorBadge = isFloor
+      ? `<span class="rwa-badge rwa-badge-src">floor flip</span>`
       : '';
-    const sparseBadgeHtml = classification === 'sparse'
-      ? `<span class="rwa-badge rwa-badge-sparse">Sparse</span>`
-      : '';
-    const twoBBHtml = (!isLoading && bbFloor != null && maxOffer != null && maxOffer > 2 * bbFloor)
+    const twoBBHtml = (!isLoading && bbFloor != null && maxBid != null && maxBid > 2 * bbFloor)
       ? `<span class="rwa-badge rwa-badge-cap">2×BB</span>`
       : '';
+
+    const suggHtml = isLoading
+      ? `<span class="rwa-strip-loading">fetching…</span>`
+      : suggestedBid != null
+        ? `<span class="rwa-strip-val" style="color:${escHtml(signalColor)}">${escHtml(fmtM(suggestedBid))}</span>`
+        : `<span class="rwa-strip-val" style="color:#8aa898">—</span>`;
+    const maxHtml = isLoading
+      ? ''
+      : maxBid != null
+        ? `<span class="rwa-strip-label">Max</span><span class="rwa-strip-val" style="color:${escHtml(signalColor)}">${escHtml(fmtM(maxBid))}</span>`
+        : '';
 
     strip.innerHTML = `
       <div class="rwa-strip-main">
         <div class="rwa-strip-offer">
-          <span class="rwa-strip-label">${escHtml(offerLabel)}</span>
-          ${offerHtml}
-          ${roiHtml}
-          ${sparseBadgeHtml}
+          <span class="rwa-strip-label">Suggested</span>
+          ${suggHtml}
+          ${maxHtml}
+          ${floorBadge}
           ${twoBBHtml}
         </div>
         <div class="rwa-strip-actions">
@@ -1878,23 +1890,12 @@
   }
 
   function buildContextPanel(listing) {
-    const { bbFloor, refPrice, netProfit, bazaarNet, marketNet, classification } = computeListingMetrics(listing);
-    const { rarity, qualityPct, bonusPct, bonusType, tier, compSource, kingCap, qualityEstimated } = listing;
+    const { bbFloor, refPrice, isFloor, nearestComp, compCount, maxBid, suggestedBid, matrixSugg, matrixMax } = computeListingMetrics(listing);
+    const { rarity, qualityPct, bonusPct, bonusType, tier, kingCap, qualityEstimated } = listing;
 
-    const rarityClass  = rarity ? `rwa-rarity-${rarity}` : '';
-    const profitColor  = netProfit  == null ? '#8aa898' : netProfit  >= 0 ? '#00cc66' : '#ff4444';
-    const bazaarColor  = bazaarNet  == null ? '#8aa898' : bazaarNet  >= 0 ? '#00cc66' : '#ff4444';
-    const marketColor  = marketNet  == null ? '#8aa898' : marketNet  >= 0 ? '#00cc66' : '#ff4444';
+    const rarityClass = rarity ? `rwa-rarity-${rarity}` : '';
 
     const rows = [];
-
-    // Sparse note — prepended so it's the first thing visible when Details opens
-    if (classification === 'sparse') {
-      rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">Data</span>
-        <span class="rwa-badge rwa-badge-sparse">Sparse</span>
-      </div>`);
-    }
 
     // BB Floor — always shown
     rows.push(`<div class="rwa-context-row">
@@ -1902,74 +1903,69 @@
       <span class="rwa-context-val ${rarityClass}">${escHtml(fmtM(bbFloor))}</span>
     </div>`);
 
-    if (classification === 'floor') {
-      // Floor flip display: floor price + quality + channel-specific nets
+    // Comp price / floor price + confidence flag
+    if (isFloor) {
       rows.push(`<div class="rwa-context-row">
         <span class="rwa-context-lbl">Floor Price</span>
         <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
         <span class="rwa-badge rwa-badge-src">floor</span>
       </div>`);
-
-      if (qualityPct != null || bonusPct != null) {
-        const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
-        const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
-        rows.push(`<div class="rwa-context-row">
-          <span class="rwa-context-lbl">Quality</span>
-          <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
-        </div>`);
-      }
-
-      rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">Bazaar Net</span>
-        <span class="rwa-context-val" style="color:${escHtml(bazaarColor)}">${escHtml(fmtM(bazaarNet))}</span>
-      </div>`);
-      rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">Market Net</span>
-        <span class="rwa-context-val" style="color:${escHtml(marketColor)}">${escHtml(fmtM(marketNet))}</span>
-      </div>`);
     } else {
-      // Standard display (hq / gap / sparse)
-      const srcLabel = classification === 'hq'
-        ? 'comp'
-        : ({ interpolated: 'interp', 'quality-match': 'match', 'single-bound': '~', 'bonus-only': '~' }[compSource] ?? '~');
+      const confidenceFlag = compCount === 0
+        ? `<span class="rwa-badge rwa-badge-sparse">BB floor only</span>`
+        : compCount === 1
+          ? `<span class="rwa-badge rwa-badge-sparse">1 comp — low confidence</span>`
+          : '';
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">Comp Price</span>
+        <span class="rwa-context-val">${escHtml(fmtM(nearestComp?.price ?? refPrice))}</span>
+        ${confidenceFlag}
+      </div>`);
+    }
+
+    // Quality + bonus
+    if (qualityPct != null || bonusPct != null) {
       const tierBadge = tier === 'exceptional'
         ? `<span class="rwa-badge rwa-badge-excep">EXCEP</span>`
         : tier === 'hq'
           ? `<span class="rwa-badge rwa-badge-hq">HQ</span>`
           : '';
-      const isGap = classification === 'gap';
-
+      const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
+      const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
       rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">${isGap ? 'Est. Price' : 'Comp Price'}</span>
-        <span class="rwa-context-val">${escHtml(fmtM(refPrice))}</span>
-        ${isGap
-          ? `<span class="rwa-badge rwa-badge-src">est.</span>`
-          : `<span class="rwa-badge rwa-badge-src">${escHtml(srcLabel)}</span>`}
-      </div>`);
-
-      if (qualityPct != null || bonusPct != null) {
-        const qStr = qualityPct != null ? `Q${qualityEstimated ? '~' : ''}${qualityPct.toFixed(0)}%` : '';
-        const bStr = bonusPct  != null ? `${bonusPct.toFixed(0)}% ${escHtml(bonusType ?? '')}` : '';
-        rows.push(`<div class="rwa-context-row">
-          <span class="rwa-context-lbl">Quality</span>
-          <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
-          ${tierBadge}
-        </div>`);
-      }
-
-      if (kingCap != null) {
-        rows.push(`<div class="rwa-context-row">
-          <span class="rwa-context-lbl">King's Cap</span>
-          <span class="rwa-context-val">${escHtml(fmtM(kingCap))}</span>
-          <span class="rwa-badge rwa-badge-cap">!</span>
-        </div>`);
-      }
-
-      rows.push(`<div class="rwa-context-row">
-        <span class="rwa-context-lbl">Net Profit</span>
-        <span class="rwa-context-val" style="color:${escHtml(profitColor)}">${escHtml(fmtM(netProfit))}</span>
+        <span class="rwa-context-lbl">Quality</span>
+        <span class="rwa-context-val">${escHtml([qStr, bStr].filter(Boolean).join(' · '))}</span>
+        ${tierBadge}
       </div>`);
     }
+
+    // King's cap
+    if (kingCap != null) {
+      rows.push(`<div class="rwa-context-row">
+        <span class="rwa-context-lbl">King's Cap</span>
+        <span class="rwa-context-val">${escHtml(fmtM(kingCap))}</span>
+        <span class="rwa-badge rwa-badge-cap">!</span>
+      </div>`);
+    }
+
+    // 2×2 profit matrix at suggested bid and max bid
+    const matrixRowHtml = (label, bid, matrix) => {
+      if (!matrix) return '';
+      const color = v => v == null ? '#8aa898' : v >= 0 ? '#00cc66' : '#ff4444';
+      return `<div class="rwa-context-row rwa-context-matrix">
+        <span class="rwa-context-lbl">${escHtml(label)} <span style="color:#8aa898">${escHtml(fmtM(bid))}</span></span>
+        <span class="rwa-context-val">
+          <span style="color:${color(matrix.bazaarClean)}">Baz ${escHtml(fmtM(matrix.bazaarClean))}</span>
+          <span style="color:${color(matrix.bazaarMugged)}"> / ${escHtml(fmtM(matrix.bazaarMugged))}★</span>
+          &nbsp;
+          <span style="color:${color(matrix.marketClean)}">Mkt ${escHtml(fmtM(matrix.marketClean))}</span>
+          <span style="color:${color(matrix.marketMugged)}"> / ${escHtml(fmtM(matrix.marketMugged))}★</span>
+        </span>
+      </div>`;
+    };
+
+    rows.push(matrixRowHtml('Sugg.', suggestedBid, matrixSugg));
+    rows.push(matrixRowHtml('Max',   maxBid,        matrixMax));
 
     const panel = document.createElement('div');
     panel.className = 'rwa-context';
@@ -2158,7 +2154,10 @@
   }
 
   function logListing(listing) {
-    const { maxOffer, roi, bbFloor } = computeListingMetrics(listing);
+    const { maxBid, matrixMax, bbFloor, refPrice } = computeListingMetrics(listing);
+    const roi = (matrixMax?.marketClean != null && listing.currentBid > 0)
+      ? (matrixMax.marketClean / listing.currentBid) * 100
+      : null;
     const entry = {
       id        : Date.now(),
       timestamp : Date.now(),
@@ -2168,10 +2167,10 @@
       bonusPct  : listing.bonusPct,
       tier      : listing.tier ?? null,
       currentBid: listing.currentBid,
-      maxOffer  : maxOffer,
+      maxOffer  : maxBid,
       roi       : roi,
       bbFloor   : bbFloor,
-      refPrice  : listing.refPrice ?? null,
+      refPrice  : refPrice ?? null,
       result         : null,
       actualSellPrice: null,
       actualNet      : null,
@@ -2720,86 +2719,13 @@
       const tier = classifyArmorTier(listing.qualityPct, listing.bonusPct, baseBonusPct, highTierThreshold);
       listing.tier = tier;
 
-      // ── Floor cluster detection (runs before the early-exit so every listing gets classified) ──
+      // ── Build normalized comp array and detect floor cluster ─────────────────
       const allComps     = buildNormalizedComps(listing);
       const floorCluster = detectFloorCluster(allComps);
       listing.floorCluster = floorCluster;
+      listing.allComps     = allComps;
 
-      // ── Quality-aware refPrice (identical logic for all tiers) ──────────────
-      const imComp  = getItemMarketComp(itemId, listing.bonusPct, listing.qualityPct);
-      const w3bComp = getTornW3BComp(listing.name, listing.armorSet, listing.rarity, listing.bonusPct, listing.qualityPct);
-
-      const imPrice  = imComp?.price  ?? Infinity;
-      const w3bPrice = w3bComp?.price ?? Infinity;
-
-      if (imPrice === Infinity && w3bPrice === Infinity) {
-        listing.classification   = classifyListing(listing, floorCluster, allComps);
-        listing.gapPremiumAnchor = null;
-        continue;
-      }
-
-      const imQM  = imComp?.qualityMatched  ?? false;
-      const w3bQM = w3bComp?.qualityMatched ?? false;
-      const anyQualityMatched = imQM || w3bQM;
-
-      const winner = imPrice <= w3bPrice ? imComp : w3bComp;
-
-      let refPrice    = null;
-      let compSource  = 'bonus-only';
-      let interpLower = null;
-      let interpUpper = null;
-
-      if (anyQualityMatched) {
-        const qmPrices = [];
-        if (imQM)  qmPrices.push(imPrice);
-        if (w3bQM) qmPrices.push(w3bPrice);
-        refPrice   = Math.min(...qmPrices);
-        compSource = 'quality-match';
-
-      } else if (listing.qualityPct != null) {
-        const allPoints = [
-          ...(imComp?.bonusMatchedPoints  ?? []),
-          ...(w3bComp?.bonusMatchedPoints ?? []),
-        ];
-        if (allPoints.length) {
-          const { lower, upper } = findQualityBracket(allPoints, listing.qualityPct);
-          interpLower = lower;
-          interpUpper = upper;
-          const interpolated = interpolateQualityPrice(listing.qualityPct, lower, upper);
-          if (interpolated != null) {
-            refPrice   = interpolated;
-            compSource = (lower && upper) ? 'interpolated' : 'single-bound';
-          }
-        }
-        if (refPrice == null) {
-          refPrice   = Math.min(imPrice, w3bPrice);
-          compSource = 'bonus-only';
-        }
-      } else {
-        refPrice   = Math.min(imPrice, w3bPrice);
-        compSource = 'bonus-only';
-      }
-
-      // ── Market ceiling: prevent overpriced outlier bazaar listings from inflating refPrice ──
-      // If a bonus-matched listing exists with quality >= target piece AND price < refPrice,
-      // our piece cannot realistically sell for more (buyers will take the better piece instead).
-      if (refPrice != null && listing.qualityPct != null) {
-        const allPoints = [
-          ...(imComp?.bonusMatchedPoints  ?? []),
-          ...(w3bComp?.bonusMatchedPoints ?? []),
-        ];
-        const betterCheaper = allPoints
-          .filter(p => p.quality >= listing.qualityPct && p.price < refPrice)
-          .sort((a, b) => a.price - b.price)[0];
-        if (betterCheaper) {
-          refPrice   = betterCheaper.price;
-          compSource = 'bonus-only';
-          interpLower = null;
-          interpUpper = null;
-        }
-      }
-
-      // ── King's cap for HQ/exceptional (ceiling on maxOffer, not on refPrice) ─
+      // ── King's cap for HQ/exceptional (ceiling on maxBid, not on refPrice) ──
       // Anchor = cheapest near-baseBonusPct listing (quality-agnostic), strict match only.
       // strict=true prevents fallback to all listings — if no base-stat comps exist, cap is null.
       // Cap = anchor × tier multiplier. Applied in computeListingMetrics(), not here.
@@ -2816,26 +2742,8 @@
         }
       }
 
-      listing.refPrice      = Math.round(refPrice);
       listing.kingCap       = kingCap;
       listing.baseCompPrice = baseCompPrice;
-      listing.compSource    = compSource;
-      listing.qualityMatched = anyQualityMatched;
-      listing.histUsedAsRef  = false;
-      listing.interpLower   = interpLower;
-      listing.interpUpper   = interpUpper;
-      listing.imPrice       = imPrice  === Infinity ? null : imPrice;
-      listing.w3bPrice      = w3bPrice === Infinity ? null : w3bPrice;
-
-      // ── Classify listing relative to floor cluster ──────────────────────────
-      listing.classification = classifyListing(listing, floorCluster, allComps);
-      if (listing.classification === 'gap') {
-        const clusterCeil   = floorCluster.floorPrice * 1.12;
-        const premiumPrices = allComps.filter(c => c.price > clusterCeil).map(c => c.price);
-        listing.gapPremiumAnchor = premiumPrices.length ? Math.min(...premiumPrices) : null;
-      } else {
-        listing.gapPremiumAnchor = null;
-      }
     }
   }
 
