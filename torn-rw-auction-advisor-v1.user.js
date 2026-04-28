@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Auction Advisor
 // @namespace    estradarpm-rw-auction-advisor
-// @version      1.31.0
+// @version      1.32.0
 // @description  Auction house advisor for Riot and Assault armor — evaluates listings for flip potential
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/amarket.php*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.31.0';
+  const SCRIPT_VERSION = '1.32.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -72,6 +72,9 @@
     // Bid ledger entries persisted to localStorage
     // [{ id, timestamp, itemName, rarity, qualityPct, bonusPct, tier, currentBid, maxOffer, roi, bbFloor, refPrice, result }]
     ledger: (() => { try { return JSON.parse(Store.get(KEYS.LEDGER)) || []; } catch { return []; } })(),
+
+    // Session-only column visibility preference (not persisted)
+    ledgerShowMore: false,
 
     // Weighted $/BB rate from all 5 combat caches
     // { rate, cachePrices: { name: price }, fetchedAt }
@@ -1256,7 +1259,7 @@
       top: 0;
       transition: right 0.2s ease;
       width: 420px;
-      z-index: 9000;
+      z-index: 10000;
     }
     #rwa-ledger-panel.rwa-ledger-open { right: 0; }
     .rwa-ledger-hdr {
@@ -1402,10 +1405,25 @@
       top: 0;
     }
     .rwa-ledger-table td { border-bottom: 1px solid #0c1620; color: #c0d0c8; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
+    .rwa-ledger-table th.rwa-col-secondary,
+    .rwa-ledger-table td.rwa-col-secondary { display: none; }
+    .rwa-ledger-table.rwa-cols-expanded th.rwa-col-secondary,
+    .rwa-ledger-table.rwa-cols-expanded td.rwa-col-secondary { display: table-cell; }
+    .rwa-ledger-cols {
+      background: none;
+      border: 1px solid #1a2a3a;
+      border-radius: 4px;
+      color: #4a7060;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    .rwa-ledger-cols:hover { border-color: #4a7060; color: #c0d0c8; }
     .rwa-result-select { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; cursor: pointer; }
     .rwa-result-select option { background: #0c1620; }
     .rwa-sell-input { background: #0c1620; border: 1px solid #1e3040; border-radius: 3px; color: #c0d0c8; font-size: 11px; padding: 1px 4px; width: 72px; }
     .rwa-anet { font-size: 10px; color: #4a9070; margin-top: 2px; }
+    .rwa-col-net { min-width: 96px; text-align: right; }
     .rwa-ledger-table tr:last-child td { border-bottom: none; }
 
     /* ── Advisory strip (injected into each auction li) ── */
@@ -1546,6 +1564,7 @@
       <button id="rwa-ledger-add"   class="rwa-ledger-add">+ Add Entry</button>
       <button id="rwa-ledger-csv"   class="rwa-ledger-csv">Copy CSV</button>
       <button id="rwa-ledger-clear" class="rwa-ledger-clear">Clear All</button>
+      <button id="rwa-ledger-cols"  class="rwa-ledger-cols">Show more ▾</button>
       <button id="rwa-ledger-close" class="rwa-ledger-close" title="Close">✕</button>
     </div>
     <div class="rwa-ledger-body" id="rwa-ledger-body"></div>
@@ -1576,10 +1595,8 @@
     const id = parseInt(input.dataset.entryId, 10);
     const entry = MEM.ledger.find(x => x.id === id);
     if (!entry) return;
-    const marketFee = MEM.settings.sellViaTrade ? 0 : 0.05;
-    const mugBuffer = MEM.settings.mugBufferPct / 100;
     entry.actualSellPrice = raw;
-    entry.actualNet = raw * (1 - marketFee) * (1 - mugBuffer) - entry.currentBid;
+    entry.actualNet = raw - entry.currentBid;
     Store.set(KEYS.LEDGER, JSON.stringify(MEM.ledger));
     const display = ledgerBody.querySelector(`[data-anet-id="${id}"]`);
     if (display) display.textContent = fmtM(entry.actualNet);
@@ -2412,27 +2429,31 @@
       <td>${escHtml(e.rarity)}</td>
       <td>${e.qualityPct != null ? e.qualityPct.toFixed(0) + '%' : '—'}</td>
       <td>${e.bonusPct  != null ? e.bonusPct.toFixed(0)  + '%' : '—'}</td>
-      <td>${escHtml(tierLabel(e.tier))}</td>
+      <td class="rwa-col-secondary">${escHtml(tierLabel(e.tier))}</td>
+      <td class="rwa-col-secondary">${escHtml(fmtM(e.bbFloor))}</td>
+      <td class="rwa-col-secondary">${escHtml(fmtM(e.refPrice))}</td>
       <td>${escHtml(fmtM(e.currentBid))}</td>
       <td>${escHtml(fmtM(e.maxOffer))}</td>
-      <td>${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
+      <td class="rwa-col-secondary">${e.roi != null ? e.roi.toFixed(1) + '%' : '—'}</td>
       <td><select class="rwa-result-select" data-entry-id="${e.id}">
         <option value="" ${!e.result ? 'selected' : ''}>—</option>
         <option value="Won"    ${e.result === 'Won'    ? 'selected' : ''}>Won</option>
         <option value="Lost"   ${e.result === 'Lost'   ? 'selected' : ''}>Lost</option>
         <option value="Passed" ${e.result === 'Passed' ? 'selected' : ''}>Passed</option>
       </select></td>
-      <td>${e.result === 'Won'
+      <td class="rwa-col-net">${e.result === 'Won'
         ? `<input class="rwa-sell-input" data-entry-id="${e.id}" placeholder="sell $" value="${e.actualSellPrice != null ? e.actualSellPrice : ''}">
            <div class="rwa-anet" data-anet-id="${e.id}">${e.actualNet != null ? fmtM(e.actualNet) : '—'}</div>`
         : '—'}</td>
     </tr>`).join('');
 
-    const emptyRow = filtered.length ? '' : '<tr><td colspan="11" class="rwa-ledger-empty">No matching entries</td></tr>';
-    ledgerBody.innerHTML = summaryBar + filterBar + `<table class="rwa-ledger-table">
+    const emptyRow = filtered.length ? '' : '<tr><td colspan="13" class="rwa-ledger-empty">No matching entries</td></tr>';
+    const colsBtn = document.getElementById('rwa-ledger-cols');
+    if (colsBtn) colsBtn.textContent = MEM.ledgerShowMore ? 'Show less ▴' : 'Show more ▾';
+    ledgerBody.innerHTML = summaryBar + filterBar + `<table class="rwa-ledger-table${MEM.ledgerShowMore ? ' rwa-cols-expanded' : ''}">
       <thead><tr>
         <th>Date</th><th>Item</th><th>Rarity</th><th>Q%</th><th>Bonus%</th>
-        <th>Score</th><th>Bid</th><th>Max Offer</th><th>ROI</th><th>Result</th><th>Actual Net</th>
+        <th class="rwa-col-secondary">Score</th><th class="rwa-col-secondary">BB Floor</th><th class="rwa-col-secondary">Ref Price</th><th>Bid</th><th>Max Offer</th><th class="rwa-col-secondary">ROI</th><th>Result</th><th class="rwa-col-net">Actual Net</th>
       </tr></thead>
       <tbody>${rows || emptyRow}</tbody>
     </table>`;
@@ -2562,6 +2583,10 @@
   });
   document.getElementById('rwa-ledger-csv').addEventListener('click', copyCsv);
   document.getElementById('rwa-ledger-add').addEventListener('click', openAddEntryForm);
+  document.getElementById('rwa-ledger-cols').addEventListener('click', () => {
+    MEM.ledgerShowMore = !MEM.ledgerShowMore;
+    renderLedger();
+  });
 
   // ── Data wiring ───────────────────────────────────────────────────────────────
 
