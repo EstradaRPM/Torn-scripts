@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.44.0
+// @version      1.44.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.44.0';
+  const SCRIPT_VERSION   = '1.44.1';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
 
@@ -667,15 +667,27 @@
     }
 
     /* ── Injected snipe card (DOM insertion on imarket page) ── */
-    .st-injected-card {
-      position: relative;
+    /* Alert cards float top-centre, independent of page DOM structure */
+    #st-inject-alerts {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
       z-index: 999998;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+      max-width: 380px;
+      width: calc(100vw - 24px);
+    }
+    #st-inject-alerts > * { pointer-events: auto; }
+    .st-injected-card {
       background: #080e18;
       border: 2px solid #00ff88;
       border-radius: 8px;
       box-shadow: 0 4px 24px rgba(0,255,136,0.18);
       padding: 12px 14px;
-      margin-bottom: 12px;
       font-family: 'Segoe UI', Arial, sans-serif;
       font-size: 13px;
       color: #c0d0c8;
@@ -2356,8 +2368,9 @@
   // ─── MutationObserver — real-time imarket snipe detection ────────────────
 
   function getImarketItemId() {
-    // Handles: bazaar.php?step=ItemMarket&ID=206 and imarket.php#/p=shop&ID=206
-    const m = window.location.href.match(/[?&#]ID=(\d+)/i);
+    // Handles: bazaar.php?step=ItemMarket&ID=206, imarket.php#/p=shop&ID=206,
+    //          page.php?sid=ItemMarket#/market/...&itemID=206
+    const m = window.location.href.match(/[?&#](?:item)?ID=(\d+)/i);
     return m ? parseInt(m[1], 10) : null;
   }
 
@@ -2400,8 +2413,8 @@
   function startImarketObserver() {
     if (_ioMutObs) { _ioMutObs.disconnect(); _ioMutObs = null; }
 
-    // Try a known market container first; fall back to body
-    const target = document.querySelector('#market-items, .market-items-cont, ul.items-list, .cont-gray.items')
+    // Prefer a scoped container over body to limit noise; CSS-modules parent varies by build
+    const target = document.querySelector('.item-market, #market-items, .market-items-cont, ul.items-list, .cont-gray.items')
                 ?? document.body;
 
     const buf = [];
@@ -2477,9 +2490,13 @@
       </div>
     `;
 
-    const container = document.querySelector('#market-items, .market-items-cont, ul.items-list, .cont-gray.items');
-    if (!container || !container.parentNode) return;
-    container.parentNode.insertBefore(card, container);
+    let alertBox = document.getElementById('st-inject-alerts');
+    if (!alertBox) {
+      alertBox = document.createElement('div');
+      alertBox.id = 'st-inject-alerts';
+      document.body.appendChild(alertBox);
+    }
+    alertBox.appendChild(card);
 
     card.querySelector('.st-injected-dismiss').addEventListener('click', () => card.remove());
 
