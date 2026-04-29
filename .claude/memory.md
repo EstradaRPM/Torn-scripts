@@ -1,16 +1,16 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-29 (tickets #176, #179, #181, #182 done; next is #184)_
+_Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184 done; next is #185)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.42.0` (on main, pushed)
-**Status:** Implementation in progress — 7 of 12 tickets done
+**Version:** `1.43.0` (on main, pushed)
+**Status:** Implementation in progress — 8 of 12 tickets done
 
-**Next session:** Implement issue #184 — Injected snipe card + Queue button. No skill needed, implement directly. See GitHub issue for details.
+**Next session:** Implement issue #185 — Quick Log strip + Batch Entry + pending queue. Needs #184 ✓. No skill needed, implement directly.
 
 ---
 
@@ -28,8 +28,23 @@ _Last updated: 2026-04-29 (tickets #176, #179, #181, #182 done; next is #184)_
 | #181 | Collapsed card layout + weighted sort | ✅ DONE v1.41.0 |
 | #182 | MutationObserver + real-time green highlight | ✅ DONE v1.42.0 |
 | #183 | Ledger summary fixes | open — unblocked (leaf, do after critical path) |
-| #184 | Injected snipe card + Queue button | **NEXT** — needs #182 ✓, #181 ✓ |
-| #185 | Quick Log strip + Batch Entry + pending queue | open — needs #184 |
+| #184 | Injected snipe card + Queue button | ✅ DONE v1.43.0 |
+| #185 | Quick Log strip + Batch Entry + pending queue | **NEXT** — needs #184 ✓ |
+
+---
+
+## #184 — What was done (v1.43.0)
+
+Added `injectSnipeCard(itemId, detectedPrice, triggerNode)` + supporting CSS.
+- `checkNodesForSnipes` now extracts the hit price (smallest value ≤ snipeCutoff) and passes it + the trigger node to `injectSnipeCard`
+- `injectSnipeCard`: idempotent (blocks duplicates via `id='st-injected-N'`); finds listings container with same selectors as observer; inserts `.st-injected-card` div BEFORE the container
+- Card shows: Item name, Snipe Price, Qty (from `res.lowestListedQty`), Sell Position (`res.recommendedSellTarget`), Gross Profit (color-coded green/red)
+- Mug row: appears when `sellTarget * qty >= $10M` (MUG_THRESHOLD); shows 15% loss estimate
+- Queue button: pushes `{ itemId, name, price: detectedPrice, qty: null, source: 'queue', ts }` to `MEM.pendingQueue` (in-memory, not persisted); shows "Queued!" for 2s
+- Dismiss ×: `card.remove()` immediately
+- Listing removal watch: secondary MutationObserver on `triggerNode.parentNode`; when trigger node leaves DOM, starts 30s timeout then `card.remove()`
+- `MEM.pendingQueue` added to MEM init (in-memory array, not persisted, not in KEYS)
+- `MUG_THRESHOLD = 10_000_000` const declared before `injectSnipeCard`
 
 ---
 
