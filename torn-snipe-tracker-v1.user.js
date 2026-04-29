@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.42.0
+// @version      1.43.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.42.0';
+  const SCRIPT_VERSION   = '1.43.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
 
@@ -90,6 +90,7 @@
     cardCollapsed:    {},   // itemId -> bool — not persisted
     logBuyIdx:        null,
     storageWarnShown: false,
+    pendingQueue:     [],
   };
 
   if (PAGE_MODE === 'background') {
@@ -617,6 +618,99 @@
         padding: 5px 5px;
         font-size: 12px;
       }
+    }
+
+    /* ── Injected snipe card (DOM insertion on imarket page) ── */
+    .st-injected-card {
+      position: relative;
+      z-index: 999998;
+      background: #080e18;
+      border: 2px solid #00ff88;
+      border-radius: 8px;
+      box-shadow: 0 4px 24px rgba(0,255,136,0.18);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 13px;
+      color: #c0d0c8;
+      user-select: none;
+    }
+    .st-injected-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .st-injected-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #00ff88;
+      text-shadow: 0 0 10px rgba(0,255,136,0.5);
+    }
+    .st-injected-dismiss {
+      background: none;
+      border: none;
+      color: #4a6070;
+      cursor: pointer;
+      font-size: 15px;
+      padding: 0 4px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .st-injected-dismiss:hover { color: #ff4444; }
+    .st-injected-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin-bottom: 10px;
+    }
+    .st-injected-stat { display: flex; flex-direction: column; }
+    .st-injected-lbl {
+      font-size: 10px;
+      color: #4a6070;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 2px;
+    }
+    .st-injected-val {
+      font-size: 13px;
+      font-weight: 600;
+      color: #c0d0c8;
+    }
+    .st-injected-mug {
+      background: rgba(255,100,60,0.07);
+      border: 1px solid rgba(255,100,60,0.25);
+      border-radius: 4px;
+      padding: 5px 9px;
+      margin-bottom: 10px;
+      font-size: 11px;
+      color: #ff9944;
+    }
+    .st-injected-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .st-injected-queue-btn {
+      background: #00ff88;
+      color: #080e18;
+      border: none;
+      border-radius: 4px;
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      transition: background 0.15s;
+    }
+    .st-injected-queue-btn:hover { background: #00cc70; }
+    .st-injected-queue-confirm {
+      font-size: 11px;
+      font-weight: 600;
+      color: #00ff88;
+      min-width: 52px;
     }
   `;
   document.head.appendChild(style);
@@ -2150,11 +2244,13 @@
     const res = MEM.pollResults[itemId];
     if (!res || res.error || !res.fairValue) return;
     const threshold = entry.threshold ?? MEM.settings.threshold ?? 10;
-    const snipePrice = res.fairValue * (1 - threshold / 100);
+    const snipeCutoff = res.fairValue * (1 - threshold / 100);
     for (const node of addedNodes) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      if (parseNodePrices(node).some(p => p <= snipePrice)) {
+      const hits = parseNodePrices(node).filter(p => p <= snipeCutoff);
+      if (hits.length > 0) {
         flashCardGreen(itemId);
+        injectSnipeCard(itemId, Math.min(...hits), node);
         return;
       }
     }
@@ -2181,6 +2277,95 @@
 
   function stopImarketObserver() {
     if (_ioMutObs) { _ioMutObs.disconnect(); _ioMutObs = null; }
+  }
+
+  const MUG_THRESHOLD = 10_000_000;
+
+  function injectSnipeCard(itemId, detectedPrice, triggerNode) {
+    const cardId = 'st-injected-' + itemId;
+    if (document.getElementById(cardId)) return;
+
+    const entry = MEM.watchlist.find(w => w.itemId === itemId);
+    const res   = MEM.pollResults[itemId];
+    if (!entry || !res || res.error) return;
+
+    const sellTarget  = entry.manualSellTarget ?? res.recommendedSellTarget ?? null;
+    const qty         = res.lowestListedQty ?? null;
+    const fmt         = n => '$' + Math.round(n).toLocaleString();
+
+    const grossProfit = sellTarget != null
+      ? (sellTarget - detectedPrice) * (qty ?? 1)
+      : null;
+
+    const saleValue = sellTarget != null ? sellTarget * (qty ?? 1) : null;
+    const showMug   = saleValue != null && saleValue >= MUG_THRESHOLD;
+    const mugLoss   = showMug ? saleValue * 0.15 : null;
+
+    const stats = [
+      { lbl: 'Item',         val: entry.name },
+      { lbl: 'Snipe Price',  val: fmt(detectedPrice) },
+      { lbl: 'Qty',          val: qty != null ? qty.toLocaleString() : '—' },
+      { lbl: 'Sell Position', val: sellTarget != null ? fmt(sellTarget) : '—' },
+      { lbl: 'Gross Profit', val: grossProfit != null ? fmt(grossProfit) : '—', color: grossProfit > 0 ? '#00ff88' : '#ff4444' },
+    ];
+
+    const statsHtml = stats.map(s =>
+      `<div class="st-injected-stat">
+        <span class="st-injected-lbl">${s.lbl}</span>
+        <span class="st-injected-val"${s.color ? ` style="color:${s.color}"` : ''}>${s.val}</span>
+      </div>`
+    ).join('');
+
+    const mugHtml = showMug
+      ? `<div class="st-injected-mug">⚠ Mug risk: carrying ${fmt(saleValue)} — if mugged at 15%, lose ${fmt(mugLoss)}</div>`
+      : '';
+
+    const card = document.createElement('div');
+    card.id        = cardId;
+    card.className = 'st-injected-card';
+    card.innerHTML = `
+      <div class="st-injected-header">
+        <span class="st-injected-title">⚡ Snipe Alert</span>
+        <button class="st-injected-dismiss" title="Dismiss">✕</button>
+      </div>
+      <div class="st-injected-stats">${statsHtml}</div>
+      ${mugHtml}
+      <div class="st-injected-actions">
+        <button class="st-injected-queue-btn">Queue</button>
+        <span class="st-injected-queue-confirm"></span>
+      </div>
+    `;
+
+    const container = document.querySelector('#market-items, .market-items-cont, ul.items-list, .cont-gray.items');
+    if (!container || !container.parentNode) return;
+    container.parentNode.insertBefore(card, container);
+
+    card.querySelector('.st-injected-dismiss').addEventListener('click', () => card.remove());
+
+    card.querySelector('.st-injected-queue-btn').addEventListener('click', () => {
+      MEM.pendingQueue.push({ itemId, name: entry.name, price: detectedPrice, qty: null, source: 'queue', ts: Date.now() });
+      const confirm = card.querySelector('.st-injected-queue-confirm');
+      confirm.textContent = 'Queued!';
+      setTimeout(() => { confirm.textContent = ''; }, 2000);
+    });
+
+    // Watch for removal of the trigger node; card persists 30 s after that
+    const nodeParent = triggerNode.parentNode;
+    if (nodeParent) {
+      let removalTimer = null;
+      const removalObs = new MutationObserver(mutations => {
+        for (const m of mutations) {
+          for (const removed of m.removedNodes) {
+            if (removed === triggerNode || (removed.contains && removed.contains(triggerNode))) {
+              removalObs.disconnect();
+              if (!removalTimer) removalTimer = setTimeout(() => card.remove(), 30000);
+              return;
+            }
+          }
+        }
+      });
+      removalObs.observe(nodeParent, { childList: true });
+    }
   }
 
   // ─── Export CSV ───────────────────────────────────────────────────────────
