@@ -1,16 +1,19 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184, #185 done; next is leaf tickets)_
+_Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184, #185 done + v1.44.1 hotfix; next is leaf tickets)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.44.0` (on main, pushed)
+**Version:** `1.44.1` (on main, pushed — clean, no open PRs, no stale branches)
 **Status:** Implementation in progress — 9 of 12 tickets done (critical path complete)
 
 **Next session:** Any of the remaining open leaf tickets: #177 (snipe frequency badge), #178 (PDA notifications + audio), #180 (mug scenario display), #183 (ledger summary fixes). All unblocked. Pick any.
+
+### Known PDA limitation (non-fixable without PDA engine change)
+`GM_xmlhttpRequest` on Torn PDA's WebView does NOT bypass the page CSP. `weav3r.dev` calls will always fail with a network error on PDA. Script silently falls back to Torn API data only. Console noise is expected — not a bug to fix.
 
 ---
 
@@ -32,6 +35,14 @@ _Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184, #185 done; next
 | #185 | Quick Log strip + Batch Entry + pending queue | ✅ DONE v1.44.0 |
 
 ---
+
+## v1.44.1 hotfix — What was done
+
+Fixed snipe alert card visibility on `page.php?sid=ItemMarket` (new Torn market URL):
+- `getImarketItemId()` regex: `/[?&#](?:item)?ID=(\d+)/i` — now handles both `ID=206` and `itemID=206` URL formats
+- `injectSnipeCard()`: replaced fragile `insertBefore(container)` with inject into `#st-inject-alerts` — a fixed `div` we own at `top:12px; left:50%` (top-centre viewport). Decoupled from Torn's CSS Modules class hashes that change on each deploy
+- Observer target: now tries `.item-market` before falling back to `document.body`
+- Torn PDA DOM findings: listing items use CSS Modules (`DIV.item___ydsFW`, parent `DIV.root___Io7i2`). Outer container has stable class `.item-market`. `bazaar-listings-count` class found on count display element.
 
 ## #185 — What was done (v1.44.0)
 
