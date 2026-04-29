@@ -1,14 +1,10 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.37.1
+// @version      1.38.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
-// @match        https://www.torn.com/bazaar.php*
-// @match        https://www.torn.com/market.php*
-// @match        https://www.torn.com/imarket.php*
-// @match        https://www.torn.com/trade.php*
-// @match        https://www.torn.com/page.php*
+// @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      weav3r.dev
@@ -19,16 +15,22 @@
 (function () {
   'use strict';
 
-  const ALLOWED_PATHS = ['/market', '/bazaar', '/imarket', '/trade', 'ItemMarket'];
-  if (!ALLOWED_PATHS.some(p => window.location.href.includes(p))) return;
-  if (document.getElementById('st-panel')) return;
+  function detectPageMode() {
+    const href = window.location.href;
+    return ['/market', '/bazaar', '/imarket', '/trade', 'ItemMarket'].some(p => href.includes(p))
+      ? 'market'
+      : 'background';
+  }
+  const PAGE_MODE = detectPageMode();
+
+  if (PAGE_MODE === 'market' && document.getElementById('st-panel')) return;
 
   if (window.__stPollTimer) {
     clearInterval(window.__stPollTimer);
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.37.1';
+  const SCRIPT_VERSION = '1.38.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -86,6 +88,12 @@
     logBuyIdx:        null,
     storageWarnShown: false,
   };
+
+  if (PAGE_MODE === 'background') {
+    runPoll();
+    startPollLoop();
+    return;
+  }
 
   // ─── Styles ───────────────────────────────────────────────────────────────
 
@@ -987,17 +995,17 @@
   let pollTimer = null;
 
   async function runPoll() {
-    const scanLine = panel.querySelector('.st-scan-line');
+    const scanLine = PAGE_MODE === 'market' ? panel.querySelector('.st-scan-line') : null;
     if (!getApiKey()) {
       console.warn('[SnipeTracker] No API key available — enter one in Settings.');
       if (scanLine) scanLine.textContent = 'Error: no API key — paste one in Settings below';
-      renderWatchlist();
+      if (PAGE_MODE === 'market') renderWatchlist();
       return;
     }
     for (const item of MEM.watchlist) {
       if (!(item.itemId > 0) || item.enabled === false) continue;
       await fetchItemPrice(item);
-      renderWatchlist(); // clear error state immediately on per-item success
+      if (PAGE_MODE === 'market') renderWatchlist();
     }
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
   }
