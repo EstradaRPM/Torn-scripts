@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.43.0
+// @version      1.44.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.43.0';
+  const SCRIPT_VERSION   = '1.44.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
 
@@ -288,6 +288,52 @@
       font-size: 12px;
       letter-spacing: 0.04em;
     }
+
+    /* ── Pending queue strip ── */
+    #st-queue-section {
+      margin-bottom: 4px;
+      border: 1px solid #1a3a2a;
+      border-radius: 6px;
+      background: #050e0a;
+      overflow: hidden;
+    }
+    #st-queue-section .st-section-label {
+      margin: 0;
+      padding: 6px 10px;
+      border-bottom: 1px solid #1a3a2a;
+      border-radius: 6px 6px 0 0;
+    }
+    .st-queue-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-bottom: 1px solid #0a1a12;
+      font-size: 12px;
+    }
+    .st-queue-row:last-child { border-bottom: none; }
+    .st-queue-name {
+      flex: 1;
+      color: #c0d0c8;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .st-queue-price { color: #00ff88; font-weight: 700; white-space: nowrap; }
+    .st-queue-age   { color: #8aa898; font-size: 11px; white-space: nowrap; }
+    .st-queue-badge {
+      display: inline-block;
+      background: #00cc66;
+      color: #050e0a;
+      border-radius: 10px;
+      padding: 0 6px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-left: 5px;
+      line-height: 1.4;
+    }
+    #st-queue-batch-row { padding: 0 8px 8px; margin-top: 4px; }
 
     /* ── Trend indicators ── */
     .st-trend-rising {
@@ -729,7 +775,7 @@
       <!-- Tabs -->
       <div id="st-tabs">
         <div class="st-tab st-active" data-tab="snipe">Snipe</div>
-        <div class="st-tab" data-tab="ledger">Ledger</div>
+        <div class="st-tab" data-tab="ledger">Ledger<span id="st-ledger-tab-badge" class="st-queue-badge" style="display:none"></span></div>
       </div>
 
       <!-- ── SNIPE pane ── -->
@@ -783,6 +829,16 @@
 
       <!-- ── LEDGER pane ── -->
       <div id="st-pane-ledger" class="st-pane">
+
+        <!-- Pending Queue -->
+        <div id="st-queue-section" style="display:none">
+          <div class="st-section-label">Pending Queue <span id="st-queue-badge"></span></div>
+          <div id="st-queue-rows"></div>
+          <div class="st-btn-row" id="st-queue-batch-row">
+            <button id="st-queue-log-all-btn" class="st-btn">Log All</button>
+            <button id="st-queue-clear-btn" class="st-btn st-btn-danger">Clear Queue</button>
+          </div>
+        </div>
 
         <div class="st-section-label">Open Trades</div>
         <table class="st-table">
@@ -2022,6 +2078,91 @@
     panel.querySelector('#st-sum-trades').textContent   = closed.length;
   }
 
+  // ─── Pending queue strip ──────────────────────────────────────────────────
+
+  function updateQueueBadge() {
+    const tabBadge = panel.querySelector('#st-ledger-tab-badge');
+    if (!tabBadge) return;
+    const count = MEM.pendingQueue.length;
+    tabBadge.textContent = count || '';
+    tabBadge.style.display = count ? '' : 'none';
+  }
+
+  function renderQueueStrip() {
+    updateQueueBadge();
+    const section = panel.querySelector('#st-queue-section');
+    const rowsEl  = panel.querySelector('#st-queue-rows');
+    const badge   = panel.querySelector('#st-queue-badge');
+    const count   = MEM.pendingQueue.length;
+
+    if (!count) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    badge.textContent = count;
+
+    rowsEl.innerHTML = MEM.pendingQueue.map((item, i) => `
+      <div class="st-queue-row" data-qi="${i}">
+        <span class="st-queue-name" title="${item.name}">${item.name}</span>
+        <span class="st-queue-price">${fmtMoney(item.price)}</span>
+        <span class="st-queue-age">${fmtAgo(item.ts)}</span>
+        <input class="st-input st-queue-qty-input" type="number" min="1" placeholder="qty" style="width:58px">
+        <button class="st-queue-log-btn st-btn" style="font-size:11px;padding:3px 8px">Log</button>
+        <button class="st-queue-rm-btn st-btn st-btn-danger" style="font-size:11px;padding:3px 8px">✕</button>
+      </div>
+    `).join('');
+
+    rowsEl.querySelectorAll('.st-queue-log-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('.st-queue-row');
+        const qi  = parseInt(row.dataset.qi, 10);
+        const qty = parseInt(row.querySelector('.st-queue-qty-input').value, 10);
+        if (!(qty > 0)) return;
+        const item = MEM.pendingQueue[qi];
+        if (!item) return;
+        MEM.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
+        Store.set(KEYS.trades, MEM.trades);
+        MEM.pendingQueue.splice(qi, 1);
+        renderQueueStrip();
+        renderOpenTrades();
+        renderSummary();
+      });
+    });
+
+    rowsEl.querySelectorAll('.st-queue-rm-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const qi = parseInt(btn.closest('.st-queue-row').dataset.qi, 10);
+        MEM.pendingQueue.splice(qi, 1);
+        renderQueueStrip();
+      });
+    });
+  }
+
+  panel.querySelector('#st-queue-log-all-btn').addEventListener('click', () => {
+    const rows = [...panel.querySelectorAll('#st-queue-rows .st-queue-row')];
+    // collect valid entries; iterate in reverse so splices don't shift earlier indices
+    const toLog = rows
+      .map(row => ({ qi: parseInt(row.dataset.qi, 10), qty: parseInt(row.querySelector('.st-queue-qty-input').value, 10) }))
+      .filter(({ qi, qty }) => qty > 0 && MEM.pendingQueue[qi])
+      .sort((a, b) => b.qi - a.qi);
+    if (!toLog.length) return;
+    toLog.forEach(({ qi, qty }) => {
+      const item = MEM.pendingQueue[qi];
+      MEM.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
+      MEM.pendingQueue.splice(qi, 1);
+    });
+    Store.set(KEYS.trades, MEM.trades);
+    renderQueueStrip();
+    renderOpenTrades();
+    renderSummary();
+  });
+
+  panel.querySelector('#st-queue-clear-btn').addEventListener('click', () => {
+    MEM.pendingQueue.length = 0;
+    renderQueueStrip();
+  });
+
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
   panel.querySelectorAll('.st-tab').forEach(tab => {
@@ -2030,7 +2171,7 @@
       panel.querySelectorAll('.st-pane').forEach(p => p.classList.remove('st-active'));
       tab.classList.add('st-active');
       panel.querySelector(`#st-pane-${tab.dataset.tab}`).classList.add('st-active');
-      if (tab.dataset.tab === 'ledger') { renderOpenTrades(); renderClosedTrades(); renderSummary(); }
+      if (tab.dataset.tab === 'ledger') { renderQueueStrip(); renderOpenTrades(); renderClosedTrades(); renderSummary(); }
     });
   });
 
@@ -2344,6 +2485,7 @@
 
     card.querySelector('.st-injected-queue-btn').addEventListener('click', () => {
       MEM.pendingQueue.push({ itemId, name: entry.name, price: detectedPrice, qty: null, source: 'queue', ts: Date.now() });
+      updateQueueBadge();
       const confirm = card.querySelector('.st-injected-queue-confirm');
       confirm.textContent = 'Queued!';
       setTimeout(() => { confirm.textContent = ''; }, 2000);
