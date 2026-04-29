@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.39.0
+// @version      1.40.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,8 +30,9 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.39.0';
-  const API_KEY = '###PDA-APIKEY###';
+  const SCRIPT_VERSION   = '1.40.0';
+  const API_KEY          = '###PDA-APIKEY###';
+  const BLOCK_VALUE_PCT  = 0.10;
 
   // Prefer PDA-injected key; fall back to manually stored key
   function getApiKey() {
@@ -768,6 +769,40 @@
     return vaultAmount * (1 - vaultFloorPct / 100);
   }
 
+  function detectVolumeBlock(listings, abovePrice, blockValueThreshold) {
+    const tiers = new Map();
+    for (const l of listings) {
+      if (l.price <= abovePrice) continue;
+      tiers.set(l.price, (tiers.get(l.price) ?? 0) + l.quantity);
+    }
+    for (const [price, quantity] of [...tiers.entries()].sort((a, b) => a[0] - b[0])) {
+      if (price * quantity >= blockValueThreshold) return { price, quantity };
+    }
+    return null;
+  }
+
+  function computeSmartSellPosition(listings, snipePrice, availableCapital, trend) {
+    const above = listings.filter(l => l.price > snipePrice).sort((a, b) => a.price - b.price);
+    if (!above.length) return null;
+
+    const blockValueThreshold = availableCapital * BLOCK_VALUE_PCT;
+
+    if (trend === 'falling') {
+      return above[0].price;
+    }
+
+    const block = detectVolumeBlock(above, snipePrice, blockValueThreshold);
+    if (block) {
+      return block.price - 1;
+    }
+
+    // P75 fallback of the full listing set
+    const sorted = [...listings].sort((a, b) => a.price - b.price);
+    const p75idx = Math.floor(sorted.length * 0.75);
+    const p75 = sorted[Math.min(p75idx, sorted.length - 1)].price;
+    return Math.max(p75, above[0].price);
+  }
+
   // ─── API ──────────────────────────────────────────────────────────────────
 
   function gmFetch(url) {
@@ -980,21 +1015,10 @@
     MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
     Store.set(KEYS.trendcache, MEM.trendCache);
 
-    // Snipe sell ceiling: when there's a true outlier snipe (single low-qty listing below
-    // outlierFloor), find any large block between the snipe and FV — you can't sell above it.
-    // When the flood IS the floor (no outlier below it), no blocker applies and ceiling = FV.
-    const sniperBlocker = outlierExcluded
-      ? merged.find(l => l.quantity >= 100 && l.price > merged[0].price && l.price < fairValue)
-      : null;
-    const sellCeiling = sniperBlocker?.price ?? fairValue;
-
     const trendSignal = MEM.trendCache[item.itemId].trend;
-    if (trendSignal === 'falling') {
-      const firstNonOutlier = merged.find(l => l.price >= outlierFloor);
-      MEM.pollResults[item.itemId].recommendedSellTarget = Math.min(firstNonOutlier?.price ?? p25, sellCeiling);
-    } else {
-      MEM.pollResults[item.itemId].recommendedSellTarget = sellCeiling;
-    }
+    MEM.pollResults[item.itemId].recommendedSellTarget = computeSmartSellPosition(
+      merged, merged[0].price, MEM.availableCapital, trendSignal
+    );
   }
 
   // ─── Poll loop ────────────────────────────────────────────────────────────
