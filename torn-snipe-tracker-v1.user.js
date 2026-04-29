@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.41.0
+// @version      1.42.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.41.0';
+  const SCRIPT_VERSION   = '1.42.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
 
@@ -258,6 +258,16 @@
       font-size: 12px;
       letter-spacing: 0.05em;
       text-shadow: 0 0 8px rgba(0,255,136,0.45);
+    }
+
+    /* ── Real-time snipe flash (MutationObserver detection) ── */
+    @keyframes st-flash-green {
+      0%   { box-shadow: 0 0 0 2px #00ff88, inset 0 0 0 1px #00ff8822; background: rgba(0,255,136,0.07); }
+      60%  { box-shadow: 0 0 0 2px #00ff88, inset 0 0 0 1px #00ff8822; background: rgba(0,255,136,0.07); }
+      100% { box-shadow: none; background: transparent; }
+    }
+    .st-card.st-snipe-flash {
+      animation: st-flash-green 2.5s ease-out forwards;
     }
     .st-status-flood {
       color: #ff9944;
@@ -1028,7 +1038,8 @@
 
   // ─── Poll loop ────────────────────────────────────────────────────────────
 
-  let pollTimer = null;
+  let pollTimer  = null;
+  let _ioMutObs  = null;
 
   async function runPoll() {
     const scanLine = PAGE_MODE === 'market' ? panel.querySelector('.st-scan-line') : null;
@@ -2107,6 +2118,71 @@
     renderWatchlist();
   });
 
+  // ─── MutationObserver — real-time imarket snipe detection ────────────────
+
+  function getImarketItemId() {
+    // Handles: bazaar.php?step=ItemMarket&ID=206 and imarket.php#/p=shop&ID=206
+    const m = window.location.href.match(/[?&#]ID=(\d+)/i);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  function parseNodePrices(node) {
+    const text = node.textContent || '';
+    return [...text.matchAll(/\$\s*([\d,]+)/g)]
+      .map(m => parseInt(m[1].replace(/,/g, ''), 10))
+      .filter(p => p > 10000);
+  }
+
+  function flashCardGreen(itemId) {
+    const container = panel.querySelector('#st-watchlist-cards');
+    const btn = container.querySelector(`.st-card-collapse-btn[data-itemid="${itemId}"]`);
+    const card = btn?.closest('.st-card');
+    if (!card || card.classList.contains('st-snipe-flash')) return;
+    card.classList.add('st-snipe-flash');
+    setTimeout(() => card.classList.remove('st-snipe-flash'), 2500);
+  }
+
+  function checkNodesForSnipes(addedNodes) {
+    const itemId = getImarketItemId();
+    if (!itemId) return;
+    const entry = MEM.watchlist.find(w => w.itemId === itemId && w.enabled !== false);
+    if (!entry) return;
+    const res = MEM.pollResults[itemId];
+    if (!res || res.error || !res.fairValue) return;
+    const threshold = entry.threshold ?? MEM.settings.threshold ?? 10;
+    const snipePrice = res.fairValue * (1 - threshold / 100);
+    for (const node of addedNodes) {
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (parseNodePrices(node).some(p => p <= snipePrice)) {
+        flashCardGreen(itemId);
+        return;
+      }
+    }
+  }
+
+  function startImarketObserver() {
+    if (_ioMutObs) { _ioMutObs.disconnect(); _ioMutObs = null; }
+
+    // Try a known market container first; fall back to body
+    const target = document.querySelector('#market-items, .market-items-cont, ul.items-list, .cont-gray.items')
+                ?? document.body;
+
+    const buf = [];
+    let debounce = null;
+    _ioMutObs = new MutationObserver(mutations => {
+      for (const m of mutations) m.addedNodes.forEach(n => buf.push(n));
+      clearTimeout(debounce);
+      debounce = setTimeout(() => { checkNodesForSnipes(buf.splice(0)); }, 150);
+    });
+    _ioMutObs.observe(target, { childList: true, subtree: true });
+
+    window.addEventListener('beforeunload', stopImarketObserver, { once: true });
+  }
+
+  function stopImarketObserver() {
+    if (_ioMutObs) { _ioMutObs.disconnect(); _ioMutObs = null; }
+  }
+
   // ─── Export CSV ───────────────────────────────────────────────────────────
 
   function csvEsc(v) {
@@ -2156,5 +2232,6 @@
 
   runPoll();
   startPollLoop();
+  startImarketObserver();
 
 })();
