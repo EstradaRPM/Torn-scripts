@@ -1,115 +1,84 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-28 (v1.32.0 on main; pricing engine redesign PRD filed as issue #170)_
+_Last updated: 2026-04-28 (snipe tracker v2 PRD filed as issue #173)_
 
 ---
 
-## Current WIP
+## Active WIP
 
-Nothing in active development. All PRD steps (I through L) are merged to main at v1.32.0.
+**File:** `torn-snipe-tracker-v1.user.js`
+**Version:** `1.37.1` (current on main)
+**Status:** PRD filed — implementation not started
 
-**Next planned work:** Pricing engine redesign (issue #170) — see PRD for full spec.
+**Next session:** Run `/to-issues 173` to break PRD into implementation tickets, then implement ticket by ticket using `/tdd` for pure function logic layer and manual PDA testing for UI/DOM layer.
+
+---
+
+## Snipe Tracker v2 — PRD Summary (issue #173)
+
+Full PRD: https://github.com/EstradaRPM/Torn-scripts/issues/173
+
+### Core changes
+
+- **Smart sell position** replaces P50 as sell target and snipe detection anchor — volume-block anchored, trend-adjusted, driven by vault capital
+- **Volume block** = first price tier where `price × qty ≥ % of available capital` (dynamic, not static unit count)
+- **Available capital** = `vault_amount × (1 − vaultFloorPct/100)` from `user/?selections=money` API — default floor 10%
+- **Mug scenario** on projection: `sellTarget × qty × (1 − mugPct/100) − buyPrice × qty` — default mugPct = 15, shown when sale value is large relative to capital
+- **Weighted sort score** = `grossProfit × min(roi / baseROI, 1.0)` — cards sorted descending, display shows gross profit $
+- **Collapsed card default** — one row: `[STATUS ●NEW] Name   ×qty @ $price   +$profit   ↑trend`
+- **@match `torn.com/*`** — two modes: full panel on market pages, silent poll loop on all others
+- **MutationObserver** on imarket listings — real-time detection, zero API cost
+- **PDA native notification** on new snipe from any page
+- **Pending queue + Quick Log strip + Batch Entry** — decoupled logging for rapid sessions
+- **Snipe frequency** ("N snipes / 7d") from existing snapshots — watchlist curation signal
+- **Ledger fixes**: At Risk vs Total Deployed, weighted ROI, win rate, per-item breakdown, live open estimate, date column
+
+### New pure functions (all get Node tests in `test-snipe-engine.js`)
+
+| Function | Purpose |
+|----------|---------|
+| `detectVolumeBlock(listings, abovePrice, blockValueThreshold)` | First qualifying price tier |
+| `computeSmartSellPosition(listings, snipePrice, availableCapital, trend)` | Volume-block anchored sell target |
+| `calcWeightedScore(grossProfit, roi, baseROI)` | Sort score |
+| `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` | Worst-case mugged net |
+| `calcSnipeFrequency(snapshots, fairValue, threshold, windowMs)` | 7d crossing count |
+| `computeAvailableCapital(vaultAmount, vaultFloorPct)` | Vault × (1 − floor%) |
+
+### Ubiquitous language (locked across all scripts)
+
+- **Bazaar**: 0% fee, always
+- **Item market**: 5% fee standard; +10% anonymous = 15% total
+- **Mug %**: 15% default (Merits + practical Plunder ceiling)
+- **Smart sell position**: gap between floor chaff and first meaningful volume block, trend-adjusted
+
+---
+
+## RW Auction Advisor — PARKED
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
-**Branch:** `main`
-**Version:** `1.32.0`
+**Version:** `1.33.1` (current on main, fully shipped)
+**Status:** Parked — do not touch until snipe tracker work is complete
 
-### Completed steps
+### What shipped
 
-| Step | Description | Version |
-|------|-------------|---------|
-| 1 | Inline advisory strip | 1.17.0 |
-| 2 | `▼ Details` expandable context panel | 1.18.0 |
-| 3 | Market/Bazaar split-column comp panel | 1.19.0 |
-| 4 | Settings modal polish | 1.20.0 |
-| 5 | Ledger framework scaffold | 1.21.0 |
-| 6 | CLAUDE.md documentation + memory.md | 1.21.1 |
-| A | Result capture dropdown | 1.22.0 |
-| B | P&L — actualSellPrice input, actualNet computed | 1.23.0 |
-| C | CSV export | 1.24.0 |
-| D | Filter bar | 1.25.0 |
-| E | Summary stats bar | 1.26.0 |
-| F | Quality debug: RE_QUALITY/RE_ARMOR fixed for live DOM | 1.26.1–1.26.4 |
-| G | Settings persistence fix | 1.27.0 |
-| H1–H5 | Comp panel: median-window, THIS row, price-sorted, dual markers, price-window | 1.27.1–1.28.3 |
-| I | Dynamic floor pricing: detectFloorCluster, classifyListing, floor flip display, gap interpolation, min floor profit setting | 1.29.0 |
-| J | HQ + sparse UI badges | 1.30.0 |
-| K | Manual ledger entry form | 1.31.0 |
-| L | Ledger UI/UX overhaul: z-index, column toggle, P&L formula fix, Net P&L alignment | 1.32.0 |
+- PR #171 — pricing engine redesign (v1.33.0): deleted `classifyListing`/`interpolateGapPrice`, added `isNearBase`, `isFloorPositioned`, `findNearestComp`, `calcSuggestedBid`, `addBidNoise`, `calcNonFloorMaxBid`, `calcProfitMatrix`
+- PR #172 — regression fix: `buildCompsPanel` refPrice anchor (v1.33.1)
 
----
+### Next when returning
 
-## Pricing Engine Redesign — Key Decisions (issue #170, not yet implemented)
+**Ledger UI overhaul** — must do a dedicated `/grill-me` session before implementing. Do not design or implement ledger changes without it.
 
-Full PRD at https://github.com/EstradaRPM/Torn-scripts/issues/170
+### Key function locations (v1.33.1)
 
-### What changes
-
-The floor/gap/hq/sparse classification system is scrapped. Replaced by:
-
-1. **`isNearBase(listing, armorSet)`** — `qualityPct <= 20 AND bonusPct <= baseBonusPct + 2` → floor flip path
-2. **`isFloorPositioned(listing, floorCluster)`** — listing price within floor cluster range → floor flip path (flagged "market-priced at floor")
-3. **`findNearestComp(listing, allComps, bonusWeight=1.0)`** — nearest comp by quality+bonus Euclidean distance; `BONUS_WEIGHT = 1.0` tunable constant
-4. **`calcSuggestedBid(currentBid, maxBid, lean=0.30)`** — 30% into gap from current bid
-5. **`addBidNoise(baseBid)`** — sub-million randomization: `$71M → $71,347,832`
-6. **`calcNonFloorMaxBid(resalePrice, targetProfitPct, marketFee)`** — mug buffer excluded from ceiling
-7. **`calcProfitMatrix(...)`** — 2×2: (suggested/max) × (bazaar/market) × (clean/mugged)
-
-### What stays
-
-- `detectFloorCluster()` — unchanged
-- `calcFloorFlipMaxBid()` — unchanged
-- `ARMOR_SCORING` — unchanged
-- Ledger — untouched
-
-### What is removed
-
-- `classifyListing()` — deleted
-- `interpolateGapPrice()` — deleted
-- `classification` / `gapPremiumAnchor` fields on listing objects
-
-### Display
-
-Every listing gets the same layout:
-- Suggested bid (re-noised on each render) + Max bid
-- 2×2 profit matrix at both bid levels
-- Confidence flag when comps are thin ("1 comp — low confidence" / "BB floor only")
-
-### Test plan (node-based, same pattern as test-manual-entry.js)
-
-Pure functions to test: `isNearBase`, `isFloorPositioned`, `findNearestComp`, `calcSuggestedBid`, `calcProfitMatrix`
-
----
-
-## Deferred — Needs Own Grill Session
-
-**Ledger UI overhaul** — user is not satisfied with the current ledger UI but it's a UI concern, not algorithmic. Must do a dedicated grill-me session before implementing. Do not design or implement ledger changes without it.
-
----
-
-## Key Function Locations (v1.32.0)
-
-| Symbol | Line | Notes |
-|--------|------|-------|
-| `ARMOR_SCORING` | 152 | baseBonusPct per set — source of truth |
-| `detectFloorCluster` | 403 | Pure function — retained in redesign |
-| `classifyListing` | 435 | TO BE DELETED in redesign |
-| `calcFloorFlipMaxBid` | 470 | Pure function — retained |
-| `interpolateGapPrice` | 487 | TO BE DELETED in redesign |
-| `fetchBBRate()` | 852 | Auto-calculates $/BB |
-| `computeListingMetrics(l)` | 1700 | Core branching — major rewrite target |
-| `injectAdvisoryStrip(listing)` | 1765 | UI rewrite target |
-| `buildContextPanel(listing)` | 1880 | UI rewrite target |
-| `logListing(listing)` | 2160 | Unchanged |
-| `buildAddEntryForm()` | 2235 | Unchanged |
-| `renderLedger()` | 2362 | Unchanged |
-| `enrichListingsFromMarketData()` | 2706 | Sets floorCluster — retained; classification field removed |
-| `init()` | 2846 | Main pipeline |
-
----
-
-## Open Questions
-
-- `BONUS_WEIGHT = 1.0`: equal weight between quality and bonus distance. Tune after live observation.
-- Floor cluster threshold (12%): keep fixed for now, tune after live data.
-- Ledger UI: deferred — needs grill session.
+| Symbol | ~Line | Notes |
+|--------|-------|-------|
+| `ARMOR_SCORING` | 152 | baseBonusPct per set |
+| `detectFloorCluster` | 403 | Retained |
+| `calcFloorFlipMaxBid` | 470 | Retained |
+| `isNearBase` | ~490 | New in v1.33.0 |
+| `isFloorPositioned` | ~500 | New in v1.33.0 |
+| `findNearestComp` | ~515 | New in v1.33.0 |
+| `computeListingMetrics` | ~1700 | Rewritten in v1.33.0 |
+| `logListing` | ~2160 | Unchanged |
+| `renderLedger` | ~2362 | Unchanged |
+| `enrichListingsFromMarketData` | ~2706 | Stores allComps + floorCluster |
