@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.40.0
+// @version      1.41.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.40.0';
+  const SCRIPT_VERSION   = '1.41.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
 
@@ -87,6 +87,7 @@
     trendCache:       Store.get(KEYS.trendcache)  ?? {},
     pollResults:      {},   // itemId -> { fairValue, lowestListed, … } — not persisted
     bookExpanded:     {},   // itemId -> bool — not persisted
+    cardCollapsed:    {},   // itemId -> bool — not persisted
     logBuyIdx:        null,
     storageWarnShown: false,
   };
@@ -765,6 +766,10 @@
 
   // ─── Pure functions ───────────────────────────────────────────────────────
 
+  function calcWeightedScore(grossProfit, roi, baseROI) {
+    return grossProfit * Math.min(roi / baseROI, 1.0);
+  }
+
   function computeAvailableCapital(vaultAmount, vaultFloorPct) {
     return vaultAmount * (1 - vaultFloorPct / 100);
   }
@@ -1288,6 +1293,19 @@
     </div>`;
   }
 
+  function computeCardScore(item, res) {
+    if (!res || res.error) return -Infinity;
+    const { fairValue, lowestListed, lowestListedQty, recommendedSellTarget } = res;
+    if (fairValue == null || lowestListed == null) return -Infinity;
+    if (lowestListed >= fairValue * (1 - item.threshold / 100)) return -Infinity;
+    const sellTarget = item.manualSellTarget ?? recommendedSellTarget;
+    if (!sellTarget || sellTarget <= lowestListed) return -Infinity;
+    const qty = lowestListedQty ?? 1;
+    const grossProfit = (sellTarget - lowestListed) * qty;
+    const roi = (sellTarget - lowestListed) / lowestListed * 100;
+    return calcWeightedScore(grossProfit, roi, 2);
+  }
+
   function renderWatchlist() {
     const container = panel.querySelector('#st-watchlist-cards');
     if (MEM.watchlist.length === 0) {
@@ -1296,7 +1314,14 @@
       return;
     }
 
-    container.innerHTML = MEM.watchlist.map((item, i) => {
+    const _sorted = MEM.watchlist
+      .map((item, i) => ({ item, i }))
+      .sort((a, b) => {
+        const sa = computeCardScore(a.item, MEM.pollResults[a.item.itemId]);
+        const sb = computeCardScore(b.item, MEM.pollResults[b.item.itemId]);
+        return sb !== sa ? sb - sa : 0;
+      });
+    container.innerHTML = _sorted.map(({ item, i }) => {
       const res     = MEM.pollResults[item.itemId];
       const enabled = item.enabled !== false;
       let fairValStr, lowestStr, gapStr, statusHtml, snipe = false, isFlood = false;
@@ -1382,8 +1407,12 @@
       const tierColor  = tier?.color ?? '#c0d0c8';
 
       // Row 4: order book
-      const isExpanded = !!MEM.bookExpanded[item.itemId];
-      const expandIcon = isExpanded ? '▼' : '▶';
+      const isExpanded  = !!MEM.bookExpanded[item.itemId];
+      const expandIcon  = isExpanded ? '▼' : '▶';
+
+      // Card collapse
+      const isCollapsed  = !!MEM.cardCollapsed[item.itemId];
+      const collapseIcon = isCollapsed ? '▶' : '▼';
 
       // Row 6: snapshot info
       const snaps = MEM.snapshots[item.itemId] ?? [];
@@ -1401,10 +1430,17 @@
             <span class="st-card-name">${item.name}</span>
             <span class="st-card-trend-badge">${trendSignal}</span>
             <span>${statusHtml}</span>
+            ${isCollapsed && roiVal != null ? `<span style="font-size:11px;color:${tierColor};padding:0 4px">${roiStr}</span>` : ''}
+            <button class="st-card-collapse-btn" data-itemid="${item.itemId}"
+                    title="${isCollapsed ? 'Expand card' : 'Collapse card'}"
+                    style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:10px;padding:2px 4px;flex-shrink:0">
+              ${collapseIcon}
+            </button>
             <button class="st-rm-btn" data-idx="${i}" title="Remove item"
                     style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s"
                     onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>
           </div>
+          ${!isCollapsed ? `
 
           <!-- Row 2: fair value | lowest price | gap % -->
           <div class="st-card-r2">
@@ -1459,6 +1495,7 @@
             <span class="st-card-snap-info">${snapLabel}</span>
             ${renderSparkline(item.itemId)}
           </div>
+          ` : ''}
 
         </div>
       `;
@@ -1506,6 +1543,13 @@
         const idx = parseInt(btn.dataset.idx, 10);
         delete MEM.watchlist[idx].manualSellTarget;
         Store.set(KEYS.watchlist, MEM.watchlist);
+        renderWatchlist();
+      });
+    });
+    container.querySelectorAll('.st-card-collapse-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = parseInt(btn.dataset.itemid, 10);
+        MEM.cardCollapsed[itemId] = !MEM.cardCollapsed[itemId];
         renderWatchlist();
       });
     });
