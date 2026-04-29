@@ -1,16 +1,16 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-29 (tickets #176, #179, #181 done; next is #182)_
+_Last updated: 2026-04-29 (tickets #176, #179, #181, #182 done; next is #184)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.41.0` (on main, pushed)
-**Status:** Implementation in progress — 6 of 12 tickets done
+**Version:** `1.42.0` (on main, pushed)
+**Status:** Implementation in progress — 7 of 12 tickets done
 
-**Next session:** Implement issue #182 — MutationObserver + real-time green highlight. No skill needed, implement directly. See detail below.
+**Next session:** Implement issue #184 — Injected snipe card + Queue button. No skill needed, implement directly. See GitHub issue for details.
 
 ---
 
@@ -26,32 +26,23 @@ _Last updated: 2026-04-29 (tickets #176, #179, #181 done; next is #182)_
 | #179 | Smart sell position + snipe detection anchor | ✅ DONE v1.40.0 |
 | #180 | Mug scenario display | open — unblocked (leaf, do after critical path) |
 | #181 | Collapsed card layout + weighted sort | ✅ DONE v1.41.0 |
-| #182 | MutationObserver + real-time green highlight | **NEXT** — needs #174 ✓, #179 ✓, #181 ✓ |
+| #182 | MutationObserver + real-time green highlight | ✅ DONE v1.42.0 |
 | #183 | Ledger summary fixes | open — unblocked (leaf, do after critical path) |
-| #184 | Injected snipe card + Queue button | open — needs #182, #181 ✓ |
+| #184 | Injected snipe card + Queue button | **NEXT** — needs #182 ✓, #181 ✓ |
 | #185 | Quick Log strip + Batch Entry + pending queue | open — needs #184 |
 
 ---
 
-## #182 — What to do (start here)
+## #182 — What was done (v1.42.0)
 
-**Issue:** https://github.com/EstradaRPM/Torn-scripts/issues/182
-
-MutationObserver on the imarket listings DOM for real-time snipe detection at zero API cost. When a new listing appears below the snipe threshold, highlight the card green.
-
-**Steps:**
-1. On PAGE_MODE === 'market', add a MutationObserver on the item market listings container.
-2. When mutations fire: re-run snipe detection logic against the current DOM listings (or trigger a lightweight re-check).
-3. Highlight any card whose item is newly a snipe with a green flash/border — distinct from the static SNIPE badge.
-4. Observer should disconnect when the panel is removed or page navigates away.
-5. Bump to v1.42.0.
-
-**Key locations in v1.41.0:**
-- `PAGE_MODE` / `detectPageMode()`: ~line 20–30
-- `runPoll()` / `startPollLoop()`: search for them
-- `renderWatchlist()`: search — this is where card green highlight would be applied
-- Init section (where vault fetch is): near bottom of IIFE, ~line 2100+
-- `.st-status-snipe` CSS class: already defined, turns text green
+Added `MutationObserver` + real-time green flash. Key details:
+- `getImarketItemId()`: extracts `ID=N` from URL hash/query (`[?&#]ID=(\d+)`)
+- `parseNodePrices(node)`: regex-scans text for `$N,NNN` prices > $10k
+- `checkNodesForSnipes(addedNodes)`: compares prices to `MEM.pollResults[itemId].fairValue * (1 − threshold/100)`
+- `flashCardGreen(itemId)`: adds `.st-snipe-flash` class → 2.5s green-glow CSS animation (distinct from static SNIPE badge)
+- `startImarketObserver()`: debounced 150ms; tries specific market container selectors before falling back to `document.body`; calls `stopImarketObserver` on `beforeunload`
+- Observer variable: `_ioMutObs` (declared ~line 1042)
+- Started in init after `startPollLoop()`
 
 ---
 
