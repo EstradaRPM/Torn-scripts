@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.38.0
+// @version      1.39.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION = '1.38.0';
+  const SCRIPT_VERSION = '1.39.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -77,7 +77,8 @@
 
   const MEM = {
     watchlist:   Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, availableCapital: 0 },
+    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10 },
+    availableCapital: 0,
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
     trades:      Store.get(KEYS.trades)    ?? [],
@@ -747,8 +748,8 @@
             <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
           </div>
           <div class="st-field">
-            <label for="st-input-capital">Available Capital ($)</label>
-            <input id="st-input-capital" class="st-input" type="number" min="0" style="width:130px">
+            <label for="st-input-vault-floor">Vault Reserve Floor (%)</label>
+            <input id="st-input-vault-floor" class="st-input" type="number" min="0" max="100" style="width:130px">
           </div>
         </div>
         <div class="st-field" style="margin-bottom:10px">
@@ -760,6 +761,12 @@
     </div>
   `;
   document.body.appendChild(panel);
+
+  // ─── Pure functions ───────────────────────────────────────────────────────
+
+  function computeAvailableCapital(vaultAmount, vaultFloorPct) {
+    return vaultAmount * (1 - vaultFloorPct / 100);
+  }
 
   // ─── API ──────────────────────────────────────────────────────────────────
 
@@ -1078,9 +1085,9 @@
   function renderCapitalBar() {
     const bar = panel.querySelector('#st-capital-bar');
     if (!bar) return;
-    const available = MEM.settings.availableCapital ?? 0;
+    const available = MEM.availableCapital ?? 0;
     if (!available) {
-      bar.innerHTML = '<div style="font-size:11px;color:#3a5060;text-align:center;padding:4px 0">Set available capital in settings to enable utilization tracking</div>';
+      bar.innerHTML = '<div style="font-size:11px;color:#3a5060;text-align:center;padding:4px 0">Vault balance not yet loaded — check API key in settings</div>';
       return;
     }
 
@@ -1966,12 +1973,12 @@
   const inputThreshold = panel.querySelector('#st-input-threshold');
   const threshHint     = panel.querySelector('#st-thresh-hint');
   const inputApiKey    = panel.querySelector('#st-input-apikey');
-  const inputCapital   = panel.querySelector('#st-input-capital');
+  const inputVaultFloor = panel.querySelector('#st-input-vault-floor');
   const clearBtn       = panel.querySelector('#st-clear-btn');
 
   inputInterval.value  = MEM.settings.interval;
   inputThreshold.value = MEM.settings.threshold;
-  inputCapital.value   = MEM.settings.availableCapital ?? 0;
+  inputVaultFloor.value = MEM.settings.vaultFloorPct ?? 10;
   // show stored key placeholder but not the actual value for security
   if (localStorage.getItem('st_apikey')) inputApiKey.placeholder = '(key saved)';
 
@@ -2004,10 +2011,11 @@
     Store.set(KEYS.settings, MEM.settings);
   });
 
-  inputCapital.addEventListener('change', () => {
-    MEM.settings.availableCapital = Math.max(0, parseInt(inputCapital.value, 10) || 0);
-    inputCapital.value = MEM.settings.availableCapital;
+  inputVaultFloor.addEventListener('change', () => {
+    MEM.settings.vaultFloorPct = Math.min(100, Math.max(0, parseFloat(inputVaultFloor.value) || 10));
+    inputVaultFloor.value = MEM.settings.vaultFloorPct;
     Store.set(KEYS.settings, MEM.settings);
+    MEM.availableCapital = computeAvailableCapital(MEM._lastVaultAmount ?? 0, MEM.settings.vaultFloorPct);
     renderCapitalBar();
   });
 
@@ -2015,12 +2023,13 @@
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
     MEM.watchlist = [...SEED_WATCHLIST];
-    MEM.settings  = { interval: 60, threshold: 10, availableCapital: 0 };
+    MEM.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10 };
+    MEM.availableCapital = 0;
     MEM.collapsed = false;
     MEM.position  = null;
-    inputInterval.value  = MEM.settings.interval;
-    inputThreshold.value = MEM.settings.threshold;
-    inputCapital.value   = 0;
+    inputInterval.value   = MEM.settings.interval;
+    inputThreshold.value  = MEM.settings.threshold;
+    inputVaultFloor.value = MEM.settings.vaultFloorPct;
     panel.classList.remove('st-collapsed');
     collapseBtn.textContent = '−';
     panel.style.left   = 'auto';
@@ -2062,6 +2071,20 @@
   // ─── Init ─────────────────────────────────────────────────────────────────
 
   panel.querySelector('#st-scan-btn').addEventListener('click', runPoll);
+
+  (async () => {
+    try {
+      const text = await gmFetch(`https://api.torn.com/user/?selections=money&key=${getApiKey()}`);
+      const d = JSON.parse(text);
+      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
+      MEM._lastVaultAmount = d.vault_amount ?? 0;
+      MEM.availableCapital = computeAvailableCapital(MEM._lastVaultAmount, MEM.settings.vaultFloorPct ?? 10);
+      renderCapitalBar();
+    } catch (e) {
+      console.warn('[SnipeTracker] vault fetch failed:', e.message);
+      MEM.availableCapital = 0;
+    }
+  })();
 
   runPoll();
   startPollLoop();
