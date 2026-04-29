@@ -1,16 +1,16 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184 done; next is #185)_
+_Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184, #185 done; next is leaf tickets)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.43.0` (on main, pushed)
-**Status:** Implementation in progress — 8 of 12 tickets done
+**Version:** `1.44.0` (on main, pushed)
+**Status:** Implementation in progress — 9 of 12 tickets done (critical path complete)
 
-**Next session:** Implement issue #185 — Quick Log strip + Batch Entry + pending queue. Needs #184 ✓. No skill needed, implement directly.
+**Next session:** Any of the remaining open leaf tickets: #177 (snipe frequency badge), #178 (PDA notifications + audio), #180 (mug scenario display), #183 (ledger summary fixes). All unblocked. Pick any.
 
 ---
 
@@ -21,15 +21,29 @@ _Last updated: 2026-04-29 (tickets #176, #179, #181, #182, #184 done; next is #1
 | #174 | `@match` wildcard + page mode detection | ✅ DONE v1.38.0 |
 | #175 | Pure function engine + Node test suite | ✅ DONE |
 | #176 | Capital API: vault fetch + settings refactor | ✅ DONE v1.39.0 |
-| #177 | Snipe frequency badge | open — unblocked (leaf, do after critical path) |
-| #178 | PDA notifications + audio alert | open — unblocked (leaf, do after critical path) |
+| #177 | Snipe frequency badge | open — unblocked (leaf) |
+| #178 | PDA notifications + audio alert | open — unblocked (leaf) |
 | #179 | Smart sell position + snipe detection anchor | ✅ DONE v1.40.0 |
-| #180 | Mug scenario display | open — unblocked (leaf, do after critical path) |
+| #180 | Mug scenario display | open — unblocked (leaf) |
 | #181 | Collapsed card layout + weighted sort | ✅ DONE v1.41.0 |
 | #182 | MutationObserver + real-time green highlight | ✅ DONE v1.42.0 |
-| #183 | Ledger summary fixes | open — unblocked (leaf, do after critical path) |
+| #183 | Ledger summary fixes | open — unblocked (leaf) |
 | #184 | Injected snipe card + Queue button | ✅ DONE v1.43.0 |
-| #185 | Quick Log strip + Batch Entry + pending queue | **NEXT** — needs #184 ✓ |
+| #185 | Quick Log strip + Batch Entry + pending queue | ✅ DONE v1.44.0 |
+
+---
+
+## #185 — What was done (v1.44.0)
+
+Added Quick Log strip + Batch Entry for `MEM.pendingQueue` items.
+- `#st-queue-section` div inserted in Ledger pane, above Open Trades; hidden when queue is empty
+- `#st-ledger-tab-badge` span on the Ledger tab shows live queue count (green pill)
+- `updateQueueBadge()`: updates tab badge from `MEM.pendingQueue.length`; called from `injectSnipeCard` on each push and from `renderQueueStrip()`
+- `renderQueueStrip()`: renders one `.st-queue-row` per item — name, price, age, qty input, Log button, ✕ button
+- Log button: logs single item → `MEM.trades.push(...)`, `Store.set`, splice from queue, re-renders
+- Log All button (`#st-queue-log-all-btn`): collects all rows with qty > 0, splices in reverse-index order to avoid shifting, bulk logs, persists
+- Clear Queue button (`#st-queue-clear-btn`): empties `MEM.pendingQueue`
+- Tab switch for ledger now calls `renderQueueStrip()` first
 
 ---
 
