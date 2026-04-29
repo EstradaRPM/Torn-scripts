@@ -1,72 +1,95 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-28 (snipe tracker v2 PRD filed as issue #173)_
+_Last updated: 2026-04-29 (tickets #174 + #175 done; next is #176)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.37.1` (current on main)
-**Status:** PRD filed — implementation not started
+**Version:** `1.38.0` (on main, pushed)
+**Status:** Implementation in progress — 2 of 12 tickets done
 
-**Next session:** Run `/to-issues 173` to break PRD into implementation tickets, then implement ticket by ticket using `/tdd` for pure function logic layer and manual PDA testing for UI/DOM layer.
+**Next session:** Implement issue #176 — capital API vault fetch + settings refactor. No skill needed, implement directly. See detail below.
 
 ---
 
-## Snipe Tracker v2 — PRD Summary (issue #173)
+## Implementation tickets
 
-Full PRD: https://github.com/EstradaRPM/Torn-scripts/issues/173
+| # | Title | Status |
+|---|-------|--------|
+| #174 | `@match` wildcard + page mode detection | ✅ DONE v1.38.0 |
+| #175 | Pure function engine + Node test suite | ✅ DONE |
+| #176 | Capital API: vault fetch + settings refactor | **NEXT** |
+| #177 | Snipe frequency badge | open — unblocked |
+| #178 | PDA notifications + audio alert | open — unblocked |
+| #179 | Smart sell position + snipe detection anchor | open — needs #176 |
+| #180 | Mug scenario display | open — needs #176 |
+| #181 | Collapsed card layout + weighted sort | open — needs #179 |
+| #182 | MutationObserver + real-time green highlight | open — needs #179 |
+| #183 | Ledger summary fixes | open — needs #179 |
+| #184 | Injected snipe card + Queue button | open — needs #182, #181 |
+| #185 | Quick Log strip + Batch Entry + pending queue | open — needs #184 |
 
-### Core changes
+---
 
-- **Smart sell position** replaces P50 as sell target and snipe detection anchor — volume-block anchored, trend-adjusted, driven by vault capital
-- **Volume block** = first price tier where `price × qty ≥ % of available capital` (dynamic, not static unit count)
-- **Available capital** = `vault_amount × (1 − vaultFloorPct/100)` from `user/?selections=money` API — default floor 10%
-- **Mug scenario** on projection: `sellTarget × qty × (1 − mugPct/100) − buyPrice × qty` — default mugPct = 15, shown when sale value is large relative to capital
-- **Weighted sort score** = `grossProfit × min(roi / baseROI, 1.0)` — cards sorted descending, display shows gross profit $
-- **Collapsed card default** — one row: `[STATUS ●NEW] Name   ×qty @ $price   +$profit   ↑trend`
-- **@match `torn.com/*`** — two modes: full panel on market pages, silent poll loop on all others
-- **MutationObserver** on imarket listings — real-time detection, zero API cost
-- **PDA native notification** on new snipe from any page
-- **Pending queue + Quick Log strip + Batch Entry** — decoupled logging for rapid sessions
-- **Snipe frequency** ("N snipes / 7d") from existing snapshots — watchlist curation signal
-- **Ledger fixes**: At Risk vs Total Deployed, weighted ROI, win rate, per-item breakdown, live open estimate, date column
+## #176 — What to do (start here)
 
-### New pure functions (all get Node tests in `test-snipe-engine.js`)
+**Issue:** https://github.com/EstradaRPM/Torn-scripts/issues/176
 
-| Function | Purpose |
-|----------|---------|
-| `detectVolumeBlock(listings, abovePrice, blockValueThreshold)` | First qualifying price tier |
-| `computeSmartSellPosition(listings, snipePrice, availableCapital, trend)` | Volume-block anchored sell target |
-| `calcWeightedScore(grossProfit, roi, baseROI)` | Sort score |
-| `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` | Worst-case mugged net |
-| `calcSnipeFrequency(snapshots, fairValue, threshold, windowMs)` | 7d crossing count |
-| `computeAvailableCapital(vaultAmount, vaultFloorPct)` | Vault × (1 − floor%) |
+No new pure functions. Just wiring + settings swap. No skill needed.
 
-### Ubiquitous language (locked across all scripts)
+**Steps:**
+1. Copy `computeAvailableCapital` from `test-snipe-engine.js` into the IIFE (near other pure functions).
+2. Add a vault fetch on script init: call `user/?selections=money` via `gmFetch`, compute `MEM.availableCapital = computeAvailableCapital(data.vault_amount, MEM.settings.vaultFloorPct)`. On error, set `MEM.availableCapital = 0` and log a warning. Fire once at init, not on every poll.
+3. In `MEM.settings` defaults (~line 78): remove `availableCapital: 0`, add `vaultFloorPct: 10`.
+4. In settings modal HTML: find the capital input (`st-input-capital`), replace with a "Vault Reserve Floor (%)" input (`st-input-vault-floor`).
+5. Remove the `inputCapital.addEventListener('change', ...)` handler and replace with a `vaultFloorPct` handler that re-computes `MEM.availableCapital` on change.
+6. Update `renderCapitalBar()` to read `MEM.availableCapital` (the live value) instead of `MEM.settings.availableCapital`.
+7. Bump to v1.39.0.
 
-- **Bazaar**: 0% fee, always
-- **Item market**: 5% fee standard; +10% anonymous = 15% total
-- **Mug %**: 15% default (Merits + practical Plunder ceiling)
-- **Smart sell position**: gap between floor chaff and first meaningful volume block, trend-adjusted
+**Key locations in v1.38.0:**
+- `MEM.settings` default: ~line 78
+- Capital input in settings HTML: search `st-input-capital` or `availableCapital`
+- `inputCapital` change handler: ~line 1999
+- `renderCapitalBar`: search for it
+- Init section: ~line 2058 — add vault fetch call here
+- `gmFetch`: ~line 758
+
+---
+
+## Snipe Tracker v2 — Design decisions (locked)
+
+- Bazaar = 0% fee. Item market = 5%. Mug default = 15%.
+- Smart sell position replaces P50: volume-block anchored, trend-adjusted
+- Available capital: `vault_amount × (1 − vaultFloorPct/100)`. Default floor 10%.
+- `BLOCK_VALUE_PCT = 0.10` — defined in `test-snipe-engine.js`, copy to IIFE with #179
+- Collapsed card default: sorted by `grossProfit × min(roi/baseROI, 1.0)`. baseROI = 2.
+- PAGE_MODE: 'market' = full panel + DOM, 'background' = silent poll only (added v1.38.0)
+- MutationObserver on imarket listings for real-time detection (zero API cost)
+- PDA native notification bridge on new snipe from any page
+- Logging: pending queue + Quick Log strip + Batch Entry form
+
+## Pure functions (in `test-snipe-engine.js` — copy into IIFE when integrating)
+
+| Function | Needed for |
+|----------|-----------|
+| `computeAvailableCapital(vaultAmount, vaultFloorPct)` | #176 |
+| `detectVolumeBlock(listings, abovePrice, blockValueThreshold)` | #179 |
+| `computeSmartSellPosition(listings, snipePrice, availableCapital, trend)` | #179 |
+| `calcWeightedScore(grossProfit, roi, baseROI)` | #181 |
+| `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` | #180 |
+| `calcSnipeFrequency(snapshots, fairValue, threshold, windowMs)` | #177 |
 
 ---
 
 ## RW Auction Advisor — PARKED
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
-**Version:** `1.33.1` (current on main, fully shipped)
+**Version:** `1.33.1` (on main, fully shipped)
 **Status:** Parked — do not touch until snipe tracker work is complete
 
-### What shipped
-
-- PR #171 — pricing engine redesign (v1.33.0): deleted `classifyListing`/`interpolateGapPrice`, added `isNearBase`, `isFloorPositioned`, `findNearestComp`, `calcSuggestedBid`, `addBidNoise`, `calcNonFloorMaxBid`, `calcProfitMatrix`
-- PR #172 — regression fix: `buildCompsPanel` refPrice anchor (v1.33.1)
-
-### Next when returning
-
-**Ledger UI overhaul** — must do a dedicated `/grill-me` session before implementing. Do not design or implement ledger changes without it.
+**Next when returning:** Ledger UI overhaul — must do a `/grill-me` session first.
 
 ### Key function locations (v1.33.1)
 
