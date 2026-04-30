@@ -1,16 +1,14 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-30 (#177 done as v1.46.0; 2 leaf tickets remain: #178, #180)_
+_Last updated: 2026-04-30 (#180 done as v1.48.0 — ALL tickets complete)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.46.0` (on main, pushed — clean, no open PRs, no stale branches)
-**Status:** Implementation in progress — 11 of 12 tickets done; 2 leaf tickets remain
-
-**Next session:** Implement #178 or #180 — both fully designed, unblocked, ready to code.
+**Version:** `1.48.0` (on main, pushed — clean, no open PRs, no stale branches)
+**Status:** ALL 12 tickets done. Snipe Tracker v1 feature set complete.
 
 ### Known PDA limitation (non-fixable without PDA engine change)
 `GM_xmlhttpRequest` on Torn PDA's WebView does NOT bypass the page CSP. `weav3r.dev` calls will always fail with a network error on PDA. Script silently falls back to Torn API data only. Console noise is expected — not a bug to fix.
@@ -25,9 +23,9 @@ _Last updated: 2026-04-30 (#177 done as v1.46.0; 2 leaf tickets remain: #178, #1
 | #175 | Pure function engine + Node test suite | ✅ DONE |
 | #176 | Capital API: vault fetch + settings refactor | ✅ DONE v1.39.0 |
 | #177 | Snipe frequency badge | ✅ DONE v1.46.0 |
-| #178 | PDA notifications + audio alert | open — DESIGNED, ready to implement |
+| #178 | PDA notifications + audio alert | ✅ DONE v1.47.0 |
 | #179 | Smart sell position + snipe detection anchor | ✅ DONE v1.40.0 |
-| #180 | Mug scenario display | open — DESIGNED, ready to implement |
+| #180 | Mug scenario display | ✅ DONE v1.48.0 |
 | #181 | Collapsed card layout + weighted sort | ✅ DONE v1.41.0 |
 | #182 | MutationObserver + real-time green highlight | ✅ DONE v1.42.0 |
 | #183 | Ledger summary fixes | ✅ DONE v1.45.0 |
@@ -36,43 +34,21 @@ _Last updated: 2026-04-30 (#177 done as v1.46.0; 2 leaf tickets remain: #178, #1
 
 ---
 
-## Grill session results — design decisions locked for #178, #180
+## v1.48.0 — What was done (#180)
 
-Full domain language in `CONTEXT.md`. ADR in `docs/adr/0001-poll-only-snipe-alerts.md`.
+Mug scenario display:
+- `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` wired into IIFE pure functions section (after `calcSnipeFrequency`)
+- `renderProjection()`: shows mug net outcome row when `grossRev >= MUG_THRESHOLD ($10M)`. Green = still profitable after mug; red = loss
+- `injectSnipeCard`: replaced hardcoded `saleValue * 0.15` gross loss with `calcMugScenario` net result; color-coded (red if loss, amber if still profitable)
 
-### #178 — PDA Notifications + Audio (next version: 1.47.0)
+## v1.47.0 — What was done (#178)
 
-- **Trigger:** Poll cycle only (see ADR 0001). Fires once when item FIRST enters snipe territory (above→below threshold crossing). Does NOT repeat while sustained below threshold.
-- **Crossing state:** Track in `MEM.lastSnipeState = {}` (itemId → bool, not persisted). On each poll, compare current vs previous snipe status per item. Fire only on `false → true` transition.
-- **Audio:** 3-tone ascending chime, Web Audio API (no file dependency). ~200ms total.
-- **Notification:** Check for TornPDA native bridge first; fallback to `GM_notification`. Add `@grant GM_notification` to metadata block.
-- **Settings:** Single "Snipe alerts" on/off toggle in settings pane. Default on.
-
-### #180 — Mug Scenario Display (next version: 1.48.0)
-
-- Wire `calcMugScenario` from `test-snipe-engine.js` into the IIFE (pure functions section)
-- **Watch cards:** Add mug row inside `renderProjection()`. Show when `sellTarget × lowestListedQty >= MUG_THRESHOLD (10_000_000)`.
-  - `calcMugScenario(sellTarget, lowestListedQty, lowestListed, 15)` — buyPrice = lowestListed (snipe price), mugPct = 15 fixed
-  - Display: net outcome (positive = still profitable even if mugged; negative = loss)
-- **Injected card:** Update `injectSnipeCard` to use `calcMugScenario` instead of current hardcoded `saleValue * 0.15` gross loss calc
-- Injected card is unreliable on PDA (has appeared only once in practice) — watch card is the primary surface
-
----
-
-## v1.46.0 — What was done (#177)
-
-Snipe frequency badge + two-tier sort + default collapsed:
-- `calcSnipeFrequency` wired into IIFE pure functions section (~line 996); uses `s.timestamp`
-- Snapshot push now stores `lowestListed: merged[0]?.price ?? null` alongside `fairValue` and `timestamp`
-- `N×/2d` badge in Row 1 when `snipeFreq > 0` (visible collapsed)
-- Two-tier sort: snipe items by weighted score first, non-snipe by snipe frequency
-- Cards default to collapsed: `isCollapsed = !MEM.cardCollapsed[item.itemId]`
-- `FREQ_WINDOW = 2 * 24 * 60 * 60 * 1000` added as constant
-
-## v1.45.0 — What was done (#183)
-
-Ledger summary fixes:
-- Weighted ROI, win rate, live P&L estimate, at-risk capital display
+PDA notifications + audio alert:
+- Trigger: poll cycle only (ADR 0001). Fires once on `false → true` transition per item
+- Crossing state: `MEM.lastSnipeState = {}` (itemId → bool, not persisted)
+- Audio: 3-tone ascending chime, Web Audio API
+- Notification: TornPDA native bridge first; `GM_notification` fallback
+- Settings: "Snipe alerts" on/off toggle, default on
 
 ---
 
@@ -97,8 +73,8 @@ Ledger summary fixes:
 | `computeAvailableCapital(vaultAmount, vaultFloorPct)` | ✅ in IIFE |
 | `detectVolumeBlock(listings, abovePrice, blockValueThreshold)` | ✅ in IIFE |
 | `computeSmartSellPosition(listings, snipePrice, availableCapital, trend)` | ✅ in IIFE |
-| `calcSnipeFrequency(snapshots, fairValue, threshold, windowMs)` | ✅ in IIFE (v1.46.0) |
-| `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` | in test-snipe-engine.js — wire in #180 |
+| `calcSnipeFrequency(snapshots, fairValue, threshold, windowMs)` | ✅ in IIFE |
+| `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` | ✅ in IIFE (v1.48.0) |
 
 ---
 
@@ -106,7 +82,7 @@ Ledger summary fixes:
 
 **File:** `torn-rw-auction-advisor-v1.user.js`
 **Version:** `1.33.1` (on main, fully shipped)
-**Status:** Parked — do not touch until snipe tracker work is complete
+**Status:** Parked — do not touch until user switches back
 
 **Next when returning:** Ledger UI overhaul — must do a `/grill-me` session first.
 

@@ -330,6 +330,50 @@ for any stat that requires data not yet available (e.g. no Won entries yet).
 
 ---
 
+## Development Workflow
+
+This is the standard pipeline for iterative improvements. Each stage is **one session**. Every session has an explicit completion contract — what must be written to memory before the session closes — so the next session can start cold with full context.
+
+### Bug fix trigger — `/qa`
+
+**This is the entry point when the user reports a bug.** Do not start implementing. Run `/qa` to interview the user about the symptom, explore the root cause, and file a properly structured GitHub issue. The session is not done until:
+- Issue is filed with a TDD-based fix plan
+- Memory updated: `"issue #X filed (<one-line summary>); next session: /grill-me on #X if design is non-trivial, else implement directly"`
+
+### Design lock — `/grill-me`
+
+For any non-trivial fix or new feature (behavioral change, new UI surface, new data flow). Interview until all decisions are locked. The session is not done until:
+- Relevant decisions added to `CONTEXT.md` and/or `docs/adr/` if durable
+- Memory updated: `"design locked for #X; decisions: <summary>; next session: /to-issues or implement directly"`
+
+### Ticket breakdown — `/to-issues`
+
+When a spec produces multiple independent pieces of work. The session is not done until:
+- All tickets filed on GitHub
+- Memory updated: `"tickets #A–#C filed and ready; next session: implement #A"`
+
+### Pure logic — `/tdd`
+
+For any new or changed pure function (scoring, pricing, detection logic). Run `/tdd` against `test-snipe-engine.js`. The session is not done until:
+- Tests pass
+- Function committed
+- Memory updated: `"<function> implemented and tested; next session: wire into IIFE / build UI"`
+
+### Implement — (direct)
+
+Standard implementation session. The session is not done until:
+- Commit made with version bump
+- GitHub issue closed
+- Memory updated: `"v1.X.Y done (#N); next session: /simplify or next ticket #M"`
+
+### Tidy — `/simplify`
+
+After a feature lands, run `/simplify` on the changed code. The session is not done until:
+- Any follow-up commit made (or explicitly confirmed nothing needed)
+- Memory updated: `"post-#N simplify done; clean"`
+
+---
+
 ## Agent skills
 
 ### Issue tracker
