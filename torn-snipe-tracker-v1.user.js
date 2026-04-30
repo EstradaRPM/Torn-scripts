@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.44.1
+// @version      1.45.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,7 +30,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.44.1';
+  const SCRIPT_VERSION   = '1.45.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
 
@@ -886,16 +886,28 @@
 
         <div class="st-summary">
           <div class="st-summary-item">
-            <span class="st-summary-label">Total Invested</span>
+            <span class="st-summary-label">Invested</span>
             <span class="st-summary-value" id="st-sum-invested">—</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">At Risk</span>
+            <span class="st-summary-value" id="st-sum-atrisk">—</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Live Est</span>
+            <span class="st-summary-value" id="st-sum-liveest">—</span>
           </div>
           <div class="st-summary-item">
             <span class="st-summary-label">Total Profit</span>
             <span class="st-summary-value" id="st-sum-profit">—</span>
           </div>
           <div class="st-summary-item">
-            <span class="st-summary-label">Avg ROI</span>
+            <span class="st-summary-label">W. ROI</span>
             <span class="st-summary-value" id="st-sum-roi">—</span>
+          </div>
+          <div class="st-summary-item">
+            <span class="st-summary-label">Win Rate</span>
+            <span class="st-summary-value" id="st-sum-winrate">—</span>
           </div>
           <div class="st-summary-item">
             <span class="st-summary-label">Trades</span>
@@ -2078,15 +2090,38 @@
     const open   = MEM.trades.filter(t => t.sellPrice === null);
     const closed = MEM.trades.filter(t => t.sellPrice !== null);
 
-    const invested = open.reduce((s, t) => s + t.buyPrice * t.qty, 0);
-    const profit   = closed.reduce((s, t) => s + (t.sellPrice - t.buyPrice) * t.qty, 0);
-    const avgRoi   = closed.length
-      ? closed.reduce((s, t) => s + ((t.sellPrice - t.buyPrice) / t.buyPrice) * 100, 0) / closed.length
-      : null;
+    const invested   = open.reduce((s, t) => s + t.buyPrice * t.qty, 0);
+    const profit     = closed.reduce((s, t) => s + (t.sellPrice - t.buyPrice) * t.qty, 0);
+    const closedCost = closed.reduce((s, t) => s + t.buyPrice * t.qty, 0);
+    const weightedRoi = closedCost > 0 ? (profit / closedCost) * 100 : null;
+    const wins    = closed.filter(t => t.sellPrice > t.buyPrice).length;
+    const winRate = closed.length ? (wins / closed.length * 100).toFixed(0) + '%' : null;
+
+    // Unrealized P&L for open trades that have a known sell target
+    let liveEst = null;
+    for (const t of open) {
+      const sellTarget = MEM.pollResults[t.itemId]?.recommendedSellTarget ?? null;
+      if (sellTarget != null) liveEst = (liveEst ?? 0) + (sellTarget - t.buyPrice) * t.qty;
+    }
+
+    // Capital in open positions where expected sale value >= mug threshold
+    const atRisk = open.reduce((s, t) => {
+      const sellTarget = MEM.pollResults[t.itemId]?.recommendedSellTarget ?? null;
+      return (sellTarget != null && sellTarget * t.qty >= MUG_THRESHOLD)
+        ? s + t.buyPrice * t.qty : s;
+    }, 0);
+
+    const atRiskEl  = panel.querySelector('#st-sum-atrisk');
+    const liveEstEl = panel.querySelector('#st-sum-liveest');
 
     panel.querySelector('#st-sum-invested').textContent = fmtMoney(invested);
+    atRiskEl.textContent  = atRisk > 0 ? fmtMoney(atRisk) : '—';
+    atRiskEl.style.color  = atRisk > 0 ? '#e8a838' : '';
+    liveEstEl.textContent = liveEst != null ? fmtMoney(liveEst) : '—';
+    liveEstEl.style.color = liveEst == null ? '' : liveEst >= 0 ? '#4caf50' : '#e85c5c';
     panel.querySelector('#st-sum-profit').textContent   = fmtMoney(profit);
-    panel.querySelector('#st-sum-roi').textContent      = avgRoi !== null ? avgRoi.toFixed(1) + '%' : '—';
+    panel.querySelector('#st-sum-roi').textContent      = weightedRoi != null ? weightedRoi.toFixed(1) + '%' : '—';
+    panel.querySelector('#st-sum-winrate').textContent  = winRate ?? '—';
     panel.querySelector('#st-sum-trades').textContent   = closed.length;
   }
 
