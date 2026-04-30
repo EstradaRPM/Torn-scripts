@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.1
+// @version      1.48.2
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,10 +31,11 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.1';
+  const SCRIPT_VERSION   = '1.48.2';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
+  const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
   // Prefer PDA-injected key; fall back to manually stored key
   function getApiKey() {
@@ -93,7 +94,7 @@
     logBuyIdx:        null,
     storageWarnShown: false,
     pendingQueue:     [],
-    lastSnipeState:   {},   // itemId -> bool — not persisted; tracks false→true transitions for alerts
+    lastAlertedAt:    {},   // itemId -> timestamp — not persisted; rate-limits alerts to ALERT_COOLDOWN_MS
   };
 
   if (PAGE_MODE === 'background') {
@@ -1063,9 +1064,11 @@
       const isSnipe   = res != null && !res.error
         && res.fairValue != null && res.lowestListed != null
         && res.lowestListed < res.fairValue * (1 - threshold / 100);
-      const wasSnipe  = MEM.lastSnipeState[item.itemId] ?? false;
-      if (!wasSnipe && isSnipe) fireSnipeAlert(item);
-      MEM.lastSnipeState[item.itemId] = isSnipe;
+      const lastFired = MEM.lastAlertedAt[item.itemId] ?? 0;
+      if (isSnipe && Date.now() - lastFired > ALERT_COOLDOWN_MS) {
+        fireSnipeAlert(item);
+        MEM.lastAlertedAt[item.itemId] = Date.now();
+      }
     }
   }
 
