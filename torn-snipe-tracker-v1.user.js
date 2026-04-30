@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.47.0
+// @version      1.48.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.47.0';
+  const SCRIPT_VERSION   = '1.48.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1013,6 +1013,11 @@
     return count;
   }
 
+  function calcMugScenario(sellTarget, qty, buyPrice, mugPct) {
+    const muggedNet = sellTarget * qty * (1 - mugPct / 100) - buyPrice * qty;
+    return { muggedNet, isLoss: muggedNet < 0 };
+  }
+
   function playSnipeChime() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1498,10 +1503,21 @@
         <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
       </div>`).join('');
 
+    let mugHtml = '';
+    if (grossRev >= MUG_THRESHOLD) {
+      const mug = calcMugScenario(sellTarget, snipeQty, snipePrice, 15);
+      const mugColor = mug.isLoss ? '#ff4444' : '#00ff88';
+      const mugLabel = mug.isLoss ? '⚠ If mugged (15%): loss' : '✓ If mugged (15%): net';
+      mugHtml = `<div style="margin-top:6px;padding:4px 0;border-top:1px solid rgba(255,255,255,0.06);font-size:11px;color:${mugColor}">
+        ${mugLabel} <strong>${fmt(mug.muggedNet)}</strong>
+      </div>`;
+    }
+
     return `<div class="st-card-proj" style="${tier.bg ? 'background:' + tier.bg : ''}">
       <div style="padding:8px 12px">
         <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Snipe Projection</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
+        ${mugHtml}
       </div>
     </div>`;
   }
@@ -2579,7 +2595,7 @@
 
     const saleValue = sellTarget != null ? sellTarget * (qty ?? 1) : null;
     const showMug   = saleValue != null && saleValue >= MUG_THRESHOLD;
-    const mugLoss   = showMug ? saleValue * 0.15 : null;
+    const mugScenario = showMug ? calcMugScenario(sellTarget, qty ?? 1, detectedPrice, 15) : null;
 
     const stats = [
       { lbl: 'Item',         val: entry.name },
@@ -2596,8 +2612,8 @@
       </div>`
     ).join('');
 
-    const mugHtml = showMug
-      ? `<div class="st-injected-mug">⚠ Mug risk: carrying ${fmt(saleValue)} — if mugged at 15%, lose ${fmt(mugLoss)}</div>`
+    const mugHtml = showMug && mugScenario
+      ? `<div class="st-injected-mug" style="color:${mugScenario.isLoss ? '#ff4444' : '#e8a838'}">⚠ Mug risk: if mugged at 15%, net ${mugScenario.isLoss ? 'loss' : 'profit'} ${fmt(mugScenario.muggedNet)}</div>`
       : '';
 
     const card = document.createElement('div');
