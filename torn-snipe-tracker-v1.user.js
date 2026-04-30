@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.0
+// @version      1.48.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.0';
+  const SCRIPT_VERSION   = '1.48.1';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1303,9 +1303,9 @@
     for (const item of MEM.watchlist) {
       if (!(item.itemId > 0) || item.enabled === false) continue;
       await fetchItemPrice(item);
-      if (PAGE_MODE === 'market') renderWatchlist();
     }
     checkSnipeAlerts();
+    if (PAGE_MODE === 'market') renderWatchlist();
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
   }
 
