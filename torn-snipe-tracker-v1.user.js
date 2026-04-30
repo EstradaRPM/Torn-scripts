@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.45.0
+// @version      1.46.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -30,9 +30,10 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.45.0';
+  const SCRIPT_VERSION   = '1.46.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
+  const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
 
   // Prefer PDA-injected key; fall back to manually stored key
   function getApiKey() {
@@ -992,6 +993,19 @@
     return Math.max(p75, above[0].price);
   }
 
+  function calcSnipeFrequency(snapshots, fairValue, threshold, windowMs) {
+    const cutoff = Date.now() - windowMs;
+    const inWindow = snapshots.filter(s => s.timestamp >= cutoff).sort((a, b) => a.timestamp - b.timestamp);
+    const snipeThreshold = fairValue * (1 - threshold / 100);
+    let count = 0;
+    for (let i = 1; i < inWindow.length; i++) {
+      const prev = inWindow[i - 1].lowestListed;
+      const curr = inWindow[i].lowestListed;
+      if (prev != null && curr != null && prev >= snipeThreshold && curr < snipeThreshold) count++;
+    }
+    return count;
+  }
+
   // ─── API ──────────────────────────────────────────────────────────────────
 
   function gmFetch(url) {
@@ -1188,7 +1202,7 @@
     };
 
     if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
-    MEM.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue });
+    MEM.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue, lowestListed: merged[0]?.price ?? null });
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
     if (MEM.snapshots[item.itemId].length > 500) MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].slice(-500);
@@ -1502,9 +1516,17 @@
     const _sorted = MEM.watchlist
       .map((item, i) => ({ item, i }))
       .sort((a, b) => {
-        const sa = computeCardScore(a.item, MEM.pollResults[a.item.itemId]);
-        const sb = computeCardScore(b.item, MEM.pollResults[b.item.itemId]);
-        return sb !== sa ? sb - sa : 0;
+        const ra = MEM.pollResults[a.item.itemId];
+        const rb = MEM.pollResults[b.item.itemId];
+        const sa = computeCardScore(a.item, ra);
+        const sb = computeCardScore(b.item, rb);
+        const aSnipe = isFinite(sa);
+        const bSnipe = isFinite(sb);
+        if (aSnipe !== bSnipe) return bSnipe ? 1 : -1;
+        if (aSnipe && bSnipe) return sb - sa;
+        const fa = ra?.fairValue ? calcSnipeFrequency(MEM.snapshots[a.item.itemId] ?? [], ra.fairValue, a.item.threshold, FREQ_WINDOW) : 0;
+        const fb = rb?.fairValue ? calcSnipeFrequency(MEM.snapshots[b.item.itemId] ?? [], rb.fairValue, b.item.threshold, FREQ_WINDOW) : 0;
+        return fb - fa;
       });
     container.innerHTML = _sorted.map(({ item, i }) => {
       const res     = MEM.pollResults[item.itemId];
@@ -1595,12 +1617,13 @@
       const isExpanded  = !!MEM.bookExpanded[item.itemId];
       const expandIcon  = isExpanded ? '▼' : '▶';
 
-      // Card collapse
-      const isCollapsed  = !!MEM.cardCollapsed[item.itemId];
+      // Card collapse — default true (collapsed) unless explicitly expanded
+      const isCollapsed  = !MEM.cardCollapsed[item.itemId];
       const collapseIcon = isCollapsed ? '▶' : '▼';
 
       // Row 6: snapshot info
       const snaps = MEM.snapshots[item.itemId] ?? [];
+      const snipeFreq = res?.fairValue ? calcSnipeFrequency(snaps, res.fairValue, item.threshold, FREQ_WINDOW) : 0;
       const snapLabel = snaps.length === 0
         ? 'no history yet'
         : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
@@ -1616,6 +1639,7 @@
             <span class="st-card-trend-badge">${trendSignal}</span>
             <span>${statusHtml}</span>
             ${isCollapsed && roiVal != null ? `<span style="font-size:11px;color:${tierColor};padding:0 4px">${roiStr}</span>` : ''}
+            ${snipeFreq > 0 ? `<span style="font-size:10px;color:#4a8070;padding:0 3px">${snipeFreq}×/2d</span>` : ''}
             <button class="st-card-collapse-btn" data-itemid="${item.itemId}"
                     title="${isCollapsed ? 'Expand card' : 'Collapse card'}"
                     style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:10px;padding:2px 4px;flex-shrink:0">
