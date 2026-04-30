@@ -1,0 +1,3 @@
+# Snipe alerts trigger from poll cycle only, not MutationObserver
+
+The script has two snipe detection paths: an API poll (every 60s, any page) and a MutationObserver (real-time DOM scan, item market page only). Snipe alerts (notification + audio) are wired to the poll path only. The observer is unreliable on Torn PDA's WebView — the item market page has not rendered correctly with the observer active in practice — so triggering alerts from it would produce inconsistent behaviour across environments. The poll path fires on every page and is the only path that works reliably on both PDA and desktop.
