@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.3
+// @version      1.48.4
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.3';
+  const SCRIPT_VERSION   = '1.48.4';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1008,6 +1008,71 @@
     return Math.max(p75, above[0].price);
   }
 
+  function computePollResult(mergedListings, item, availableCapital, snapshots, trend) {
+    // Sample only the 20 cheapest listings. The competitive market sits in the
+    // low-price tier; going deeper pulls in aspirational pricing that inflates
+    // fair value well above where the item actually trades.
+    const { p25, p50, p75 } = computeFairValue(mergedListings.slice(0, 20));
+    const iqr          = p75 - p25;
+    const outlierFloor = Math.round(p25 - 1.5 * iqr);
+    // Only a true outlier if small quantity — a 5k-unit dump at sub-floor price
+    // is a market event that sets the sell ceiling, not a typo to ignore.
+    const outlierExcluded = mergedListings[0].price < outlierFloor && mergedListings[0].quantity < 100;
+    const fairValue    = p50;
+
+    // Informational: any large-quantity listing below fair value.
+    const marketFlood = mergedListings.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
+
+    // Actionable flood play requires two hard constraints:
+    // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
+    //    Ensures the flood is actually setting the market bottom, not lurking mid-range.
+    // 2. Fair value is at least threshold% above the flood — a clearly profitable exit exists.
+    //    Uses the item's own snipe threshold so the bar matches the user's margin expectations.
+    const firstNonOutlierPrice = mergedListings.find(l => l.price >= outlierFloor)?.price ?? p25;
+    const isFloodPlay = marketFlood != null
+      && marketFlood.price <= firstNonOutlierPrice * 1.05
+      && fairValue >= marketFlood.price * (1 + item.threshold / 100);
+
+    // Historical fair-value series for 7-day range display
+    const historicalFVs = (snapshots ?? [])
+      .filter(s => s.fairValue != null)
+      .map(s => s.fairValue)
+      .sort((a, b) => a - b);
+    let historicalMedian = null, historicalLow = null, historicalHigh = null;
+    if (historicalFVs.length >= 3) {
+      const mid = Math.floor(historicalFVs.length / 2);
+      historicalMedian = historicalFVs.length % 2 !== 0
+        ? historicalFVs[mid]
+        : Math.round((historicalFVs[mid - 1] + historicalFVs[mid]) / 2);
+      historicalLow  = historicalFVs[0];
+      historicalHigh = historicalFVs[historicalFVs.length - 1];
+    }
+
+    const recommendedSellTarget = computeSmartSellPosition(
+      mergedListings, mergedListings[0].price, availableCapital, trend ?? 'flat'
+    );
+
+    return {
+      fairValue,
+      p25,
+      p75,
+      outlierExcluded,
+      outlierFloor,
+      lowestListed:    mergedListings[0]?.price ?? null,
+      lowestListedQty: mergedListings[0]?.price != null
+        ? mergedListings.filter(l => l.price === mergedListings[0].price).reduce((s, l) => s + l.quantity, 0)
+        : null,
+      secondLowest:    mergedListings[1]?.price ?? null,
+      listings:        mergedListings,
+      marketFlood,
+      isFloodPlay,
+      historicalMedian,
+      historicalLow,
+      historicalHigh,
+      recommendedSellTarget,
+    };
+  }
+
   function calcSnipeFrequency(snapshots, fairValue, threshold, windowMs) {
     const cutoff = Date.now() - windowMs;
     const inWindow = snapshots.filter(s => s.timestamp >= cutoff).sort((a, b) => a.timestamp - b.timestamp);
@@ -1215,67 +1280,13 @@
       return;
     }
 
-    // Sample only the 20 cheapest listings. The competitive market sits in the
-    // low-price tier; going deeper pulls in aspirational pricing that inflates
-    // fair value well above where the item actually trades.
-    const { p25, p50, p75 } = computeFairValue(merged.slice(0, 20));
-    const iqr          = p75 - p25;
-    const outlierFloor = Math.round(p25 - 1.5 * iqr);
-    // Only a true outlier if small quantity — a 5k-unit dump at sub-floor price
-    // is a market event that sets the sell ceiling, not a typo to ignore.
-    const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
-    const fairValue    = p50;
+    // Capture snapshots before this cycle so computePollResult sees historical-only data
+    const snapshotsBefore = MEM.data.snapshots[item.itemId] ?? [];
 
-    // Informational: any large-quantity listing below fair value.
-    const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
-
-    // Actionable flood play requires two hard constraints:
-    // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
-    //    Ensures the flood is actually setting the market bottom, not lurking mid-range.
-    // 2. Fair value is at least threshold% above the flood — a clearly profitable exit exists.
-    //    Uses the item's own snipe threshold so the bar matches the user's margin expectations.
-    const firstNonOutlierPrice = merged.find(l => l.price >= outlierFloor)?.price ?? p25;
-    const isFloodPlay = marketFlood != null
-      && marketFlood.price <= firstNonOutlierPrice * 1.05
-      && fairValue >= marketFlood.price * (1 + item.threshold / 100);
-
-    // Historical fair-value series for 7-day range display
-    const historicalFVs = (MEM.data.snapshots[item.itemId] ?? [])
-      .filter(s => s.fairValue != null)
-      .map(s => s.fairValue)
-      .sort((a, b) => a - b);
-    let historicalMedian = null, historicalLow = null, historicalHigh = null;
-    if (historicalFVs.length >= 3) {
-      const mid = Math.floor(historicalFVs.length / 2);
-      historicalMedian = historicalFVs.length % 2 !== 0
-        ? historicalFVs[mid]
-        : Math.round((historicalFVs[mid - 1] + historicalFVs[mid]) / 2);
-      historicalLow  = historicalFVs[0];
-      historicalHigh = historicalFVs[historicalFVs.length - 1];
-    }
-
-    MEM.poll.pollResults[item.itemId] = {
-      fairValue,
-      p25,
-      p75,
-      outlierExcluded,
-      outlierFloor,
-      lowestListed:    merged[0]?.price ?? null,
-      lowestListedQty: merged[0]?.price != null
-        ? merged.filter(l => l.price === merged[0].price).reduce((s, l) => s + l.quantity, 0)
-        : null,
-      secondLowest:    merged[1]?.price ?? null,
-      listings:        merged,
-      marketFlood,
-      isFloodPlay,
-      historicalMedian,
-      historicalLow,
-      historicalHigh,
-      updatedAt:       Date.now(),
-    };
-
+    // Push new snapshot first so calculateTrend sees this cycle's price (original ordering)
+    const { p50: cycleP50 } = computeFairValue(merged.slice(0, 20));
     if (!MEM.data.snapshots[item.itemId]) MEM.data.snapshots[item.itemId] = [];
-    MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue, lowestListed: merged[0]?.price ?? null });
+    MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue: cycleP50, lowestListed: merged[0]?.price ?? null });
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
     if (MEM.data.snapshots[item.itemId].length > 500) MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].slice(-500);
@@ -1291,10 +1302,11 @@
     MEM.data.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
     Store.set(KEYS.trendcache, MEM.data.trendCache);
 
-    const trendSignal = MEM.data.trendCache[item.itemId].trend;
-    MEM.poll.pollResults[item.itemId].recommendedSellTarget = computeSmartSellPosition(
-      merged, merged[0].price, MEM.poll.availableCapital, trendSignal
-    );
+    const trend = MEM.data.trendCache[item.itemId].trend;
+    MEM.poll.pollResults[item.itemId] = {
+      ...computePollResult(merged, item, MEM.poll.availableCapital, snapshotsBefore, trend),
+      updatedAt: Date.now(),
+    };
   }
 
   // ─── Poll loop ────────────────────────────────────────────────────────────

@@ -57,6 +57,70 @@ function calcMugScenario(sellTarget, qty, buyPrice, mugPct) {
   return { muggedNet, isLoss: muggedNet < 0 };
 }
 
+function computeFairValue(listings) {
+  if (!listings.length) return { p25: null, p50: null, p75: null };
+  const sorted = [...listings].sort((a, b) => a.price - b.price);
+  const n = sorted.length;
+  return {
+    p25: sorted[Math.floor(n * 0.25)].price,
+    p50: sorted[Math.floor(n * 0.50)].price,
+    p75: sorted[Math.floor(n * 0.75)].price,
+  };
+}
+
+function computePollResult(mergedListings, item, availableCapital, snapshots, trend) {
+  const { p25, p50, p75 } = computeFairValue(mergedListings.slice(0, 20));
+  const iqr          = p75 - p25;
+  const outlierFloor = Math.round(p25 - 1.5 * iqr);
+  const outlierExcluded = mergedListings[0].price < outlierFloor && mergedListings[0].quantity < 100;
+  const fairValue    = p50;
+
+  const marketFlood = mergedListings.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
+
+  const firstNonOutlierPrice = mergedListings.find(l => l.price >= outlierFloor)?.price ?? p25;
+  const isFloodPlay = marketFlood != null
+    && marketFlood.price <= firstNonOutlierPrice * 1.05
+    && fairValue >= marketFlood.price * (1 + item.threshold / 100);
+
+  const historicalFVs = (snapshots ?? [])
+    .filter(s => s.fairValue != null)
+    .map(s => s.fairValue)
+    .sort((a, b) => a - b);
+  let historicalMedian = null, historicalLow = null, historicalHigh = null;
+  if (historicalFVs.length >= 3) {
+    const mid = Math.floor(historicalFVs.length / 2);
+    historicalMedian = historicalFVs.length % 2 !== 0
+      ? historicalFVs[mid]
+      : Math.round((historicalFVs[mid - 1] + historicalFVs[mid]) / 2);
+    historicalLow  = historicalFVs[0];
+    historicalHigh = historicalFVs[historicalFVs.length - 1];
+  }
+
+  const recommendedSellTarget = computeSmartSellPosition(
+    mergedListings, mergedListings[0].price, availableCapital, trend ?? 'flat'
+  );
+
+  return {
+    fairValue,
+    p25,
+    p75,
+    outlierExcluded,
+    outlierFloor,
+    lowestListed:    mergedListings[0]?.price ?? null,
+    lowestListedQty: mergedListings[0]?.price != null
+      ? mergedListings.filter(l => l.price === mergedListings[0].price).reduce((s, l) => s + l.quantity, 0)
+      : null,
+    secondLowest:    mergedListings[1]?.price ?? null,
+    listings:        mergedListings,
+    marketFlood,
+    isFloodPlay,
+    historicalMedian,
+    historicalLow,
+    historicalHigh,
+    recommendedSellTarget,
+  };
+}
+
 function calcSnipeFrequency(snapshots, fairValue, threshold, windowMs) {
   const cutoff = Date.now() - windowMs;
   const inWindow = snapshots.filter(s => s.ts >= cutoff).sort((a, b) => a.ts - b.ts);
@@ -368,6 +432,70 @@ console.log('\ncalcSnipeFrequency — Behavior 5: sustained snipe (stays below) 
     { ts: NOW - 2 * DAY, lowestListed: 83_000 },  // still below — no new crossing
   ];
   assertEq('returns 1', calcSnipeFrequency(snapshots, 100_000, 10, WINDOW), 1);
+}
+
+// ── computePollResult ─────────────────────────────────────────────────────────
+
+console.log('\ncomputePollResult — Flood detected: qty ≥ 100, at floor, FV above threshold');
+{
+  // fairValue (p50 of 20 cheapest) ≈ 1_000_000; flood at 800_000 with qty 200
+  // threshold 10% → snipe threshold = 900_000; flood price 800_000 < 900_000 ✓
+  // floor = cheapest non-outlier price = 800_000; flood ≤ floor × 1.05 ✓
+  // FV 1_000_000 ≥ 800_000 × 1.10 = 880_000 ✓
+  const listings = [
+    { price: 800_000, quantity: 200 },  // flood listing
+    ...Array.from({ length: 19 }, (_, i) => ({ price: 950_000 + i * 5_000, quantity: 1 })),
+  ];
+  const item     = { itemId: 1, threshold: 10 };
+  const result   = computePollResult(listings, item, 10_000_000, [], 'flat');
+  assert('isFloodPlay is true', result.isFloodPlay === true);
+  assert('marketFlood is not null', result.marketFlood !== null);
+  assert('marketFlood.price = 800_000', result.marketFlood.price === 800_000);
+}
+
+console.log('\ncomputePollResult — No flood when qty < 100');
+{
+  const listings = [
+    { price: 800_000, quantity: 50 },   // small quantity — not a flood
+    ...Array.from({ length: 19 }, (_, i) => ({ price: 950_000 + i * 5_000, quantity: 1 })),
+  ];
+  const item   = { itemId: 1, threshold: 10 };
+  const result = computePollResult(listings, item, 10_000_000, [], 'flat');
+  assert('isFloodPlay is false (qty < 100)', result.isFloodPlay === false);
+  assert('marketFlood is null', result.marketFlood === null);
+}
+
+console.log('\ncomputePollResult — Sell target set to block price - 1 when volume block exists');
+{
+  // cheapest listing at 800_000; block of 200 units at 900_000 = 180_000_000 value
+  // availableCapital = 1_000_000; blockThreshold = 100_000; block qualifies
+  const listings = [
+    { price: 800_000, quantity: 1 },
+    { price: 900_000, quantity: 200 },  // volume block
+    { price: 950_000, quantity: 1 },
+    { price: 1_000_000, quantity: 1 },
+  ];
+  const item   = { itemId: 1, threshold: 10 };
+  const result = computePollResult(listings, item, 1_000_000, [], 'flat');
+  assert('recommendedSellTarget = block price - 1', result.recommendedSellTarget === 899_999);
+}
+
+console.log('\ncomputePollResult — Sell target falls back to P75 when no volume block');
+{
+  // 4 listings sorted: 800_000, 850_000, 900_000, 950_000; each qty=1
+  // availableCapital = 10_000_000 → blockThreshold = 1_000_000
+  // Max tier value = 950_000 × 1 = 950_000 < 1_000_000 → no block qualifies
+  // P75 index = floor(4 × 0.75) = 3 → p75 = 950_000; above[0] = 850_000
+  // max(950_000, 850_000) = 950_000
+  const listings = [
+    { price: 800_000, quantity: 1 },
+    { price: 850_000, quantity: 1 },
+    { price: 900_000, quantity: 1 },
+    { price: 950_000, quantity: 1 },
+  ];
+  const item   = { itemId: 1, threshold: 10 };
+  const result = computePollResult(listings, item, 10_000_000, [], 'flat');
+  assert('recommendedSellTarget = P75 fallback', result.recommendedSellTarget === 950_000);
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────
