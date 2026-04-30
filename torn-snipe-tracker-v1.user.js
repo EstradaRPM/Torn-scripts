@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.46.0
+// @version      1.47.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_notification
 // @connect      api.torn.com
 // @connect      weav3r.dev
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/torn-snipe-tracker-v1.user.js
@@ -30,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.46.0';
+  const SCRIPT_VERSION   = '1.47.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -79,7 +80,7 @@
 
   const MEM = {
     watchlist:   Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10 },
+    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true },
     availableCapital: 0,
     collapsed:   Store.get(KEYS.collapsed) ?? false,
     position:    Store.get(KEYS.position)  ?? null,
@@ -92,6 +93,7 @@
     logBuyIdx:        null,
     storageWarnShown: false,
     pendingQueue:     [],
+    lastSnipeState:   {},   // itemId -> bool — not persisted; tracks false→true transitions for alerts
   };
 
   if (PAGE_MODE === 'background') {
@@ -938,6 +940,11 @@
             <label for="st-input-vault-floor">Vault Reserve Floor (%)</label>
             <input id="st-input-vault-floor" class="st-input" type="number" min="0" max="100" style="width:130px">
           </div>
+          <div class="st-field">
+            <label for="st-input-snipe-alerts" style="cursor:pointer">
+              <input id="st-input-snipe-alerts" type="checkbox" style="margin-right:6px;cursor:pointer">Snipe alerts
+            </label>
+          </div>
         </div>
         <div class="st-field" style="margin-bottom:10px">
           <label for="st-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
@@ -1004,6 +1011,57 @@
       if (prev != null && curr != null && prev >= snipeThreshold && curr < snipeThreshold) count++;
     }
     return count;
+  }
+
+  function playSnipeChime() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const tones = [440, 554, 659]; // A4, C#5, E5 — ascending major arpeggio
+      tones.forEach((freq, i) => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + i * 0.07;
+        gain.gain.setValueAtTime(0.3, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        osc.start(t);
+        osc.stop(t + 0.12);
+      });
+    } catch (e) {}
+  }
+
+  function fireSnipeAlert(item) {
+    playSnipeChime();
+    const title = 'Snipe opportunity';
+    const text  = `${item.name} is below threshold`;
+    try {
+      // TornPDA native bridge (iOS/Android WebView)
+      const handler = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        ?.webkit?.messageHandlers?.PDA;
+      if (handler) {
+        handler.postMessage(JSON.stringify({ action: 'notification', title, text }));
+        return;
+      }
+    } catch (e) {}
+    try { GM_notification({ title, text, timeout: 5000 }); } catch (e) {}
+  }
+
+  function checkSnipeAlerts() {
+    if (!(MEM.settings.snipeAlerts ?? true)) return;
+    for (const item of MEM.watchlist) {
+      if (!(item.itemId > 0) || item.enabled === false) continue;
+      const res       = MEM.pollResults[item.itemId];
+      const threshold = item.threshold ?? MEM.settings.threshold ?? 10;
+      const isSnipe   = res != null && !res.error
+        && res.fairValue != null && res.lowestListed != null
+        && res.lowestListed < res.fairValue * (1 - threshold / 100);
+      const wasSnipe  = MEM.lastSnipeState[item.itemId] ?? false;
+      if (!wasSnipe && isSnipe) fireSnipeAlert(item);
+      MEM.lastSnipeState[item.itemId] = isSnipe;
+    }
   }
 
   // ─── API ──────────────────────────────────────────────────────────────────
@@ -1242,6 +1300,7 @@
       await fetchItemPrice(item);
       if (PAGE_MODE === 'market') renderWatchlist();
     }
+    checkSnipeAlerts();
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
   }
 
@@ -2354,16 +2413,18 @@
 
   // ─── Settings inputs ───────────────────────────────────────────────────────
 
-  const inputInterval  = panel.querySelector('#st-input-interval');
-  const inputThreshold = panel.querySelector('#st-input-threshold');
-  const threshHint     = panel.querySelector('#st-thresh-hint');
-  const inputApiKey    = panel.querySelector('#st-input-apikey');
-  const inputVaultFloor = panel.querySelector('#st-input-vault-floor');
-  const clearBtn       = panel.querySelector('#st-clear-btn');
+  const inputInterval    = panel.querySelector('#st-input-interval');
+  const inputThreshold   = panel.querySelector('#st-input-threshold');
+  const threshHint       = panel.querySelector('#st-thresh-hint');
+  const inputApiKey      = panel.querySelector('#st-input-apikey');
+  const inputVaultFloor  = panel.querySelector('#st-input-vault-floor');
+  const inputSnipeAlerts = panel.querySelector('#st-input-snipe-alerts');
+  const clearBtn         = panel.querySelector('#st-clear-btn');
 
-  inputInterval.value  = MEM.settings.interval;
-  inputThreshold.value = MEM.settings.threshold;
-  inputVaultFloor.value = MEM.settings.vaultFloorPct ?? 10;
+  inputInterval.value       = MEM.settings.interval;
+  inputThreshold.value      = MEM.settings.threshold;
+  inputVaultFloor.value     = MEM.settings.vaultFloorPct ?? 10;
+  inputSnipeAlerts.checked  = MEM.settings.snipeAlerts ?? true;
   // show stored key placeholder but not the actual value for security
   if (localStorage.getItem('st_apikey')) inputApiKey.placeholder = '(key saved)';
 
@@ -2404,17 +2465,23 @@
     renderCapitalBar();
   });
 
+  inputSnipeAlerts.addEventListener('change', () => {
+    MEM.settings.snipeAlerts = inputSnipeAlerts.checked;
+    Store.set(KEYS.settings, MEM.settings);
+  });
+
   clearBtn.addEventListener('click', () => {
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
     MEM.watchlist = [...SEED_WATCHLIST];
-    MEM.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10 };
+    MEM.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true };
     MEM.availableCapital = 0;
     MEM.collapsed = false;
     MEM.position  = null;
-    inputInterval.value   = MEM.settings.interval;
-    inputThreshold.value  = MEM.settings.threshold;
-    inputVaultFloor.value = MEM.settings.vaultFloorPct;
+    inputInterval.value      = MEM.settings.interval;
+    inputThreshold.value     = MEM.settings.threshold;
+    inputVaultFloor.value    = MEM.settings.vaultFloorPct;
+    inputSnipeAlerts.checked = true;
     panel.classList.remove('st-collapsed');
     collapseBtn.textContent = '−';
     panel.style.left   = 'auto';
