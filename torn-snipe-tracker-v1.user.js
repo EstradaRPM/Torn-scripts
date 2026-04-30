@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.2
+// @version      1.48.3
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.2';
+  const SCRIPT_VERSION   = '1.48.3';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -80,21 +80,28 @@
   ];
 
   const MEM = {
-    watchlist:   Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-    settings:    Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true },
-    availableCapital: 0,
-    collapsed:   Store.get(KEYS.collapsed) ?? false,
-    position:    Store.get(KEYS.position)  ?? null,
-    trades:      Store.get(KEYS.trades)    ?? [],
-    snapshots:        Store.get(KEYS.snapshots)   ?? {},
-    trendCache:       Store.get(KEYS.trendcache)  ?? {},
-    pollResults:      {},   // itemId -> { fairValue, lowestListed, … } — not persisted
-    bookExpanded:     {},   // itemId -> bool — not persisted
-    cardCollapsed:    {},   // itemId -> bool — not persisted
-    logBuyIdx:        null,
-    storageWarnShown: false,
-    pendingQueue:     [],
-    lastAlertedAt:    {},   // itemId -> timestamp — not persisted; rate-limits alerts to ALERT_COOLDOWN_MS
+    data: {
+      watchlist:  Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
+      settings:   Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true },
+      trades:     Store.get(KEYS.trades)    ?? [],
+      snapshots:  Store.get(KEYS.snapshots) ?? {},
+      trendCache: Store.get(KEYS.trendcache) ?? {},
+    },
+    poll: {
+      pollResults:      {},  // itemId -> { fairValue, lowestListed, … }
+      availableCapital: 0,
+      lastAlertedAt:    {},  // itemId -> timestamp; rate-limits alerts to ALERT_COOLDOWN_MS
+      lastVaultAmount:  0,
+    },
+    ui: {
+      collapsed:        Store.get(KEYS.collapsed) ?? false,
+      position:         Store.get(KEYS.position)  ?? null,
+      cardCollapsed:    {},  // itemId -> bool
+      bookExpanded:     {},  // itemId -> bool
+      logBuyIdx:        null,
+      storageWarnShown: false,
+      pendingQueue:     [],
+    },
   };
 
   if (PAGE_MODE === 'background') {
@@ -1056,18 +1063,18 @@
   }
 
   function checkSnipeAlerts() {
-    if (!(MEM.settings.snipeAlerts ?? true)) return;
-    for (const item of MEM.watchlist) {
+    if (!(MEM.data.settings.snipeAlerts ?? true)) return;
+    for (const item of MEM.data.watchlist) {
       if (!(item.itemId > 0) || item.enabled === false) continue;
-      const res       = MEM.pollResults[item.itemId];
-      const threshold = item.threshold ?? MEM.settings.threshold ?? 10;
+      const res       = MEM.poll.pollResults[item.itemId];
+      const threshold = item.threshold ?? MEM.data.settings.threshold ?? 10;
       const isSnipe   = res != null && !res.error
         && res.fairValue != null && res.lowestListed != null
         && res.lowestListed < res.fairValue * (1 - threshold / 100);
-      const lastFired = MEM.lastAlertedAt[item.itemId] ?? 0;
+      const lastFired = MEM.poll.lastAlertedAt[item.itemId] ?? 0;
       if (isSnipe && Date.now() - lastFired > ALERT_COOLDOWN_MS) {
         fireSnipeAlert(item);
-        MEM.lastAlertedAt[item.itemId] = Date.now();
+        MEM.poll.lastAlertedAt[item.itemId] = Date.now();
       }
     }
   }
@@ -1100,8 +1107,8 @@
   }
 
   function showStorageWarning() {
-    if (MEM.storageWarnShown) return;
-    MEM.storageWarnShown = true;
+    if (MEM.ui.storageWarnShown) return;
+    MEM.ui.storageWarnShown = true;
     const warn = document.createElement('div');
     warn.id = 'st-storage-warn';
     warn.style.cssText = 'background:#1a0800;border-bottom:1px solid #ff6600;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:#ff9944;line-height:1.4';
@@ -1120,7 +1127,7 @@
     const TREND_BAND_PCT    = 0.005;           // 0.5% of current price per hour; tune here
     const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hour minimum span; tune here
 
-    const snaps = MEM.snapshots[itemId] ?? [];
+    const snaps = MEM.data.snapshots[itemId] ?? [];
     if (snaps.length < 6) {
       return { trend: 'insufficient', slopePerHour: null, dataPoints: snaps.length, oldestSnapshot: null, newestSnapshot: null };
     }
@@ -1204,7 +1211,7 @@
     console.log(`[SnipeTracker] merged listings itemId=${item.itemId}:`, JSON.stringify(merged));
 
     if (!merged.length) {
-      MEM.pollResults[item.itemId] = { error: true, errorMsg: 'no listings found', updatedAt: Date.now() };
+      MEM.poll.pollResults[item.itemId] = { error: true, errorMsg: 'no listings found', updatedAt: Date.now() };
       return;
     }
 
@@ -1233,7 +1240,7 @@
       && fairValue >= marketFlood.price * (1 + item.threshold / 100);
 
     // Historical fair-value series for 7-day range display
-    const historicalFVs = (MEM.snapshots[item.itemId] ?? [])
+    const historicalFVs = (MEM.data.snapshots[item.itemId] ?? [])
       .filter(s => s.fairValue != null)
       .map(s => s.fairValue)
       .sort((a, b) => a - b);
@@ -1247,7 +1254,7 @@
       historicalHigh = historicalFVs[historicalFVs.length - 1];
     }
 
-    MEM.pollResults[item.itemId] = {
+    MEM.poll.pollResults[item.itemId] = {
       fairValue,
       p25,
       p75,
@@ -1267,13 +1274,13 @@
       updatedAt:       Date.now(),
     };
 
-    if (!MEM.snapshots[item.itemId]) MEM.snapshots[item.itemId] = [];
-    MEM.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue, lowestListed: merged[0]?.price ?? null });
+    if (!MEM.data.snapshots[item.itemId]) MEM.data.snapshots[item.itemId] = [];
+    MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue, lowestListed: merged[0]?.price ?? null });
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
-    if (MEM.snapshots[item.itemId].length > 500) MEM.snapshots[item.itemId] = MEM.snapshots[item.itemId].slice(-500);
+    MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
+    if (MEM.data.snapshots[item.itemId].length > 500) MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].slice(-500);
     try {
-      localStorage.setItem(KEYS.snapshots, JSON.stringify(MEM.snapshots));
+      localStorage.setItem(KEYS.snapshots, JSON.stringify(MEM.data.snapshots));
     } catch (e) {
       if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
         console.warn(`[SnipeTracker] QuotaExceededError: snapshot for itemId ${item.itemId} not saved this cycle.`);
@@ -1281,12 +1288,12 @@
       }
     }
 
-    MEM.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
-    Store.set(KEYS.trendcache, MEM.trendCache);
+    MEM.data.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
+    Store.set(KEYS.trendcache, MEM.data.trendCache);
 
-    const trendSignal = MEM.trendCache[item.itemId].trend;
-    MEM.pollResults[item.itemId].recommendedSellTarget = computeSmartSellPosition(
-      merged, merged[0].price, MEM.availableCapital, trendSignal
+    const trendSignal = MEM.data.trendCache[item.itemId].trend;
+    MEM.poll.pollResults[item.itemId].recommendedSellTarget = computeSmartSellPosition(
+      merged, merged[0].price, MEM.poll.availableCapital, trendSignal
     );
   }
 
@@ -1303,7 +1310,7 @@
       if (PAGE_MODE === 'market') renderWatchlist();
       return;
     }
-    for (const item of MEM.watchlist) {
+    for (const item of MEM.data.watchlist) {
       if (!(item.itemId > 0) || item.enabled === false) continue;
       await fetchItemPrice(item);
     }
@@ -1314,15 +1321,15 @@
 
   function startPollLoop() {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(runPoll, MEM.settings.interval * 1000);
+    pollTimer = setInterval(runPoll, MEM.data.settings.interval * 1000);
     window.__stPollTimer = pollTimer;
   }
 
   // ─── Watchlist render ──────────────────────────────────────────────────────
 
   function renderTrendCell(itemId) {
-    const cache     = MEM.trendCache[itemId];
-    const snapCount = (MEM.snapshots[itemId] ?? []).length;
+    const cache     = MEM.data.trendCache[itemId];
+    const snapCount = (MEM.data.snapshots[itemId] ?? []).length;
     const ageText   = cache ? 'updated ' + fmtAgo(cache.calculatedAt) : 'pending';
     const ageLine   = `<br><span class="st-trend-age">${ageText}</span>`;
 
@@ -1345,7 +1352,7 @@
   }
 
   function renderSparkline(itemId) {
-    const snaps = MEM.snapshots[itemId] ?? [];
+    const snaps = MEM.data.snapshots[itemId] ?? [];
     const prices = snaps
       .map(s => {
         if (s.fairValue != null) return s.fairValue;
@@ -1362,7 +1369,7 @@
     const range = max - min || 1;
     const n     = prices.length;
 
-    const cache = MEM.trendCache[itemId];
+    const cache = MEM.data.trendCache[itemId];
     const trend = cache?.trend;
     const color = trend === 'rising'  ? '#00ff88'
                 : trend === 'falling' ? '#ff4444'
@@ -1380,16 +1387,16 @@
   function renderCapitalBar() {
     const bar = panel.querySelector('#st-capital-bar');
     if (!bar) return;
-    const available = MEM.availableCapital ?? 0;
+    const available = MEM.poll.availableCapital ?? 0;
     if (!available) {
       bar.innerHTML = '<div style="font-size:11px;color:#3a5060;text-align:center;padding:4px 0">Vault balance not yet loaded — check API key in settings</div>';
       return;
     }
 
     let committed = 0;
-    for (const item of MEM.watchlist) {
+    for (const item of MEM.data.watchlist) {
       if (item.enabled === false) continue;
-      const res = MEM.pollResults[item.itemId];
+      const res = MEM.poll.pollResults[item.itemId];
       if (!res || res.error) continue;
       const { fairValue, lowestListed, lowestListedQty } = res;
       if (fairValue != null && lowestListed != null && lowestListed < fairValue * (1 - item.threshold / 100) && lowestListedQty > 0) {
@@ -1585,29 +1592,29 @@
 
   function renderWatchlist() {
     const container = panel.querySelector('#st-watchlist-cards');
-    if (MEM.watchlist.length === 0) {
+    if (MEM.data.watchlist.length === 0) {
       container.innerHTML = '<div style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</div>';
       renderCapitalBar();
       return;
     }
 
-    const _sorted = MEM.watchlist
+    const _sorted = MEM.data.watchlist
       .map((item, i) => ({ item, i }))
       .sort((a, b) => {
-        const ra = MEM.pollResults[a.item.itemId];
-        const rb = MEM.pollResults[b.item.itemId];
+        const ra = MEM.poll.pollResults[a.item.itemId];
+        const rb = MEM.poll.pollResults[b.item.itemId];
         const sa = computeCardScore(a.item, ra);
         const sb = computeCardScore(b.item, rb);
         const aSnipe = isFinite(sa);
         const bSnipe = isFinite(sb);
         if (aSnipe !== bSnipe) return bSnipe ? 1 : -1;
         if (aSnipe && bSnipe) return sb - sa;
-        const fa = ra?.fairValue ? calcSnipeFrequency(MEM.snapshots[a.item.itemId] ?? [], ra.fairValue, a.item.threshold, FREQ_WINDOW) : 0;
-        const fb = rb?.fairValue ? calcSnipeFrequency(MEM.snapshots[b.item.itemId] ?? [], rb.fairValue, b.item.threshold, FREQ_WINDOW) : 0;
+        const fa = ra?.fairValue ? calcSnipeFrequency(MEM.data.snapshots[a.item.itemId] ?? [], ra.fairValue, a.item.threshold, FREQ_WINDOW) : 0;
+        const fb = rb?.fairValue ? calcSnipeFrequency(MEM.data.snapshots[b.item.itemId] ?? [], rb.fairValue, b.item.threshold, FREQ_WINDOW) : 0;
         return fb - fa;
       });
     container.innerHTML = _sorted.map(({ item, i }) => {
-      const res     = MEM.pollResults[item.itemId];
+      const res     = MEM.poll.pollResults[item.itemId];
       const enabled = item.enabled !== false;
       let fairValStr, lowestStr, gapStr, statusHtml, snipe = false, isFlood = false;
 
@@ -1645,7 +1652,7 @@
       }
 
       // Row 1: trend signal only (no sparkline/age — those go in Row 6)
-      const cache = MEM.trendCache[item.itemId];
+      const cache = MEM.data.trendCache[item.itemId];
       let trendSignal;
       if (!cache || cache.trend === 'insufficient') {
         trendSignal = '<span class="st-trend-dim">…</span>';
@@ -1692,15 +1699,15 @@
       const tierColor  = tier?.color ?? '#c0d0c8';
 
       // Row 4: order book
-      const isExpanded  = !!MEM.bookExpanded[item.itemId];
+      const isExpanded  = !!MEM.ui.bookExpanded[item.itemId];
       const expandIcon  = isExpanded ? '▼' : '▶';
 
       // Card collapse — default true (collapsed) unless explicitly expanded
-      const isCollapsed  = !MEM.cardCollapsed[item.itemId];
+      const isCollapsed  = !MEM.ui.cardCollapsed[item.itemId];
       const collapseIcon = isCollapsed ? '▶' : '▼';
 
       // Row 6: snapshot info
-      const snaps = MEM.snapshots[item.itemId] ?? [];
+      const snaps = MEM.data.snapshots[item.itemId] ?? [];
       const snipeFreq = res?.fairValue ? calcSnipeFrequency(snaps, res.fairValue, item.threshold, FREQ_WINDOW) : 0;
       const snapLabel = snaps.length === 0
         ? 'no history yet'
@@ -1790,17 +1797,17 @@
 
     container.querySelectorAll('.st-rm-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        MEM.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
-        Store.set(KEYS.watchlist, MEM.watchlist);
+        MEM.data.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
+        Store.set(KEYS.watchlist, MEM.data.watchlist);
         renderWatchlist();
       });
     });
     container.querySelectorAll('.st-log-buy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        MEM.logBuyIdx = parseInt(btn.dataset.idx, 10);
-        const item = MEM.watchlist[MEM.logBuyIdx];
+        MEM.ui.logBuyIdx = parseInt(btn.dataset.idx, 10);
+        const item = MEM.data.watchlist[MEM.ui.logBuyIdx];
         buyItemName.textContent  = item.name;
-        buyPriceInput.value      = MEM.pollResults[item.itemId]?.lowestListed ?? '';
+        buyPriceInput.value      = MEM.poll.pollResults[item.itemId]?.lowestListed ?? '';
         buyQtyInput.value        = '';
         buyForm.style.display    = 'block';
         buyQtyInput.focus();
@@ -1809,8 +1816,8 @@
     container.querySelectorAll('.st-toggle-chk').forEach(chk => {
       chk.addEventListener('change', () => {
         const idx = parseInt(chk.dataset.idx, 10);
-        MEM.watchlist[idx].enabled = chk.checked;
-        Store.set(KEYS.watchlist, MEM.watchlist);
+        MEM.data.watchlist[idx].enabled = chk.checked;
+        Store.set(KEYS.watchlist, MEM.data.watchlist);
         renderWatchlist();
       });
     });
@@ -1819,8 +1826,8 @@
         const idx = parseInt(input.dataset.idx, 10);
         const val = parseInt(input.value, 10);
         if (val > 0) {
-          MEM.watchlist[idx].manualSellTarget = val;
-          Store.set(KEYS.watchlist, MEM.watchlist);
+          MEM.data.watchlist[idx].manualSellTarget = val;
+          Store.set(KEYS.watchlist, MEM.data.watchlist);
           renderWatchlist();
         }
       });
@@ -1828,22 +1835,22 @@
     container.querySelectorAll('.st-sell-target-clear').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.idx, 10);
-        delete MEM.watchlist[idx].manualSellTarget;
-        Store.set(KEYS.watchlist, MEM.watchlist);
+        delete MEM.data.watchlist[idx].manualSellTarget;
+        Store.set(KEYS.watchlist, MEM.data.watchlist);
         renderWatchlist();
       });
     });
     container.querySelectorAll('.st-card-collapse-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const itemId = parseInt(btn.dataset.itemid, 10);
-        MEM.cardCollapsed[itemId] = !MEM.cardCollapsed[itemId];
+        MEM.ui.cardCollapsed[itemId] = !MEM.ui.cardCollapsed[itemId];
         renderWatchlist();
       });
     });
     container.querySelectorAll('.st-book-expand-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const itemId = parseInt(btn.dataset.itemid, 10);
-        MEM.bookExpanded[itemId] = !MEM.bookExpanded[itemId];
+        MEM.ui.bookExpanded[itemId] = !MEM.ui.bookExpanded[itemId];
         renderWatchlist();
       });
     });
@@ -1851,10 +1858,10 @@
       row.addEventListener('click', () => {
         const itemId = parseInt(row.dataset.itemid, 10);
         const price  = parseInt(row.dataset.price, 10);
-        const idx    = MEM.watchlist.findIndex(w => w.itemId === itemId);
+        const idx    = MEM.data.watchlist.findIndex(w => w.itemId === itemId);
         if (idx === -1) return;
-        MEM.logBuyIdx           = idx;
-        buyItemName.textContent = MEM.watchlist[idx].name;
+        MEM.ui.logBuyIdx           = idx;
+        buyItemName.textContent = MEM.data.watchlist[idx].name;
         buyPriceInput.value     = price;
         buyQtyInput.value       = '';
         buyForm.style.display   = 'block';
@@ -1955,7 +1962,7 @@
   addItemBtn.addEventListener('click', () => {
     const opening = addForm.style.display === 'none';
     if (opening) {
-      addThresh.value       = MEM.settings.threshold;
+      addThresh.value       = MEM.data.settings.threshold;
       addForm.style.display = 'block';
       addSearch.focus();
     } else {
@@ -1979,13 +1986,13 @@
       return;
     }
 
-    if (MEM.watchlist.some(it => it.itemId === addSelectedItem.itemId)) {
+    if (MEM.data.watchlist.some(it => it.itemId === addSelectedItem.itemId)) {
       showAddError(`${addSelectedItem.name} is already on the watchlist.`);
       return;
     }
 
-    MEM.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold: pct, enabled: true });
-    Store.set(KEYS.watchlist, MEM.watchlist);
+    MEM.data.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold: pct, enabled: true });
+    Store.set(KEYS.watchlist, MEM.data.watchlist);
     renderWatchlist();
     hideAddForm();
   });
@@ -2005,7 +2012,7 @@
     buyForm.style.display = 'none';
     buyQtyInput.value     = '';
     buyPriceInput.value   = '';
-    MEM.logBuyIdx         = null;
+    MEM.ui.logBuyIdx         = null;
   }
 
   buyCancelBtn.addEventListener('click', hideBuyForm);
@@ -2013,9 +2020,9 @@
   buyConfirmBtn.addEventListener('click', () => {
     const qty   = parseInt(buyQtyInput.value, 10);
     const price = parseInt(buyPriceInput.value, 10);
-    if (!(qty > 0) || !(price > 0) || MEM.logBuyIdx === null) return;
-    const item = MEM.watchlist[MEM.logBuyIdx];
-    MEM.trades.push({
+    if (!(qty > 0) || !(price > 0) || MEM.ui.logBuyIdx === null) return;
+    const item = MEM.data.watchlist[MEM.ui.logBuyIdx];
+    MEM.data.trades.push({
       itemId:    item.itemId,
       name:      item.name,
       qty,
@@ -2024,7 +2031,7 @@
       sellPrice: null,
       sellDate:  null,
     });
-    Store.set(KEYS.trades, MEM.trades);
+    Store.set(KEYS.trades, MEM.data.trades);
     hideBuyForm();
     renderOpenTrades();
     renderSummary();
@@ -2058,7 +2065,7 @@
 
   function renderOpenTrades() {
     const tbody = panel.querySelector('#st-open-trades-body');
-    const open = MEM.trades
+    const open = MEM.data.trades
       .map((t, i) => ({ ...t, _idx: i }))
       .filter(t => t.sellPrice === null);
     if (!open.length) {
@@ -2113,9 +2120,9 @@
         formRow.querySelector('.st-sell-confirm-btn').addEventListener('click', () => {
           const price = parseInt(formRow.querySelector('.st-sell-price-input').value, 10);
           if (!(price > 0)) return;
-          MEM.trades[tradeIdx].sellPrice = price;
-          MEM.trades[tradeIdx].sellDate  = Date.now();
-          Store.set(KEYS.trades, MEM.trades);
+          MEM.data.trades[tradeIdx].sellPrice = price;
+          MEM.data.trades[tradeIdx].sellDate  = Date.now();
+          Store.set(KEYS.trades, MEM.data.trades);
           renderOpenTrades();
           renderClosedTrades();
           renderSummary();
@@ -2126,8 +2133,8 @@
     tbody.querySelectorAll('.st-delete-trade-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         if (!confirm('Delete this trade entry? This cannot be undone.')) return;
-        MEM.trades.splice(parseInt(btn.dataset.tradeIdx, 10), 1);
-        Store.set(KEYS.trades, MEM.trades);
+        MEM.data.trades.splice(parseInt(btn.dataset.tradeIdx, 10), 1);
+        Store.set(KEYS.trades, MEM.data.trades);
         renderOpenTrades();
         renderSummary();
       });
@@ -2145,7 +2152,7 @@
 
   function renderClosedTrades() {
     const tbody = panel.querySelector('#st-closed-trades-body');
-    const closed = MEM.trades
+    const closed = MEM.data.trades
       .map((t, i) => ({ ...t, _idx: i }))
       .filter(t => t.sellPrice !== null);
     if (!closed.length) {
@@ -2178,8 +2185,8 @@
     tbody.querySelectorAll('.st-delete-trade-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         if (!confirm('Delete this closed trade? This cannot be undone.')) return;
-        MEM.trades.splice(parseInt(btn.dataset.tradeIdx, 10), 1);
-        Store.set(KEYS.trades, MEM.trades);
+        MEM.data.trades.splice(parseInt(btn.dataset.tradeIdx, 10), 1);
+        Store.set(KEYS.trades, MEM.data.trades);
         renderClosedTrades();
         renderSummary();
       });
@@ -2189,8 +2196,8 @@
   // ─── Summary render ───────────────────────────────────────────────────────
 
   function renderSummary() {
-    const open   = MEM.trades.filter(t => t.sellPrice === null);
-    const closed = MEM.trades.filter(t => t.sellPrice !== null);
+    const open   = MEM.data.trades.filter(t => t.sellPrice === null);
+    const closed = MEM.data.trades.filter(t => t.sellPrice !== null);
 
     const invested   = open.reduce((s, t) => s + t.buyPrice * t.qty, 0);
     const profit     = closed.reduce((s, t) => s + (t.sellPrice - t.buyPrice) * t.qty, 0);
@@ -2202,13 +2209,13 @@
     // Unrealized P&L for open trades that have a known sell target
     let liveEst = null;
     for (const t of open) {
-      const sellTarget = MEM.pollResults[t.itemId]?.recommendedSellTarget ?? null;
+      const sellTarget = MEM.poll.pollResults[t.itemId]?.recommendedSellTarget ?? null;
       if (sellTarget != null) liveEst = (liveEst ?? 0) + (sellTarget - t.buyPrice) * t.qty;
     }
 
     // Capital in open positions where expected sale value >= mug threshold
     const atRisk = open.reduce((s, t) => {
-      const sellTarget = MEM.pollResults[t.itemId]?.recommendedSellTarget ?? null;
+      const sellTarget = MEM.poll.pollResults[t.itemId]?.recommendedSellTarget ?? null;
       return (sellTarget != null && sellTarget * t.qty >= MUG_THRESHOLD)
         ? s + t.buyPrice * t.qty : s;
     }, 0);
@@ -2232,7 +2239,7 @@
   function updateQueueBadge() {
     const tabBadge = panel.querySelector('#st-ledger-tab-badge');
     if (!tabBadge) return;
-    const count = MEM.pendingQueue.length;
+    const count = MEM.ui.pendingQueue.length;
     tabBadge.textContent = count || '';
     tabBadge.style.display = count ? '' : 'none';
   }
@@ -2242,7 +2249,7 @@
     const section = panel.querySelector('#st-queue-section');
     const rowsEl  = panel.querySelector('#st-queue-rows');
     const badge   = panel.querySelector('#st-queue-badge');
-    const count   = MEM.pendingQueue.length;
+    const count   = MEM.ui.pendingQueue.length;
 
     if (!count) {
       section.style.display = 'none';
@@ -2251,7 +2258,7 @@
     section.style.display = '';
     badge.textContent = count;
 
-    rowsEl.innerHTML = MEM.pendingQueue.map((item, i) => `
+    rowsEl.innerHTML = MEM.ui.pendingQueue.map((item, i) => `
       <div class="st-queue-row" data-qi="${i}">
         <span class="st-queue-name" title="${item.name}">${item.name}</span>
         <span class="st-queue-price">${fmtMoney(item.price)}</span>
@@ -2268,11 +2275,11 @@
         const qi  = parseInt(row.dataset.qi, 10);
         const qty = parseInt(row.querySelector('.st-queue-qty-input').value, 10);
         if (!(qty > 0)) return;
-        const item = MEM.pendingQueue[qi];
+        const item = MEM.ui.pendingQueue[qi];
         if (!item) return;
-        MEM.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
-        Store.set(KEYS.trades, MEM.trades);
-        MEM.pendingQueue.splice(qi, 1);
+        MEM.data.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
+        Store.set(KEYS.trades, MEM.data.trades);
+        MEM.ui.pendingQueue.splice(qi, 1);
         renderQueueStrip();
         renderOpenTrades();
         renderSummary();
@@ -2282,7 +2289,7 @@
     rowsEl.querySelectorAll('.st-queue-rm-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const qi = parseInt(btn.closest('.st-queue-row').dataset.qi, 10);
-        MEM.pendingQueue.splice(qi, 1);
+        MEM.ui.pendingQueue.splice(qi, 1);
         renderQueueStrip();
       });
     });
@@ -2293,22 +2300,22 @@
     // collect valid entries; iterate in reverse so splices don't shift earlier indices
     const toLog = rows
       .map(row => ({ qi: parseInt(row.dataset.qi, 10), qty: parseInt(row.querySelector('.st-queue-qty-input').value, 10) }))
-      .filter(({ qi, qty }) => qty > 0 && MEM.pendingQueue[qi])
+      .filter(({ qi, qty }) => qty > 0 && MEM.ui.pendingQueue[qi])
       .sort((a, b) => b.qi - a.qi);
     if (!toLog.length) return;
     toLog.forEach(({ qi, qty }) => {
-      const item = MEM.pendingQueue[qi];
-      MEM.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
-      MEM.pendingQueue.splice(qi, 1);
+      const item = MEM.ui.pendingQueue[qi];
+      MEM.data.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
+      MEM.ui.pendingQueue.splice(qi, 1);
     });
-    Store.set(KEYS.trades, MEM.trades);
+    Store.set(KEYS.trades, MEM.data.trades);
     renderQueueStrip();
     renderOpenTrades();
     renderSummary();
   });
 
   panel.querySelector('#st-queue-clear-btn').addEventListener('click', () => {
-    MEM.pendingQueue.length = 0;
+    MEM.ui.pendingQueue.length = 0;
     renderQueueStrip();
   });
 
@@ -2330,22 +2337,22 @@
   collapseBtn.addEventListener('click', () => {
     const collapsed = panel.classList.toggle('st-collapsed');
     collapseBtn.textContent = collapsed ? '+' : '−';
-    MEM.collapsed = collapsed;
-    Store.set(KEYS.collapsed, MEM.collapsed);
+    MEM.ui.collapsed = collapsed;
+    Store.set(KEYS.collapsed, MEM.ui.collapsed);
   });
 
   // ─── Restore panel state ───────────────────────────────────────────────────
 
-  if (MEM.collapsed) {
+  if (MEM.ui.collapsed) {
     panel.classList.add('st-collapsed');
     collapseBtn.textContent = '+';
   }
 
-  if (MEM.position) {
+  if (MEM.ui.position) {
     panel.style.right  = 'auto';
     panel.style.bottom = 'auto';
-    panel.style.left   = MEM.position.left;
-    panel.style.top    = MEM.position.top;
+    panel.style.left   = MEM.ui.position.left;
+    panel.style.top    = MEM.ui.position.top;
   }
 
   // ─── Drag ─────────────────────────────────────────────────────────────────
@@ -2392,8 +2399,8 @@
 
   document.addEventListener('mouseup', () => {
     if (dragging) {
-      MEM.position = { left: panel.style.left, top: panel.style.top };
-      Store.set(KEYS.position, MEM.position);
+      MEM.ui.position = { left: panel.style.left, top: panel.style.top };
+      Store.set(KEYS.position, MEM.ui.position);
     }
     dragging = false;
   });
@@ -2417,14 +2424,14 @@
 
   document.addEventListener('touchend', () => {
     if (dragging) {
-      MEM.position = { left: panel.style.left, top: panel.style.top };
-      Store.set(KEYS.position, MEM.position);
+      MEM.ui.position = { left: panel.style.left, top: panel.style.top };
+      Store.set(KEYS.position, MEM.ui.position);
     }
     dragging = false;
   });
 
   window.addEventListener('resize', () => {
-    if (!MEM.position) return;
+    if (!MEM.ui.position) return;
     const curX = parseInt(panel.style.left, 10);
     const curY = parseInt(panel.style.top,  10);
     if (!isNaN(curX) && !isNaN(curY)) applyPos(curX, curY);
@@ -2440,10 +2447,10 @@
   const inputSnipeAlerts = panel.querySelector('#st-input-snipe-alerts');
   const clearBtn         = panel.querySelector('#st-clear-btn');
 
-  inputInterval.value       = MEM.settings.interval;
-  inputThreshold.value      = MEM.settings.threshold;
-  inputVaultFloor.value     = MEM.settings.vaultFloorPct ?? 10;
-  inputSnipeAlerts.checked  = MEM.settings.snipeAlerts ?? true;
+  inputInterval.value       = MEM.data.settings.interval;
+  inputThreshold.value      = MEM.data.settings.threshold;
+  inputVaultFloor.value     = MEM.data.settings.vaultFloorPct ?? 10;
+  inputSnipeAlerts.checked  = MEM.data.settings.snipeAlerts ?? true;
   // show stored key placeholder but not the actual value for security
   if (localStorage.getItem('st_apikey')) inputApiKey.placeholder = '(key saved)';
 
@@ -2457,9 +2464,9 @@
   });
 
   inputInterval.addEventListener('change', () => {
-    MEM.settings.interval = Math.max(10, parseInt(inputInterval.value, 10) || 60);
-    inputInterval.value = MEM.settings.interval;
-    Store.set(KEYS.settings, MEM.settings);
+    MEM.data.settings.interval = Math.max(10, parseInt(inputInterval.value, 10) || 60);
+    inputInterval.value = MEM.data.settings.interval;
+    Store.set(KEYS.settings, MEM.data.settings);
     startPollLoop();
   });
 
@@ -2471,35 +2478,35 @@
   inputThreshold.addEventListener('input', updateThreshHint);
 
   inputThreshold.addEventListener('change', () => {
-    MEM.settings.threshold = Math.min(100, Math.max(1, parseInt(inputThreshold.value, 10) || 10));
-    inputThreshold.value = MEM.settings.threshold;
-    Store.set(KEYS.settings, MEM.settings);
+    MEM.data.settings.threshold = Math.min(100, Math.max(1, parseInt(inputThreshold.value, 10) || 10));
+    inputThreshold.value = MEM.data.settings.threshold;
+    Store.set(KEYS.settings, MEM.data.settings);
   });
 
   inputVaultFloor.addEventListener('change', () => {
-    MEM.settings.vaultFloorPct = Math.min(100, Math.max(0, parseFloat(inputVaultFloor.value) || 10));
-    inputVaultFloor.value = MEM.settings.vaultFloorPct;
-    Store.set(KEYS.settings, MEM.settings);
-    MEM.availableCapital = computeAvailableCapital(MEM._lastVaultAmount ?? 0, MEM.settings.vaultFloorPct);
+    MEM.data.settings.vaultFloorPct = Math.min(100, Math.max(0, parseFloat(inputVaultFloor.value) || 10));
+    inputVaultFloor.value = MEM.data.settings.vaultFloorPct;
+    Store.set(KEYS.settings, MEM.data.settings);
+    MEM.poll.availableCapital = computeAvailableCapital(MEM.poll.lastVaultAmount ?? 0, MEM.data.settings.vaultFloorPct);
     renderCapitalBar();
   });
 
   inputSnipeAlerts.addEventListener('change', () => {
-    MEM.settings.snipeAlerts = inputSnipeAlerts.checked;
-    Store.set(KEYS.settings, MEM.settings);
+    MEM.data.settings.snipeAlerts = inputSnipeAlerts.checked;
+    Store.set(KEYS.settings, MEM.data.settings);
   });
 
   clearBtn.addEventListener('click', () => {
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
-    MEM.watchlist = [...SEED_WATCHLIST];
-    MEM.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true };
-    MEM.availableCapital = 0;
-    MEM.collapsed = false;
-    MEM.position  = null;
-    inputInterval.value      = MEM.settings.interval;
-    inputThreshold.value     = MEM.settings.threshold;
-    inputVaultFloor.value    = MEM.settings.vaultFloorPct;
+    MEM.data.watchlist = [...SEED_WATCHLIST];
+    MEM.data.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true };
+    MEM.poll.availableCapital = 0;
+    MEM.ui.collapsed = false;
+    MEM.ui.position  = null;
+    inputInterval.value      = MEM.data.settings.interval;
+    inputThreshold.value     = MEM.data.settings.threshold;
+    inputVaultFloor.value    = MEM.data.settings.vaultFloorPct;
     inputSnipeAlerts.checked = true;
     panel.classList.remove('st-collapsed');
     collapseBtn.textContent = '−';
@@ -2538,11 +2545,11 @@
   function checkNodesForSnipes(addedNodes) {
     const itemId = getImarketItemId();
     if (!itemId) return;
-    const entry = MEM.watchlist.find(w => w.itemId === itemId && w.enabled !== false);
+    const entry = MEM.data.watchlist.find(w => w.itemId === itemId && w.enabled !== false);
     if (!entry) return;
-    const res = MEM.pollResults[itemId];
+    const res = MEM.poll.pollResults[itemId];
     if (!res || res.error || !res.fairValue) return;
-    const threshold = entry.threshold ?? MEM.settings.threshold ?? 10;
+    const threshold = entry.threshold ?? MEM.data.settings.threshold ?? 10;
     const snipeCutoff = res.fairValue * (1 - threshold / 100);
     for (const node of addedNodes) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
@@ -2584,8 +2591,8 @@
     const cardId = 'st-injected-' + itemId;
     if (document.getElementById(cardId)) return;
 
-    const entry = MEM.watchlist.find(w => w.itemId === itemId);
-    const res   = MEM.pollResults[itemId];
+    const entry = MEM.data.watchlist.find(w => w.itemId === itemId);
+    const res   = MEM.poll.pollResults[itemId];
     if (!entry || !res || res.error) return;
 
     const sellTarget  = entry.manualSellTarget ?? res.recommendedSellTarget ?? null;
@@ -2646,7 +2653,7 @@
     card.querySelector('.st-injected-dismiss').addEventListener('click', () => card.remove());
 
     card.querySelector('.st-injected-queue-btn').addEventListener('click', () => {
-      MEM.pendingQueue.push({ itemId, name: entry.name, price: detectedPrice, qty: null, source: 'queue', ts: Date.now() });
+      MEM.ui.pendingQueue.push({ itemId, name: entry.name, price: detectedPrice, qty: null, source: 'queue', ts: Date.now() });
       updateQueueBadge();
       const confirm = card.querySelector('.st-injected-queue-confirm');
       confirm.textContent = 'Queued!';
@@ -2680,7 +2687,7 @@
   }
 
   panel.querySelector('#st-export-btn').addEventListener('click', () => {
-    const closed = MEM.trades.filter(t => t.sellPrice !== null);
+    const closed = MEM.data.trades.filter(t => t.sellPrice !== null);
     const rows = [
       ['Item', 'Qty', 'Buy Price', 'Sell Price', 'Profit', 'ROI %', 'Held'],
       ...closed.map(t => {
@@ -2710,12 +2717,12 @@
       const text = await gmFetch(`https://api.torn.com/user/?selections=money&key=${getApiKey()}`);
       const d = JSON.parse(text);
       if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      MEM._lastVaultAmount = d.vault_amount ?? 0;
-      MEM.availableCapital = computeAvailableCapital(MEM._lastVaultAmount, MEM.settings.vaultFloorPct ?? 10);
+      MEM.poll.lastVaultAmount = d.vault_amount ?? 0;
+      MEM.poll.availableCapital = computeAvailableCapital(MEM.poll.lastVaultAmount, MEM.data.settings.vaultFloorPct ?? 10);
       renderCapitalBar();
     } catch (e) {
       console.warn('[SnipeTracker] vault fetch failed:', e.message);
-      MEM.availableCapital = 0;
+      MEM.poll.availableCapital = 0;
     }
   })();
 
