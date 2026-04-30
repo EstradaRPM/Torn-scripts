@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.4
+// @version      1.48.5
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.4';
+  const SCRIPT_VERSION   = '1.48.5';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1058,11 +1058,12 @@
       p75,
       outlierExcluded,
       outlierFloor,
-      lowestListed:    mergedListings[0]?.price ?? null,
-      lowestListedQty: mergedListings[0]?.price != null
+      lowestListed:       mergedListings[0]?.price ?? null,
+      lowestListedQty:    mergedListings[0]?.price != null
         ? mergedListings.filter(l => l.price === mergedListings[0].price).reduce((s, l) => s + l.quantity, 0)
         : null,
-      secondLowest:    mergedListings[1]?.price ?? null,
+      lowestMarketListed: mergedListings.find(l => l.source !== 'bazaar')?.price ?? null,
+      secondLowest:       mergedListings[1]?.price ?? null,
       listings:        mergedListings,
       marketFlood,
       isFloodPlay,
@@ -1134,8 +1135,8 @@
       const res       = MEM.poll.pollResults[item.itemId];
       const threshold = item.threshold ?? MEM.data.settings.threshold ?? 10;
       const isSnipe   = res != null && !res.error
-        && res.fairValue != null && res.lowestListed != null
-        && res.lowestListed < res.fairValue * (1 - threshold / 100);
+        && res.fairValue != null && res.lowestMarketListed != null
+        && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
       const lastFired = MEM.poll.lastAlertedAt[item.itemId] ?? 0;
       if (isSnipe && Date.now() - lastFired > ALERT_COOLDOWN_MS) {
         fireSnipeAlert(item);
