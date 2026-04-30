@@ -1,43 +1,72 @@
 # Claude Session Memory — Torn Scripts
 
-_Last updated: 2026-04-30 (#189 done as v1.48.3)_
+_Last updated: 2026-04-30 (QA session — #192–#195 filed; pipeline strategy pivot)_
 
 ---
 
 ## Active WIP
 
 **File:** `torn-snipe-tracker-v1.user.js`
-**Version:** `1.48.3` (on main, pushed — clean, no open PRs, no stale branches)
-**Status:** Refactor wave in progress. Dependency chain: #188 ✅ → #189 ✅ → #190/#191
+**Version:** `1.48.4` (on main, pushed — clean, no open PRs, no stale branches)
+**Status:** Refactor wave + pipeline pivot. Two tracks running in parallel.
 
 ### Known PDA limitation (non-fixable without PDA engine change)
 `GM_xmlhttpRequest` on Torn PDA's WebView does NOT bypass the page CSP. `weav3r.dev` calls will always fail with a network error on PDA. Script silently falls back to Torn API data only. Console noise is expected — not a bug to fix.
 
 ---
 
-## Open tickets (dependency order)
+## NEXT SESSION — start here
 
-| # | Title | Status | Blocked by |
-|---|-------|--------|-----------|
-| #188 | fix: alert dedup boolean → timestamp | ✅ DONE v1.48.2 | — |
-| #189 | refactor: partition MEM into data/poll/ui | ✅ DONE v1.48.3 | #188 ✅ |
-| #190 | refactor: extract `computePollResult()` | 🔜 next | #189 ✅ |
-| #191 | refactor: extract `sortWatchlistItems` + `buildCardHTML` + `bindCardEvents` | 🔜 | #189 ✅ |
+**Step 1: implement #192 directly** (no grill-me needed — one-line scope)
+- Exclude bazaar-sourced listings from the snipe alert condition
+- `lowestListed` in alert evaluation must only reflect item market listings, not bazaar
+- Bazaar data from TornW3B continues to feed `computePollResult` for fair value — do NOT remove it from the merge
+- Version bump: 1.48.4 → 1.48.5 (patch)
 
-### #189 — What was done (v1.48.3)
-- Flat `MEM` object replaced with three sub-objects: `MEM.data` (persisted), `MEM.poll` (cycle-computed), `MEM.ui` (ephemeral)
-- `MEM.data`: watchlist, settings, trades, snapshots, trendCache
-- `MEM.poll`: pollResults, availableCapital, lastAlertedAt, lastVaultAmount
-- `MEM.ui`: collapsed, position, cardCollapsed, bookExpanded, logBuyIdx, storageWarnShown, pendingQueue
-- 151 usage sites renamed; zero orphaned top-level MEM fields remain
-- `_lastVaultAmount` renamed `lastVaultAmount` (underscore dropped; sub-object namespace is sufficient)
+**Step 2: /grill-me #194** — card layout/UX on mobile before any alert pipeline work
+- Alert card covers page content on mobile; needs non-blocking layout + one-tap item navigation
+- Design decisions here inform what #193 must render
+
+**Step 3: /grill-me #193** — MutationObserver wired into full alert pipeline
+- Blocked by #192 (do first); design informed by #194 (grill-me first)
+- MutationObserver already exists; needs to drive same alert path as poll (threshold check, cooldown, visual+audio)
+
+**Step 4: #195 direct** — auto-capture purchases from confirmation popup
+- MutationObserver watches for Torn's purchase confirmation DOM node
+- Verify exact DOM selector/wording with a real test purchase before coding
+- Auto-creates a pending ledger entry; user can dismiss
 
 ---
 
-## Completed tickets (v1 feature set)
+## Open tickets
+
+### Refactor wave
+
+| # | Title | Status | Blocked by |
+|---|-------|--------|-----------|
+| #191 | refactor: extract `sortWatchlistItems` + `buildCardHTML` + `bindCardEvents` | 🔜 pending | — |
+
+### Pipeline pivot (filed 2026-04-30)
+
+| # | Title | Status | Blocked by |
+|---|-------|--------|-----------|
+| #192 | fix: exclude bazaar listings from snipe alert evaluation | 🔜 **do first** | — |
+| #193 | feat: wire MutationObserver into full alert pipeline | 🔜 /grill-me → implement | #192 ✅ + #194 grill-me |
+| #194 | fix: alert card non-blocking layout + one-tap nav (mobile) | 🔜 /grill-me → implement | — |
+| #195 | feat: auto-capture purchases from confirmation popup | 🔜 implement (test buy first) | — |
+
+**Why the pivot:** Bazaar snipe alerts are structurally broken — TornW3B aggregator lag means items are always already sold by the time alerts fire. Item market real-time DOM detection (MutationObserver) is the correct snipe surface.
+
+---
+
+## Completed tickets
 
 | # | Title | Status |
 |---|-------|--------|
+| #188 | fix: alert dedup boolean → timestamp | ✅ DONE v1.48.2 |
+| #189 | refactor: partition MEM into data/poll/ui | ✅ DONE v1.48.3 |
+| #190 | refactor: extract `computePollResult()` | ✅ DONE v1.48.4 |
+| #187 | Render once per poll cycle | ✅ DONE v1.48.1 |
 | #174 | `@match` wildcard + page mode detection | ✅ DONE v1.38.0 |
 | #175 | Pure function engine + Node test suite | ✅ DONE |
 | #176 | Capital API: vault fetch + settings refactor | ✅ DONE v1.39.0 |
@@ -53,6 +82,18 @@ _Last updated: 2026-04-30 (#189 done as v1.48.3)_
 
 ---
 
+## #191 — What to do (when returning to refactor wave)
+
+Split `renderWatchlist()` (~lines 1605–1900, ~296 lines) into three focused functions:
+
+- `sortWatchlistItems(watchlist, pollResults)` → sorted array — pure function
+- `buildCardHTML(item, pollResult, snapshots, trend, settings, uiState)` → HTML string — no DOM access
+- `bindCardEvents(cardEl, item)` → void — all event listeners
+
+`renderWatchlist()` becomes thin orchestrator ≤ 30 lines. Version bump: 1.48.x → 1.48.x+1 (patch).
+
+---
+
 ## Snipe Tracker — Design decisions (locked)
 
 - Bazaar = 0% fee. Item market = 5%. Mug default = 15%.
@@ -63,8 +104,8 @@ _Last updated: 2026-04-30 (#189 done as v1.48.3)_
 - Per-card collapse toggle (▼/▶) in Row 1; `MEM.ui.cardCollapsed` dict; **default collapsed**
 - PAGE_MODE: 'market' = full panel + DOM, 'background' = silent poll only
 - MutationObserver on imarket listings for real-time detection (zero API cost) — unreliable on PDA
-- Snipe alerts: poll-triggered only; cooldown 5 min per item (ADR 0001 + #188)
-- Logging: pending queue + Quick Log strip + Batch Entry form
+- Snipe alerts: poll-triggered only; cooldown 5 min per item (ADR 0001 + #188) — **#193 will change this**
+- Logging: pending queue + Quick Log strip + Batch Entry form — **#195 will add auto-capture**
 
 ## Pure functions — status
 
@@ -76,7 +117,7 @@ _Last updated: 2026-04-30 (#189 done as v1.48.3)_
 | `computeSmartSellPosition(listings, snipePrice, availableCapital, trend)` | ✅ in IIFE |
 | `calcSnipeFrequency(snapshots, fairValue, threshold, windowMs)` | ✅ in IIFE |
 | `calcMugScenario(sellTarget, qty, buyPrice, mugPct)` | ✅ in IIFE (v1.48.0) |
-| `computePollResult(mergedListings, item, availableCapital)` | 🔜 #190 |
+| `computePollResult(mergedListings, item, availableCapital, snapshots, trend)` | ✅ in IIFE (v1.48.4) |
 
 ---
 
