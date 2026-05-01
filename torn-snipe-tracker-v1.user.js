@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.7
+// @version      1.49.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -24,14 +24,14 @@
   }
   const PAGE_MODE = detectPageMode();
 
-  if (PAGE_MODE === 'market' && document.getElementById('st-panel')) return;
+  if (PAGE_MODE === 'market' && document.getElementById('st-drawer')) return;
 
   if (window.__stPollTimer) {
     clearInterval(window.__stPollTimer);
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.7';
+  const SCRIPT_VERSION   = '1.49.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -49,7 +49,6 @@
     watchlist: 'st_watchlist',
     settings:  'st_settings',
     collapsed: 'st_collapsed',
-    position:  'st_position',
     trades:    'st_trades',
     apiKey:    'st_apikey',
     snapshots:  'st_snapshots',
@@ -95,7 +94,6 @@
     },
     ui: {
       collapsed:        Store.get(KEYS.collapsed) ?? false,
-      position:         Store.get(KEYS.position)  ?? null,
       cardCollapsed:    {},  // itemId -> bool
       bookExpanded:     {},  // itemId -> bool
       logBuyIdx:        null,
@@ -114,39 +112,93 @@
 
   const style = document.createElement('style');
   style.textContent = `
-    #st-panel {
+    /* ── FAB ── */
+    #st-fab {
       position: fixed;
       bottom: 18px;
       right: 18px;
       z-index: 999999;
-      width: 520px;
-      max-width: calc(100vw - 24px);
-      max-height: 80vh;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: #0c1e2e;
+      border: 2px solid #2a3a4a;
+      cursor: pointer;
       display: flex;
-      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      transition: border-color 0.15s, background 0.15s;
+      user-select: none;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+    }
+    #st-fab:hover { border-color: #00ff88; }
+    #st-fab.st-fab-alert { border-color: #ff4444; background: #1a0808; }
+    #st-fab-badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background: #ff4444;
+      color: #fff;
+      border-radius: 10px;
+      padding: 1px 5px;
+      font-size: 10px;
+      font-weight: 700;
+      min-width: 16px;
+      text-align: center;
+      line-height: 1.4;
+      font-family: 'Segoe UI', Arial, sans-serif;
+    }
+
+    /* ── Drawer ── */
+    #st-drawer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 999998;
       background: #080e18;
-      border: 1px solid #1a2a3a;
-      border-radius: 8px;
-      box-shadow: 0 4px 32px rgba(0,0,0,0.7);
+      border-top: 2px solid #1a2a3a;
+      border-radius: 14px 14px 0 0;
+      box-shadow: 0 -4px 32px rgba(0,0,0,0.7);
       font-family: 'Segoe UI', Arial, sans-serif;
       font-size: 14px;
       color: #c0d0c8;
       user-select: none;
+      transform: translateY(100%);
+      transition: transform 0.25s ease;
+      display: flex;
+      flex-direction: column;
+      height: 50vh;
+      max-height: 90vh;
+    }
+    #st-drawer.st-drawer-open { transform: translateY(0); }
+
+    /* ── Drawer handle ── */
+    #st-drawer-handle {
+      padding: 10px 0 4px;
+      display: flex;
+      justify-content: center;
+      cursor: ns-resize;
+      flex-shrink: 0;
+    }
+    #st-drawer-handle::after {
+      content: '';
+      display: block;
+      width: 40px;
+      height: 4px;
+      background: #2a3a4a;
+      border-radius: 2px;
     }
 
-    /* ── Header ── */
-    #st-header {
+    /* ── Drawer title ── */
+    #st-drawer-titlebar {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px;
-      background: #0c1622;
-      border-radius: 8px 8px 0 0;
-      cursor: grab;
-      border-bottom: 1px solid #1a2a3a;
+      padding: 0 14px 6px;
+      flex-shrink: 0;
     }
-    #st-header:active { cursor: grabbing; }
-
     #st-title {
       font-size: 13px;
       font-weight: 700;
@@ -156,39 +208,57 @@
       text-shadow: 0 0 12px rgba(0,255,136,0.5);
     }
 
-    #st-collapse-btn {
-      background: none;
-      border: 1px solid #2a3a4a;
-      border-radius: 4px;
-      color: #c0d0c8;
-      cursor: pointer;
-      font-size: 14px;
-      line-height: 1;
-      padding: 2px 8px;
-      transition: border-color 0.15s, color 0.15s;
+    /* ── Drawer watchlist rows ── */
+    #st-drawer-watchlist {
+      flex-shrink: 0;
+      padding: 0 10px 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow-y: auto;
+      max-height: 30vh;
     }
-    #st-collapse-btn:hover {
-      border-color: #00ff88;
-      color: #00ff88;
+    .st-drawer-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      background: #0c1622;
+      border: 1px solid #1a2a3a;
+      border-radius: 5px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color 0.15s;
+    }
+    .st-drawer-row:hover { border-color: #00ccff; }
+    .st-drawer-row-name {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 600;
+      color: #d0e0d8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .st-drawer-row-price { font-size: 12px; color: #c0d0c8; white-space: nowrap; }
+    .st-drawer-row-status { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap; }
+
+    /* ── Drawer pinned actions ── */
+    #st-drawer-actions {
+      display: flex;
+      gap: 8px;
+      padding: 6px 10px 8px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #1a2a3a;
     }
 
-    /* ── Body ── */
+    /* ── Body (tabs + pane container) ── */
     #st-body {
       display: flex;
       flex-direction: column;
       overflow: hidden;
       min-height: 0;
       flex: 1;
-    }
-    #st-panel.st-collapsed #st-body {
-      display: none;
-    }
-    #st-panel.st-collapsed {
-      border-radius: 8px;
-    }
-    #st-panel.st-collapsed #st-header {
-      border-bottom: none;
-      border-radius: 8px;
     }
 
     /* ── Tabs ── */
@@ -482,13 +552,9 @@
       flex-wrap: wrap;
     }
 
-    /* ── Settings ── */
+    /* ── Settings (now a tab pane) ── */
     .st-settings {
-      flex-shrink: 0;
-      border-top: 1px solid #1a2a3a;
       padding: 12px 14px 14px;
-      background: #070c14;
-      border-radius: 0 0 8px 8px;
     }
     .st-settings-title {
       font-size: 11px;
@@ -665,11 +731,6 @@
     }
 
     @media (max-width: 560px) {
-      #st-panel {
-        width: calc(100vw - 24px);
-        right: 12px;
-        bottom: 12px;
-      }
       .st-table th,
       .st-table td {
         padding: 5px 5px;
@@ -786,12 +847,22 @@
 
   // ─── HTML ──────────────────────────────────────────────────────────────────
 
+  const fab = document.createElement('div');
+  fab.id = 'st-fab';
+  fab.innerHTML = `<span id="st-fab-badge" style="display:none">0</span>⚡`;
+  document.body.appendChild(fab);
+
   const panel = document.createElement('div');
-  panel.id = 'st-panel';
+  panel.id = 'st-drawer';
   panel.innerHTML = `
-    <div id="st-header">
+    <div id="st-drawer-handle"></div>
+    <div id="st-drawer-titlebar">
       <span id="st-title">Snipe Tracker v${SCRIPT_VERSION}</span>
-      <button id="st-collapse-btn" title="Toggle panel">&minus;</button>
+    </div>
+    <div id="st-drawer-watchlist"></div>
+    <div id="st-drawer-actions">
+      <button id="st-scan-btn" class="st-btn">Scan Now</button>
+      <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
     </div>
 
     <div id="st-body">
@@ -799,16 +870,13 @@
       <div id="st-tabs">
         <div class="st-tab st-active" data-tab="snipe">Snipe</div>
         <div class="st-tab" data-tab="ledger">Ledger<span id="st-ledger-tab-badge" class="st-queue-badge" style="display:none"></span></div>
+        <div class="st-tab" data-tab="settings">Settings</div>
       </div>
 
       <!-- ── SNIPE pane ── -->
       <div id="st-pane-snipe" class="st-pane st-active">
         <div id="st-watchlist-cards"></div>
         <div class="st-scan-line" style="margin-top:10px">Last scan: &mdash;</div>
-        <div class="st-btn-row">
-          <button id="st-scan-btn" class="st-btn">Scan Now</button>
-          <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
-        </div>
         <div id="st-add-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
           <div class="st-settings-row" style="margin-bottom:0;align-items:flex-start">
             <div class="st-field" style="position:relative">
@@ -931,34 +999,36 @@
         </div>
       </div>
 
-      <!-- ── Settings ── -->
-      <div class="st-settings">
-        <div class="st-settings-title">Settings</div>
-        <div class="st-settings-row">
-          <div class="st-field">
-            <label for="st-input-interval">Scan interval (sec)</label>
-            <input id="st-input-interval" class="st-input" type="number" min="10">
+      <!-- ── Settings pane ── -->
+      <div id="st-pane-settings" class="st-pane">
+        <div class="st-settings">
+          <div class="st-settings-title">Settings</div>
+          <div class="st-settings-row">
+            <div class="st-field">
+              <label for="st-input-interval">Scan interval (sec)</label>
+              <input id="st-input-interval" class="st-input" type="number" min="10">
+            </div>
+            <div class="st-field">
+              <label for="st-input-threshold">Default threshold %</label>
+              <input id="st-input-threshold" class="st-input" type="number" min="1" max="100">
+              <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
+            </div>
+            <div class="st-field">
+              <label for="st-input-vault-floor">Vault Reserve Floor (%)</label>
+              <input id="st-input-vault-floor" class="st-input" type="number" min="0" max="100" style="width:130px">
+            </div>
+            <div class="st-field">
+              <label for="st-input-snipe-alerts" style="cursor:pointer">
+                <input id="st-input-snipe-alerts" type="checkbox" style="margin-right:6px;cursor:pointer">Snipe alerts
+              </label>
+            </div>
           </div>
-          <div class="st-field">
-            <label for="st-input-threshold">Default threshold %</label>
-            <input id="st-input-threshold" class="st-input" type="number" min="1" max="100">
-            <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
+          <div class="st-field" style="margin-bottom:10px">
+            <label for="st-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
+            <input id="st-input-apikey" class="st-input" type="password" placeholder="paste key here" style="width:240px">
           </div>
-          <div class="st-field">
-            <label for="st-input-vault-floor">Vault Reserve Floor (%)</label>
-            <input id="st-input-vault-floor" class="st-input" type="number" min="0" max="100" style="width:130px">
-          </div>
-          <div class="st-field">
-            <label for="st-input-snipe-alerts" style="cursor:pointer">
-              <input id="st-input-snipe-alerts" type="checkbox" style="margin-right:6px;cursor:pointer">Snipe alerts
-            </label>
-          </div>
+          <button id="st-clear-btn" class="st-btn st-btn-danger">Clear All Data</button>
         </div>
-        <div class="st-field" style="margin-bottom:10px">
-          <label for="st-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
-          <input id="st-input-apikey" class="st-input" type="password" placeholder="paste key here" style="width:240px">
-        </div>
-        <button id="st-clear-btn" class="st-btn st-btn-danger">Clear All Data</button>
       </div>
     </div>
   `;
@@ -1133,7 +1203,7 @@
   }
 
   function checkSnipeAlerts() {
-    if (!(MEM.data.settings.snipeAlerts ?? true)) return;
+    let snipeCount = 0;
     for (const item of MEM.data.watchlist) {
       if (!(item.itemId > 0) || item.enabled === false) continue;
       const res       = MEM.poll.pollResults[item.itemId];
@@ -1141,10 +1211,23 @@
       const isSnipe   = res != null && !res.error
         && res.fairValue != null && res.lowestMarketListed != null
         && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
+      if (isSnipe) snipeCount++;
+      if (!(MEM.data.settings.snipeAlerts ?? true)) continue;
       const lastFired = MEM.poll.lastAlertedAt[item.itemId] ?? 0;
       if (isSnipe && Date.now() - lastFired > ALERT_COOLDOWN_MS) {
         fireSnipeAlert(item);
         MEM.poll.lastAlertedAt[item.itemId] = Date.now();
+      }
+    }
+    const fabBadge = document.getElementById('st-fab-badge');
+    if (fabBadge) {
+      if (snipeCount > 0) {
+        fab.classList.add('st-fab-alert');
+        fabBadge.textContent = snipeCount;
+        fabBadge.style.display = '';
+      } else {
+        fab.classList.remove('st-fab-alert');
+        fabBadge.style.display = 'none';
       }
     }
   }
@@ -1186,8 +1269,8 @@
       <span>Storage limit approaching — consider reducing watchlist size or snapshot retention period.</span>
       <button style="background:none;border:none;color:#ff9944;cursor:pointer;font-size:14px;padding:0 4px;line-height:1;flex-shrink:0" id="st-storage-warn-dismiss">✕</button>
     `;
-    const tabs = panel.querySelector('#st-tabs');
-    tabs.parentNode.insertBefore(warn, tabs);
+    const body = panel.querySelector('#st-body');
+    body.insertBefore(warn, body.firstChild);
     panel.querySelector('#st-storage-warn-dismiss').addEventListener('click', () => warn.remove());
   }
 
@@ -1332,7 +1415,7 @@
       await fetchItemPrice(item);
     }
     checkSnipeAlerts();
-    if (PAGE_MODE === 'market') renderWatchlist();
+    if (PAGE_MODE === 'market') { renderWatchlist(); renderDrawerRows(); }
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
   }
 
@@ -1888,6 +1971,31 @@
     renderCapitalBar();
   }
 
+  function renderDrawerRows() {
+    const container = panel.querySelector('#st-drawer-watchlist');
+    if (!container) return;
+    const fmt = n => '$' + Math.round(n).toLocaleString();
+    container.innerHTML = MEM.data.watchlist
+      .filter(item => item.enabled !== false && item.itemId > 0)
+      .map(item => {
+        const res = MEM.poll.pollResults[item.itemId];
+        const threshold = item.threshold ?? MEM.data.settings.threshold ?? 10;
+        const isSnipe = res && !res.error && res.fairValue != null && res.lowestMarketListed != null
+          && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
+        const price = res && !res.error && res.lowestMarketListed != null
+          ? fmt(res.lowestMarketListed) : '—';
+        const statusHtml = isSnipe
+          ? `<span class="st-drawer-row-status st-status-snipe">SNIPE</span>`
+          : `<span class="st-drawer-row-status st-status-watch">watch</span>`;
+        const url = `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${item.itemId}`;
+        return `<a class="st-drawer-row" href="${url}" target="_blank" rel="noopener">
+          <span class="st-drawer-row-name">${item.name}</span>
+          <span class="st-drawer-row-price">${price}</span>
+          ${statusHtml}
+        </a>`;
+      }).join('');
+  }
+
   // ─── Add Item form ─────────────────────────────────────────────────────────
 
   const addItemBtn    = panel.querySelector('#st-add-item-btn');
@@ -2348,110 +2456,60 @@
     });
   });
 
-  // ─── Collapse toggle ───────────────────────────────────────────────────────
+  // ─── FAB toggle + drawer state ────────────────────────────────────────────
 
-  const collapseBtn = panel.querySelector('#st-collapse-btn');
-  collapseBtn.addEventListener('click', () => {
-    const collapsed = panel.classList.toggle('st-collapsed');
-    collapseBtn.textContent = collapsed ? '+' : '−';
-    MEM.ui.collapsed = collapsed;
-    Store.set(KEYS.collapsed, MEM.ui.collapsed);
+  function openDrawer() {
+    panel.classList.add('st-drawer-open');
+    MEM.ui.collapsed = false;
+    Store.set(KEYS.collapsed, false);
+  }
+
+  function closeDrawer() {
+    panel.classList.remove('st-drawer-open');
+    MEM.ui.collapsed = true;
+    Store.set(KEYS.collapsed, true);
+  }
+
+  fab.addEventListener('click', () => {
+    if (panel.classList.contains('st-drawer-open')) closeDrawer();
+    else openDrawer();
   });
 
-  // ─── Restore panel state ───────────────────────────────────────────────────
+  if (!MEM.ui.collapsed) openDrawer();
 
-  if (MEM.ui.collapsed) {
-    panel.classList.add('st-collapsed');
-    collapseBtn.textContent = '+';
-  }
+  // ─── Drawer handle drag-to-resize ─────────────────────────────────────────
 
-  // ─── Drag ─────────────────────────────────────────────────────────────────
+  const drawerHandle = panel.querySelector('#st-drawer-handle');
+  let resizing = false;
+  let resizeStartY = 0;
+  let resizeStartH = 0;
 
-  const header = panel.querySelector('#st-header');
-  const DRAG_MARGIN = 60;
-  let dragging = false;
-  let dragOffX = 0;
-  let dragOffY = 0;
-
-  function clampPos(x, y) {
-    const minX = DRAG_MARGIN - panel.offsetWidth;
-    const maxX = window.innerWidth  - DRAG_MARGIN;
-    const minY = 0;
-    const maxY = window.innerHeight - DRAG_MARGIN;
-    return [
-      Math.max(minX, Math.min(x, maxX)),
-      Math.max(minY, Math.min(y, maxY)),
-    ];
-  }
-
-  function applyPos(x, y) {
-    const [cx, cy] = clampPos(x, y);
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left   = cx + 'px';
-    panel.style.top    = cy + 'px';
-  }
-
-  if (MEM.ui.position) {
-    const x = parseInt(MEM.ui.position.left, 10);
-    const y = parseInt(MEM.ui.position.top,  10);
-    if (!isNaN(x) && !isNaN(y)) applyPos(x, y);
-  }
-
-  header.addEventListener('mousedown', e => {
-    if (e.target === collapseBtn) return;
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffX = e.clientX - rect.left;
-    dragOffY = e.clientY - rect.top;
+  function startResize(clientY) {
+    resizing     = true;
+    resizeStartY = clientY;
+    resizeStartH = panel.offsetHeight;
     panel.style.transition = 'none';
-    e.preventDefault();
-  });
+  }
 
-  document.addEventListener('mousemove', e => {
-    if (!dragging) return;
-    applyPos(e.clientX - dragOffX, e.clientY - dragOffY);
-  });
+  function doResize(clientY) {
+    if (!resizing) return;
+    const delta = resizeStartY - clientY;
+    const newH  = Math.min(window.innerHeight * 0.9, Math.max(120, resizeStartH + delta));
+    panel.style.height = newH + 'px';
+  }
 
-  document.addEventListener('mouseup', () => {
-    if (dragging) {
-      MEM.ui.position = { left: panel.style.left, top: panel.style.top };
-      Store.set(KEYS.position, MEM.ui.position);
-    }
-    dragging = false;
-  });
+  function endResize() {
+    if (resizing) panel.style.transition = '';
+    resizing = false;
+  }
 
-  // Touch drag support
-  header.addEventListener('touchstart', e => {
-    if (e.target === collapseBtn) return;
-    const touch = e.touches[0];
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffX = touch.clientX - rect.left;
-    dragOffY = touch.clientY - rect.top;
-    e.preventDefault();
-  }, { passive: false });
+  drawerHandle.addEventListener('mousedown', e => { startResize(e.clientY); e.preventDefault(); });
+  document.addEventListener('mousemove', e => { if (resizing) doResize(e.clientY); });
+  document.addEventListener('mouseup', endResize);
 
-  document.addEventListener('touchmove', e => {
-    if (!dragging) return;
-    const touch = e.touches[0];
-    applyPos(touch.clientX - dragOffX, touch.clientY - dragOffY);
-  }, { passive: false });
-
-  document.addEventListener('touchend', () => {
-    if (dragging) {
-      MEM.ui.position = { left: panel.style.left, top: panel.style.top };
-      Store.set(KEYS.position, MEM.ui.position);
-    }
-    dragging = false;
-  });
-
-  window.addEventListener('resize', () => {
-    if (!MEM.ui.position) return;
-    const curX = parseInt(panel.style.left, 10);
-    const curY = parseInt(panel.style.top,  10);
-    if (!isNaN(curX) && !isNaN(curY)) applyPos(curX, curY);
-  });
+  drawerHandle.addEventListener('touchstart', e => { startResize(e.touches[0].clientY); e.preventDefault(); }, { passive: false });
+  document.addEventListener('touchmove', e => { if (resizing) doResize(e.touches[0].clientY); }, { passive: false });
+  document.addEventListener('touchend', endResize);
 
   // ─── Settings inputs ───────────────────────────────────────────────────────
 
@@ -2519,18 +2577,14 @@
     MEM.data.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true };
     MEM.poll.availableCapital = 0;
     MEM.ui.collapsed = false;
-    MEM.ui.position  = null;
     inputInterval.value      = MEM.data.settings.interval;
     inputThreshold.value     = MEM.data.settings.threshold;
     inputVaultFloor.value    = MEM.data.settings.vaultFloorPct;
     inputSnipeAlerts.checked = true;
-    panel.classList.remove('st-collapsed');
-    collapseBtn.textContent = '−';
-    panel.style.left   = 'auto';
-    panel.style.right  = '18px';
-    panel.style.top    = 'auto';
-    panel.style.bottom = '18px';
+    openDrawer();
+    panel.style.height = '';
     renderWatchlist();
+    renderDrawerRows();
   });
 
   // ─── MutationObserver — real-time imarket snipe detection ────────────────
@@ -2742,6 +2796,7 @@
     }
   })();
 
+  renderDrawerRows();
   runPoll();
   startPollLoop();
   startImarketObserver();
