@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.50.1
+// @version      1.51.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.50.1';
+  const SCRIPT_VERSION   = '1.51.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1223,9 +1223,14 @@
       if (!(item.itemId > 0) || item.enabled === false) continue;
       const res       = MEM.poll.pollResults[item.itemId];
       const threshold = item.threshold ?? MEM.data.settings.threshold ?? 10;
-      const isSnipe   = res != null && !res.error
-        && res.fairValue != null && res.lowestMarketListed != null
-        && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
+      const sellTarget = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
+      const isSnipe   = res != null && !res.error && res.lowestMarketListed != null && (() => {
+        if (sellTarget != null) {
+          return (sellTarget - res.lowestMarketListed) / res.lowestMarketListed >= threshold / 100;
+        }
+        return res.fairValue != null
+          && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
+      })();
       if (isSnipe) snipeCount++;
       if (!(MEM.data.settings.snipeAlerts ?? true)) continue;
       const lastFired = MEM.poll.lastAlertedAt[item.itemId] ?? 0;
@@ -1515,9 +1520,14 @@
       if (item.enabled === false) continue;
       const res = MEM.poll.pollResults[item.itemId];
       if (!res || res.error) continue;
-      const { fairValue, lowestListed, lowestListedQty } = res;
-      if (fairValue != null && lowestListed != null && lowestListed < fairValue * (1 - item.threshold / 100) && lowestListedQty > 0) {
-        committed += lowestListed * lowestListedQty;
+      const { lowestMarketListed, lowestMarketListedQty } = res;
+      if (lowestMarketListed != null && lowestMarketListedQty > 0) {
+        const sellTarget = item.manualSellTarget ?? res.recommendedSellTarget ?? null;
+        const threshold  = item.threshold ?? MEM.data.settings.threshold ?? 10;
+        const qualifies  = sellTarget != null
+          ? (sellTarget - lowestMarketListed) / lowestMarketListed >= threshold / 100
+          : (res.fairValue != null && lowestMarketListed < res.fairValue * (1 - threshold / 100));
+        if (qualifies) committed += lowestMarketListed * lowestMarketListedQty;
       }
     }
 
