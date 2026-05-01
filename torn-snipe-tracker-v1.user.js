@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.50.0
+// @version      1.50.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.50.0';
+  const SCRIPT_VERSION   = '1.50.1';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1066,27 +1066,29 @@
     return Math.max(p75, above[0].price);
   }
 
-  function computePollResult(mergedListings, item, availableCapital, snapshots, trend) {
-    // Sample only the 20 cheapest listings. The competitive market sits in the
-    // low-price tier; going deeper pulls in aspirational pricing that inflates
-    // fair value well above where the item actually trades.
-    const { p25, p50, p75 } = computeFairValue(mergedListings.slice(0, 20));
+  function computePollResult(bazaarListings, itemMarketListings, item, availableCapital, snapshots, trend) {
+    const merged = [...bazaarListings, ...itemMarketListings].sort((a, b) => a.price - b.price);
+
+    // fairValue and IQR derived from bazaar-only data (TornW3B). Bazaar is the
+    // canonical price reference; item market listings are a sell venue, not a
+    // source of truth for what the item is worth.
+    const { p25, p50, p75 } = computeFairValue(bazaarListings.slice(0, 20));
     const iqr          = p75 - p25;
     const outlierFloor = Math.round(p25 - 1.5 * iqr);
     // Only a true outlier if small quantity — a 5k-unit dump at sub-floor price
     // is a market event that sets the sell ceiling, not a typo to ignore.
-    const outlierExcluded = mergedListings[0].price < outlierFloor && mergedListings[0].quantity < 100;
+    const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
     const fairValue    = p50;
 
     // Informational: any large-quantity listing below fair value.
-    const marketFlood = mergedListings.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
+    const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
 
     // Actionable flood play requires two hard constraints:
     // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
     //    Ensures the flood is actually setting the market bottom, not lurking mid-range.
     // 2. Fair value is at least threshold% above the flood — a clearly profitable exit exists.
     //    Uses the item's own snipe threshold so the bar matches the user's margin expectations.
-    const firstNonOutlierPrice = mergedListings.find(l => l.price >= outlierFloor)?.price ?? p25;
+    const firstNonOutlierPrice = merged.find(l => l.price >= outlierFloor)?.price ?? p25;
     const isFloodPlay = marketFlood != null
       && marketFlood.price <= firstNonOutlierPrice * 1.05
       && fairValue >= marketFlood.price * (1 + item.threshold / 100);
@@ -1106,9 +1108,10 @@
       historicalHigh = historicalFVs[historicalFVs.length - 1];
     }
 
-    const recommendedSellTarget = computeSmartSellPosition(
-      mergedListings, mergedListings[0].price, availableCapital, trend ?? 'flat'
-    );
+    // Sell target anchored to bazaar listings only — that is where items are relisted.
+    const recommendedSellTarget = bazaarListings.length
+      ? computeSmartSellPosition(bazaarListings, bazaarListings[0].price, availableCapital, trend ?? 'flat')
+      : null;
 
     return {
       fairValue,
@@ -1116,17 +1119,17 @@
       p75,
       outlierExcluded,
       outlierFloor,
-      lowestListed:       mergedListings[0]?.price ?? null,
-      lowestListedQty:    mergedListings[0]?.price != null
-        ? mergedListings.filter(l => l.price === mergedListings[0].price).reduce((s, l) => s + l.quantity, 0)
+      lowestListed:       merged[0]?.price ?? null,
+      lowestListedQty:    merged[0]?.price != null
+        ? merged.filter(l => l.price === merged[0].price).reduce((s, l) => s + l.quantity, 0)
         : null,
-      lowestMarketListed:    mergedListings.find(l => l.source !== 'bazaar')?.price ?? null,
+      lowestMarketListed:    merged.find(l => l.source !== 'bazaar')?.price ?? null,
       lowestMarketListedQty: (() => {
-        const p = mergedListings.find(l => l.source !== 'bazaar')?.price ?? null;
-        return p != null ? mergedListings.filter(l => l.source !== 'bazaar' && l.price === p).reduce((s, l) => s + l.quantity, 0) : null;
+        const p = merged.find(l => l.source !== 'bazaar')?.price ?? null;
+        return p != null ? merged.filter(l => l.source !== 'bazaar' && l.price === p).reduce((s, l) => s + l.quantity, 0) : null;
       })(),
-      secondLowest:       mergedListings[1]?.price ?? null,
-      listings:        mergedListings,
+      secondLowest:       merged[1]?.price ?? null,
+      listings:        merged,
       marketFlood,
       isFloodPlay,
       historicalMedian,
@@ -1386,7 +1389,7 @@
     const snapshotsBefore = MEM.data.snapshots[item.itemId] ?? [];
 
     // Push new snapshot first so calculateTrend sees this cycle's price (original ordering)
-    const { p50: cycleP50 } = computeFairValue(merged.slice(0, 20));
+    const { p50: cycleP50 } = computeFairValue(bazaarListings.slice(0, 20));
     if (!MEM.data.snapshots[item.itemId]) MEM.data.snapshots[item.itemId] = [];
     MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue: cycleP50, lowestBazaar: bazaarListings[0]?.price ?? null, lowestMarket: itemMktListings[0]?.price ?? null, lowestListed: merged[0]?.price ?? null });
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -1406,7 +1409,7 @@
 
     const trend = MEM.data.trendCache[item.itemId].trend;
     MEM.poll.pollResults[item.itemId] = {
-      ...computePollResult(merged, item, MEM.poll.availableCapital, snapshotsBefore, trend),
+      ...computePollResult(bazaarListings, itemMktListings, item, MEM.poll.availableCapital, snapshotsBefore, trend),
       updatedAt: Date.now(),
     };
   }
