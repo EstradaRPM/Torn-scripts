@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.49.3
+// @version      1.50.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.49.3';
+  const SCRIPT_VERSION   = '1.50.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1388,7 +1388,7 @@
     // Push new snapshot first so calculateTrend sees this cycle's price (original ordering)
     const { p50: cycleP50 } = computeFairValue(merged.slice(0, 20));
     if (!MEM.data.snapshots[item.itemId]) MEM.data.snapshots[item.itemId] = [];
-    MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue: cycleP50, lowestListed: merged[0]?.price ?? null });
+    MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue: cycleP50, lowestBazaar: bazaarListings[0]?.price ?? null, lowestMarket: itemMktListings[0]?.price ?? null, lowestListed: merged[0]?.price ?? null });
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
     if (MEM.data.snapshots[item.itemId].length > 500) MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].slice(-500);
