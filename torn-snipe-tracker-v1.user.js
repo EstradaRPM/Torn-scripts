@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.49.1
+// @version      1.49.2
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.49.1';
+  const SCRIPT_VERSION   = '1.49.2';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -269,7 +269,7 @@
       gap: 8px;
       padding: 6px 10px 8px;
       flex-shrink: 0;
-      border-bottom: 1px solid #1a2a3a;
+      border-top: 1px solid #1a2a3a;
     }
 
     /* ── Body (tabs + pane container) ── */
@@ -880,12 +880,6 @@
       <span id="st-title">Snipe Tracker v${SCRIPT_VERSION}</span>
       <span id="st-api-counter" style="display:none"></span>
     </div>
-    <div id="st-drawer-watchlist"></div>
-    <div id="st-drawer-actions">
-      <button id="st-scan-btn" class="st-btn">Scan Now</button>
-      <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
-    </div>
-
     <div id="st-body">
       <!-- Tabs -->
       <div id="st-tabs">
@@ -1051,6 +1045,11 @@
           <button id="st-clear-btn" class="st-btn st-btn-danger">Clear All Data</button>
         </div>
       </div>
+    </div>
+    <div id="st-drawer-watchlist"></div>
+    <div id="st-drawer-actions">
+      <button id="st-scan-btn" class="st-btn">Scan Now</button>
+      <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
     </div>
   `;
   document.body.appendChild(panel);
