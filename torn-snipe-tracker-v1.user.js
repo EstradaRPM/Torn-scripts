@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.49.0
+// @version      1.49.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.49.0';
+  const SCRIPT_VERSION   = '1.49.1';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -91,6 +91,7 @@
       availableCapital: 0,
       lastAlertedAt:    {},  // itemId -> timestamp; rate-limits alerts to ALERT_COOLDOWN_MS
       lastVaultAmount:  0,
+      apiCallLog:       [],  // timestamps of api.torn.com calls (rolling 60s window)
     },
     ui: {
       collapsed:        Store.get(KEYS.collapsed) ?? false,
@@ -135,6 +136,16 @@
     }
     #st-fab:hover { border-color: #00ff88; }
     #st-fab.st-fab-alert { border-color: #ff4444; background: #1a0808; }
+    #st-fab-api {
+      position: absolute;
+      bottom: -4px;
+      left: -4px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 1.5px solid #0c1e2e;
+      pointer-events: none;
+    }
     #st-fab-badge {
       position: absolute;
       top: -4px;
@@ -206,6 +217,15 @@
       color: #00ff88;
       text-transform: uppercase;
       text-shadow: 0 0 12px rgba(0,255,136,0.5);
+    }
+    #st-api-counter {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(0,0,0,0.3);
+      letter-spacing: 0.04em;
     }
 
     /* ── Drawer watchlist rows ── */
@@ -849,7 +869,7 @@
 
   const fab = document.createElement('div');
   fab.id = 'st-fab';
-  fab.innerHTML = `<span id="st-fab-badge" style="display:none">0</span>⚡`;
+  fab.innerHTML = `<span id="st-fab-badge" style="display:none">0</span><span id="st-fab-api" style="display:none"></span>⚡`;
   document.body.appendChild(fab);
 
   const panel = document.createElement('div');
@@ -858,6 +878,7 @@
     <div id="st-drawer-handle"></div>
     <div id="st-drawer-titlebar">
       <span id="st-title">Snipe Tracker v${SCRIPT_VERSION}</span>
+      <span id="st-api-counter" style="display:none"></span>
     </div>
     <div id="st-drawer-watchlist"></div>
     <div id="st-drawer-actions">
@@ -1202,6 +1223,30 @@
     try { GM_notification({ title, text, timeout: 5000 }); } catch (e) {}
   }
 
+  function updateApiCounter() {
+    const now = Date.now();
+    MEM.poll.apiCallLog = MEM.poll.apiCallLog.filter(t => now - t < 60000);
+    const count = MEM.poll.apiCallLog.length;
+    const color = count >= 80 ? '#ff4444' : count >= 50 ? '#ffaa00' : '#00ff88';
+
+    const counterEl = document.getElementById('st-api-counter');
+    if (counterEl) {
+      counterEl.textContent = `API: ${count}/100`;
+      counterEl.style.color = color;
+      counterEl.style.display = '';
+    }
+
+    const fabApi = document.getElementById('st-fab-api');
+    if (fabApi) {
+      if (count >= 50) {
+        fabApi.style.background = color;
+        fabApi.style.display = '';
+      } else {
+        fabApi.style.display = 'none';
+      }
+    }
+  }
+
   function checkSnipeAlerts() {
     let snipeCount = 0;
     for (const item of MEM.data.watchlist) {
@@ -1230,11 +1275,13 @@
         fabBadge.style.display = 'none';
       }
     }
+    updateApiCounter();
   }
 
   // ─── API ──────────────────────────────────────────────────────────────────
 
   function gmFetch(url) {
+    if (url.includes('api.torn.com')) MEM.poll.apiCallLog.push(Date.now());
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method:  'GET',
