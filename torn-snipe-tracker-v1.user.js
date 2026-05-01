@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.5
+// @version      1.48.6
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.5';
+  const SCRIPT_VERSION   = '1.48.6';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -2361,13 +2361,6 @@
     collapseBtn.textContent = '+';
   }
 
-  if (MEM.ui.position) {
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left   = MEM.ui.position.left;
-    panel.style.top    = MEM.ui.position.top;
-  }
-
   // ─── Drag ─────────────────────────────────────────────────────────────────
 
   const header = panel.querySelector('#st-header');
@@ -2379,7 +2372,7 @@
   function clampPos(x, y) {
     const minX = DRAG_MARGIN - panel.offsetWidth;
     const maxX = window.innerWidth  - DRAG_MARGIN;
-    const minY = DRAG_MARGIN - panel.offsetHeight;
+    const minY = 0;
     const maxY = window.innerHeight - DRAG_MARGIN;
     return [
       Math.max(minX, Math.min(x, maxX)),
@@ -2393,6 +2386,12 @@
     panel.style.bottom = 'auto';
     panel.style.left   = cx + 'px';
     panel.style.top    = cy + 'px';
+  }
+
+  if (MEM.ui.position) {
+    const x = parseInt(MEM.ui.position.left, 10);
+    const y = parseInt(MEM.ui.position.top,  10);
+    if (!isNaN(x) && !isNaN(y)) applyPos(x, y);
   }
 
   header.addEventListener('mousedown', e => {
