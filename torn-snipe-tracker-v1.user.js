@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.53.0
+// @version      1.54.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.53.0';
+  const SCRIPT_VERSION   = '1.54.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -2631,15 +2631,26 @@
     const entry = MEM.data.watchlist.find(w => w.itemId === itemId && w.enabled !== false);
     if (!entry) return;
     const res = MEM.poll.pollResults[itemId];
-    if (!res || res.error || !res.fairValue) return;
-    const threshold = entry.threshold ?? MEM.data.settings.threshold ?? 10;
-    const snipeCutoff = res.fairValue * (1 - threshold / 100);
+    if (!res || res.error) return;
+    const threshold  = entry.threshold ?? MEM.data.settings.threshold ?? 10;
+    const sellTarget = entry.manualSellTarget ?? res.recommendedSellTarget ?? null;
     for (const node of addedNodes) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      const hits = parseNodePrices(node).filter(p => p <= snipeCutoff);
-      if (hits.length > 0) {
+      const prices = parseNodePrices(node);
+      const hit = prices.find(p => {
+        if (sellTarget != null) return (sellTarget - p) / p >= threshold / 100;
+        return res.fairValue != null && p < res.fairValue * (1 - threshold / 100);
+      });
+      if (hit != null) {
         flashCardGreen(itemId);
-        injectSnipeCard(itemId, Math.min(...hits), node);
+        injectSnipeCard(itemId, hit, node);
+        if (MEM.data.settings.snipeAlerts ?? true) {
+          const lastFired = MEM.poll.lastAlertedAt[itemId] ?? 0;
+          if (Date.now() - lastFired > ALERT_COOLDOWN_MS) {
+            fireSnipeAlert(entry);
+            MEM.poll.lastAlertedAt[itemId] = Date.now();
+          }
+        }
         return;
       }
     }
