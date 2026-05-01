@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.49.2
+// @version      1.49.3
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.49.2';
+  const SCRIPT_VERSION   = '1.49.3';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -228,40 +228,6 @@
       letter-spacing: 0.04em;
     }
 
-    /* ── Drawer watchlist rows ── */
-    #st-drawer-watchlist {
-      flex-shrink: 0;
-      padding: 0 10px 4px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      overflow-y: auto;
-      max-height: 30vh;
-    }
-    .st-drawer-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 10px;
-      background: #0c1622;
-      border: 1px solid #1a2a3a;
-      border-radius: 5px;
-      cursor: pointer;
-      text-decoration: none;
-      transition: border-color 0.15s;
-    }
-    .st-drawer-row:hover { border-color: #00ccff; }
-    .st-drawer-row-name {
-      flex: 1;
-      font-size: 13px;
-      font-weight: 600;
-      color: #d0e0d8;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .st-drawer-row-price { font-size: 12px; color: #c0d0c8; white-space: nowrap; }
-    .st-drawer-row-status { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap; }
 
     /* ── Drawer pinned actions ── */
     #st-drawer-actions {
@@ -664,7 +630,10 @@
       font-weight: 700;
       font-size: 13px;
       color: #d0e0d8;
+      text-decoration: none;
+      cursor: pointer;
     }
+    .st-card-name:hover { color: #00ccff; }
     .st-card-trend-badge {
       font-size: 11px;
     }
@@ -1046,7 +1015,6 @@
         </div>
       </div>
     </div>
-    <div id="st-drawer-watchlist"></div>
     <div id="st-drawer-actions">
       <button id="st-scan-btn" class="st-btn">Scan Now</button>
       <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
@@ -1461,7 +1429,7 @@
       await fetchItemPrice(item);
     }
     checkSnipeAlerts();
-    if (PAGE_MODE === 'market') { renderWatchlist(); renderDrawerRows(); }
+    if (PAGE_MODE === 'market') { renderWatchlist(); }
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
   }
 
@@ -1866,7 +1834,7 @@
           <div class="st-card-r1">
             <input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''}
                    style="cursor:pointer;accent-color:#00ff88;width:14px;height:14px;flex-shrink:0">
-            <span class="st-card-name">${item.name}</span>
+            <a class="st-card-name" href="https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${item.itemId}" target="_blank" rel="noopener">${item.name}</a>
             <span class="st-card-trend-badge">${trendSignal}</span>
             <span>${statusHtml}</span>
             ${isCollapsed && roiVal != null ? `<span style="font-size:11px;color:${tierColor};padding:0 4px">${roiStr}</span>` : ''}
@@ -2017,30 +1985,6 @@
     renderCapitalBar();
   }
 
-  function renderDrawerRows() {
-    const container = panel.querySelector('#st-drawer-watchlist');
-    if (!container) return;
-    const fmt = n => '$' + Math.round(n).toLocaleString();
-    container.innerHTML = MEM.data.watchlist
-      .filter(item => item.enabled !== false && item.itemId > 0)
-      .map(item => {
-        const res = MEM.poll.pollResults[item.itemId];
-        const threshold = item.threshold ?? MEM.data.settings.threshold ?? 10;
-        const isSnipe = res && !res.error && res.fairValue != null && res.lowestMarketListed != null
-          && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
-        const price = res && !res.error && res.lowestMarketListed != null
-          ? fmt(res.lowestMarketListed) : '—';
-        const statusHtml = isSnipe
-          ? `<span class="st-drawer-row-status st-status-snipe">SNIPE</span>`
-          : `<span class="st-drawer-row-status st-status-watch">watch</span>`;
-        const url = `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${item.itemId}`;
-        return `<a class="st-drawer-row" href="${url}" target="_blank" rel="noopener">
-          <span class="st-drawer-row-name">${item.name}</span>
-          <span class="st-drawer-row-price">${price}</span>
-          ${statusHtml}
-        </a>`;
-      }).join('');
-  }
 
   // ─── Add Item form ─────────────────────────────────────────────────────────
 
@@ -2630,7 +2574,6 @@
     openDrawer();
     panel.style.height = '';
     renderWatchlist();
-    renderDrawerRows();
   });
 
   // ─── MutationObserver — real-time imarket snipe detection ────────────────
@@ -2842,7 +2785,6 @@
     }
   })();
 
-  renderDrawerRows();
   runPoll();
   startPollLoop();
   startImarketObserver();
