@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.48.6
+// @version      1.48.7
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.48.6';
+  const SCRIPT_VERSION   = '1.48.7';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1062,7 +1062,11 @@
       lowestListedQty:    mergedListings[0]?.price != null
         ? mergedListings.filter(l => l.price === mergedListings[0].price).reduce((s, l) => s + l.quantity, 0)
         : null,
-      lowestMarketListed: mergedListings.find(l => l.source !== 'bazaar')?.price ?? null,
+      lowestMarketListed:    mergedListings.find(l => l.source !== 'bazaar')?.price ?? null,
+      lowestMarketListedQty: (() => {
+        const p = mergedListings.find(l => l.source !== 'bazaar')?.price ?? null;
+        return p != null ? mergedListings.filter(l => l.source !== 'bazaar' && l.price === p).reduce((s, l) => s + l.quantity, 0) : null;
+      })(),
       secondLowest:       mergedListings[1]?.price ?? null,
       listings:        mergedListings,
       marketFlood,
@@ -1492,8 +1496,8 @@
   }
 
   function renderProjection(item, res) {
-    const snipePrice = res?.lowestListed;
-    const snipeQty   = res?.lowestListedQty;
+    const snipePrice = res?.lowestMarketListed;
+    const snipeQty   = res?.lowestMarketListedQty;
     if (snipePrice == null || !(snipeQty > 0)) return '';
 
     const sellTarget  = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
@@ -1547,7 +1551,7 @@
 
   function renderOrderBook(item, res) {
     const TH = `style="text-align:left;color:#00ccff;font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid #1a2a3a"`;
-    const listings = (res?.listings ?? []).filter(l => Number.isFinite(l.price) && Number.isFinite(l.quantity));
+    const listings = (res?.listings ?? []).filter(l => l.source !== 'bazaar' && Number.isFinite(l.price) && Number.isFinite(l.quantity));
     if (!listings.length) {
       return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></div>`;
     }
@@ -1592,14 +1596,14 @@
 
   function computeCardScore(item, res) {
     if (!res || res.error) return -Infinity;
-    const { fairValue, lowestListed, lowestListedQty, recommendedSellTarget } = res;
-    if (fairValue == null || lowestListed == null) return -Infinity;
-    if (lowestListed >= fairValue * (1 - item.threshold / 100)) return -Infinity;
+    const { fairValue, lowestMarketListed, lowestMarketListedQty, recommendedSellTarget } = res;
+    if (fairValue == null || lowestMarketListed == null) return -Infinity;
+    if (lowestMarketListed >= fairValue * (1 - item.threshold / 100)) return -Infinity;
     const sellTarget = item.manualSellTarget ?? recommendedSellTarget;
-    if (!sellTarget || sellTarget <= lowestListed) return -Infinity;
-    const qty = lowestListedQty ?? 1;
-    const grossProfit = (sellTarget - lowestListed) * qty;
-    const roi = (sellTarget - lowestListed) / lowestListed * 100;
+    if (!sellTarget || sellTarget <= lowestMarketListed) return -Infinity;
+    const qty = lowestMarketListedQty ?? 1;
+    const grossProfit = (sellTarget - lowestMarketListed) * qty;
+    const roi = (sellTarget - lowestMarketListed) / lowestMarketListed * 100;
     return calcWeightedScore(grossProfit, roi, 2);
   }
 
@@ -1639,7 +1643,7 @@
         statusHtml = '<span class="st-status-error">API error</span>';
       } else {
         const fv  = res.fairValue;
-        const low = res.lowestListed;
+        const low = res.lowestMarketListed;
         const outlierNote = res.outlierExcluded
           ? '<br><span style="font-size:10px;color:#3a5060">⚠ outlier excl.</span>'
           : '';
@@ -1702,7 +1706,7 @@
         ? `<div style="font-size:9px;color:#ff9944;margin-top:2px">⚠ flood ${res.marketFlood.quantity.toLocaleString()} @ $${res.marketFlood.price.toLocaleString()}</div>`
         : '';
 
-      const snipePrice = res?.lowestListed ?? null;
+      const snipePrice = res?.lowestMarketListed ?? null;
       const roiVal     = (showTarget != null && snipePrice != null && snipePrice > 0)
         ? ((showTarget - snipePrice) / snipePrice * 100)
         : null;
