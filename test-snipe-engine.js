@@ -121,15 +121,15 @@ function computePollResult(mergedListings, item, availableCapital, snapshots, tr
   };
 }
 
-function calcSnipeFrequency(snapshots, fairValue, threshold, windowMs) {
+function calcSnipeFrequency(snapshots, threshold, windowMs) {
   const cutoff = Date.now() - windowMs;
   const inWindow = snapshots.filter(s => s.ts >= cutoff).sort((a, b) => a.ts - b.ts);
-  const snipeThreshold = fairValue * (1 - threshold / 100);
   let count = 0;
   for (let i = 1; i < inWindow.length; i++) {
-    const prev = inWindow[i - 1].lowestListed;
-    const curr = inWindow[i].lowestListed;
-    if (prev >= snipeThreshold && curr < snipeThreshold) count++;
+    const snipeThreshold = inWindow[i].fairValue * (1 - threshold / 100);
+    const prev = inWindow[i - 1].lowestMarket ?? inWindow[i - 1].lowestListed;
+    const curr = inWindow[i].lowestMarket ?? inWindow[i].lowestListed;
+    if (prev != null && curr != null && prev >= snipeThreshold && curr < snipeThreshold) count++;
   }
   return count;
 }
@@ -381,19 +381,19 @@ const WINDOW = 7 * DAY;
 
 console.log('\ncalcSnipeFrequency — Behavior 1: empty snapshots → 0');
 {
-  assertEq('returns 0', calcSnipeFrequency([], 100_000, 10, WINDOW), 0);
+  assertEq('returns 0', calcSnipeFrequency([], 10, WINDOW), 0);
 }
 
 console.log('\ncalcSnipeFrequency — Behavior 2: no threshold crossings → 0');
 {
-  // fairValue=100_000, threshold=10 → snipeThreshold=90_000
+  // snapshot fairValue=100_000, threshold=10 → snipeThreshold=90_000
   // All snapshots have lowestListed well above 90_000 — no crossing ever occurs
   const snapshots = [
-    { ts: NOW - 5 * DAY, lowestListed: 95_000 },
-    { ts: NOW - 4 * DAY, lowestListed: 96_000 },
-    { ts: NOW - 3 * DAY, lowestListed: 97_000 },
+    { ts: NOW - 5 * DAY, fairValue: 100_000, lowestListed: 95_000 },
+    { ts: NOW - 4 * DAY, fairValue: 100_000, lowestListed: 96_000 },
+    { ts: NOW - 3 * DAY, fairValue: 100_000, lowestListed: 97_000 },
   ];
-  assertEq('returns 0', calcSnipeFrequency(snapshots, 100_000, 10, WINDOW), 0);
+  assertEq('returns 0', calcSnipeFrequency(snapshots, 10, WINDOW), 0);
 }
 
 console.log('\ncalcSnipeFrequency — Behavior 3: multiple crossings counted correctly');
@@ -401,37 +401,75 @@ console.log('\ncalcSnipeFrequency — Behavior 3: multiple crossings counted cor
   // snipeThreshold = 100_000 × 0.90 = 90_000
   // Crossings at transitions: 95k→88k (cross), 92k→88k (already below, no cross), 93k→88k (cross)
   const snapshots = [
-    { ts: NOW - 6 * DAY, lowestListed: 95_000 },  // above
-    { ts: NOW - 5 * DAY, lowestListed: 88_000 },  // ← crossing 1
-    { ts: NOW - 4 * DAY, lowestListed: 92_000 },  // above again
-    { ts: NOW - 3 * DAY, lowestListed: 88_000 },  // ← crossing 2
-    { ts: NOW - 2 * DAY, lowestListed: 88_000 },  // still below — no new crossing
+    { ts: NOW - 6 * DAY, fairValue: 100_000, lowestListed: 95_000 },  // above
+    { ts: NOW - 5 * DAY, fairValue: 100_000, lowestListed: 88_000 },  // ← crossing 1
+    { ts: NOW - 4 * DAY, fairValue: 100_000, lowestListed: 92_000 },  // above again
+    { ts: NOW - 3 * DAY, fairValue: 100_000, lowestListed: 88_000 },  // ← crossing 2
+    { ts: NOW - 2 * DAY, fairValue: 100_000, lowestListed: 88_000 },  // still below — no new crossing
   ];
-  assertEq('returns 2', calcSnipeFrequency(snapshots, 100_000, 10, WINDOW), 2);
+  assertEq('returns 2', calcSnipeFrequency(snapshots, 10, WINDOW), 2);
 }
 
 console.log('\ncalcSnipeFrequency — Behavior 4: snapshots outside window excluded');
 {
   // snipeThreshold = 90_000. One crossing inside window, one outside.
   const snapshots = [
-    { ts: NOW - 8 * DAY, lowestListed: 95_000 },  // outside window
-    { ts: NOW - 7 * DAY - 1, lowestListed: 88_000 },  // outside window — would be a crossing but excluded
-    { ts: NOW - 3 * DAY, lowestListed: 95_000 },  // inside window, above
-    { ts: NOW - 2 * DAY, lowestListed: 88_000 },  // inside window ← crossing
+    { ts: NOW - 8 * DAY, fairValue: 100_000, lowestListed: 95_000 },         // outside window
+    { ts: NOW - 7 * DAY - 1, fairValue: 100_000, lowestListed: 88_000 },     // outside window — would be crossing but excluded
+    { ts: NOW - 3 * DAY, fairValue: 100_000, lowestListed: 95_000 },         // inside window, above
+    { ts: NOW - 2 * DAY, fairValue: 100_000, lowestListed: 88_000 },         // inside window ← crossing
   ];
-  assertEq('returns 1 (only in-window crossing)', calcSnipeFrequency(snapshots, 100_000, 10, WINDOW), 1);
+  assertEq('returns 1 (only in-window crossing)', calcSnipeFrequency(snapshots, 10, WINDOW), 1);
 }
 
 console.log('\ncalcSnipeFrequency — Behavior 5: sustained snipe (stays below) counts as one crossing, not many');
 {
   // snipeThreshold = 90_000. Price drops below and stays below for 3 polls.
   const snapshots = [
-    { ts: NOW - 5 * DAY, lowestListed: 95_000 },  // above
-    { ts: NOW - 4 * DAY, lowestListed: 85_000 },  // ← crossing 1
-    { ts: NOW - 3 * DAY, lowestListed: 84_000 },  // still below — no new crossing
-    { ts: NOW - 2 * DAY, lowestListed: 83_000 },  // still below — no new crossing
+    { ts: NOW - 5 * DAY, fairValue: 100_000, lowestListed: 95_000 },  // above
+    { ts: NOW - 4 * DAY, fairValue: 100_000, lowestListed: 85_000 },  // ← crossing 1
+    { ts: NOW - 3 * DAY, fairValue: 100_000, lowestListed: 84_000 },  // still below — no new crossing
+    { ts: NOW - 2 * DAY, fairValue: 100_000, lowestListed: 83_000 },  // still below — no new crossing
   ];
-  assertEq('returns 1', calcSnipeFrequency(snapshots, 100_000, 10, WINDOW), 1);
+  assertEq('returns 1', calcSnipeFrequency(snapshots, 10, WINDOW), 1);
+}
+
+console.log('\ncalcSnipeFrequency — Behavior 6: per-snapshot fairValue — crossing threshold shifts with fairValue drift');
+{
+  // snapshot[i].fairValue is used per crossing check, not a global value
+  // At day-5→4: fairValue=100_000 → threshold=90_000; price 95k→88k → crossing
+  // At day-3→2: fairValue=80_000  → threshold=72_000;  price 92k→75k → crossing (75k < 72k is false — no cross)
+  // At day-2→1: fairValue=80_000  → threshold=72_000;  price 75k→70k → crossing (70k < 72k is true — crossing)
+  const snapshots = [
+    { ts: NOW - 5 * DAY, fairValue: 100_000, lowestListed: 95_000 },  // above 90k
+    { ts: NOW - 4 * DAY, fairValue: 100_000, lowestListed: 88_000 },  // ← crossing 1 (threshold=90k)
+    { ts: NOW - 3 * DAY, fairValue: 80_000,  lowestListed: 92_000 },  // above 72k
+    { ts: NOW - 2 * DAY, fairValue: 80_000,  lowestListed: 75_000 },  // above 72k — no crossing
+    { ts: NOW - 1 * DAY, fairValue: 80_000,  lowestListed: 70_000 },  // ← crossing 2 (threshold=72k)
+  ];
+  assertEq('returns 2 (each crossing uses its own fairValue)', calcSnipeFrequency(snapshots, 10, WINDOW), 2);
+}
+
+console.log('\ncalcSnipeFrequency — Behavior 7: lowestMarket preferred over lowestListed when present');
+{
+  // snipeThreshold = 100_000 × 0.90 = 90_000
+  // prev lowestMarket=95k, curr lowestMarket=88k → crossing via lowestMarket
+  // lowestListed values would also cross, but we verify lowestMarket is used first
+  const snapshots = [
+    { ts: NOW - 2 * DAY, fairValue: 100_000, lowestMarket: 95_000, lowestListed: 95_000 },
+    { ts: NOW - 1 * DAY, fairValue: 100_000, lowestMarket: 88_000, lowestListed: 91_000 },  // lowestListed above threshold
+  ];
+  assertEq('returns 1 (crossing via lowestMarket, not lowestListed)', calcSnipeFrequency(snapshots, 10, WINDOW), 1);
+}
+
+console.log('\ncalcSnipeFrequency — Behavior 8: legacy snapshots missing fairValue do not crash or distort count');
+{
+  // Snapshots pre-dating the fairValue field: fairValue is undefined → snipeThreshold=NaN → comparisons are false
+  const snapshots = [
+    { ts: NOW - 2 * DAY, lowestListed: 95_000 },  // no fairValue (legacy)
+    { ts: NOW - 1 * DAY, lowestListed: 88_000 },  // no fairValue (legacy)
+  ];
+  assertEq('returns 0 (no crash, no distortion)', calcSnipeFrequency(snapshots, 10, WINDOW), 0);
 }
 
 // ── computePollResult ─────────────────────────────────────────────────────────

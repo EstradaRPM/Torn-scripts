@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.51.0
+// @version      1.52.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.51.0';
+  const SCRIPT_VERSION   = '1.52.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1139,14 +1139,14 @@
     };
   }
 
-  function calcSnipeFrequency(snapshots, fairValue, threshold, windowMs) {
+  function calcSnipeFrequency(snapshots, threshold, windowMs) {
     const cutoff = Date.now() - windowMs;
     const inWindow = snapshots.filter(s => s.timestamp >= cutoff).sort((a, b) => a.timestamp - b.timestamp);
-    const snipeThreshold = fairValue * (1 - threshold / 100);
     let count = 0;
     for (let i = 1; i < inWindow.length; i++) {
-      const prev = inWindow[i - 1].lowestListed;
-      const curr = inWindow[i].lowestListed;
+      const snipeThreshold = inWindow[i].fairValue * (1 - threshold / 100);
+      const prev = inWindow[i - 1].lowestMarket ?? inWindow[i - 1].lowestListed;
+      const curr = inWindow[i].lowestMarket ?? inWindow[i].lowestListed;
       if (prev != null && curr != null && prev >= snipeThreshold && curr < snipeThreshold) count++;
     }
     return count;
@@ -1736,8 +1736,8 @@
         const bSnipe = isFinite(sb);
         if (aSnipe !== bSnipe) return bSnipe ? 1 : -1;
         if (aSnipe && bSnipe) return sb - sa;
-        const fa = ra?.fairValue ? calcSnipeFrequency(MEM.data.snapshots[a.item.itemId] ?? [], ra.fairValue, a.item.threshold, FREQ_WINDOW) : 0;
-        const fb = rb?.fairValue ? calcSnipeFrequency(MEM.data.snapshots[b.item.itemId] ?? [], rb.fairValue, b.item.threshold, FREQ_WINDOW) : 0;
+        const fa = calcSnipeFrequency(MEM.data.snapshots[a.item.itemId] ?? [], a.item.threshold, FREQ_WINDOW);
+        const fb = calcSnipeFrequency(MEM.data.snapshots[b.item.itemId] ?? [], b.item.threshold, FREQ_WINDOW);
         return fb - fa;
       });
     container.innerHTML = _sorted.map(({ item, i }) => {
@@ -1835,7 +1835,7 @@
 
       // Row 6: snapshot info
       const snaps = MEM.data.snapshots[item.itemId] ?? [];
-      const snipeFreq = res?.fairValue ? calcSnipeFrequency(snaps, res.fairValue, item.threshold, FREQ_WINDOW) : 0;
+      const snipeFreq = calcSnipeFrequency(snaps, item.threshold, FREQ_WINDOW);
       const snapLabel = snaps.length === 0
         ? 'no history yet'
         : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
