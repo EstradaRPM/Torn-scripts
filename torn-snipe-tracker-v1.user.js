@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.52.0
+// @version      1.53.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.52.0';
+  const SCRIPT_VERSION   = '1.53.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1080,18 +1080,29 @@
     const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
     const fairValue    = p50;
 
-    // Informational: any large-quantity listing below fair value.
+    // Informational: cheapest large-quantity listing below fair value, across both venues.
+    // source field ('bazaar' | 'itemmarket') reflects detection confidence:
+    // item market = real-time via MO; bazaar = poll-lagged.
     const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
 
-    // Actionable flood play requires two hard constraints:
+    // Actionable flood play requires four constraints:
     // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
-    //    Ensures the flood is actually setting the market bottom, not lurking mid-range.
-    // 2. Fair value is at least threshold% above the flood — a clearly profitable exit exists.
-    //    Uses the item's own snipe threshold so the bar matches the user's margin expectations.
+    // 2. Fair value is at least threshold% above the flood — profitable exit exists.
+    // 3. Macro gate: trend is not 'falling' (skip gate entirely during warmup / 'insufficient').
+    //    A falling market means the whole price level is repricing downward, not a flash.
+    // 4. Micro gate: flood price is not below the historical lowestBazaar floor.
+    //    If it is, the flood is setting a novel floor — not a recurring flash opportunity.
+    //    Vacuous pass when fewer than 3 snapshots exist.
     const firstNonOutlierPrice = merged.find(l => l.price >= outlierFloor)?.price ?? p25;
+    const macroGatePasses = trend === 'insufficient' || trend !== 'falling';
+    const bazaarFloors = (snapshots ?? []).filter(s => s.lowestBazaar != null).map(s => s.lowestBazaar);
+    const historicalBazaarFloor = bazaarFloors.length >= 3 ? Math.min(...bazaarFloors) : null;
+    const microGatePasses = marketFlood == null || historicalBazaarFloor == null || marketFlood.price >= historicalBazaarFloor;
     const isFloodPlay = marketFlood != null
       && marketFlood.price <= firstNonOutlierPrice * 1.05
-      && fairValue >= marketFlood.price * (1 + item.threshold / 100);
+      && fairValue >= marketFlood.price * (1 + item.threshold / 100)
+      && macroGatePasses
+      && microGatePasses;
 
     // Historical fair-value series for 7-day range display
     const historicalFVs = (snapshots ?? [])
