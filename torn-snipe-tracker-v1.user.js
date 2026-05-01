@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.54.0
+// @version      1.54.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.54.0';
+  const SCRIPT_VERSION   = '1.54.1';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -46,13 +46,14 @@
   // ─── Persistence ──────────────────────────────────────────────────────────
 
   const KEYS = {
-    watchlist: 'st_watchlist',
-    settings:  'st_settings',
-    collapsed: 'st_collapsed',
-    trades:    'st_trades',
-    apiKey:    'st_apikey',
-    snapshots:  'st_snapshots',
-    trendcache: 'st_trendcache',
+    watchlist:    'st_watchlist',
+    settings:     'st_settings',
+    collapsed:    'st_collapsed',
+    trades:       'st_trades',
+    apiKey:       'st_apikey',
+    snapshots:    'st_snapshots',
+    trendcache:   'st_trendcache',
+    lastPollTime: 'st_last_poll_time',
   };
 
   const Store = {
@@ -104,8 +105,7 @@
   };
 
   if (PAGE_MODE === 'background') {
-    runPoll();
-    startPollLoop();
+    schedulePoll();
     return;
   }
 
@@ -1450,12 +1450,25 @@
     checkSnipeAlerts();
     if (PAGE_MODE === 'market') { renderWatchlist(); }
     if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
+    Store.set(KEYS.lastPollTime, Date.now());
   }
 
   function startPollLoop() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(runPoll, MEM.data.settings.interval * 1000);
     window.__stPollTimer = pollTimer;
+  }
+
+  function schedulePoll() {
+    const elapsed    = Date.now() - (Store.get(KEYS.lastPollTime) ?? 0);
+    const intervalMs = MEM.data.settings.interval * 1000;
+    const delay      = Math.max(0, intervalMs - elapsed);
+    if (delay === 0) {
+      runPoll();
+      startPollLoop();
+    } else {
+      setTimeout(() => { runPoll(); startPollLoop(); }, delay);
+    }
   }
 
   // ─── Watchlist render ──────────────────────────────────────────────────────
@@ -2820,8 +2833,7 @@
     }
   })();
 
-  runPoll();
-  startPollLoop();
+  schedulePoll();
   startImarketObserver();
 
 })();
