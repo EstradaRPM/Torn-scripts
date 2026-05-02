@@ -729,6 +729,102 @@ console.log('\nLogParser — Behavior 9: sold line between two buys → sold ski
   assertEq('second itemName', result[1].itemName, 'Melatonin');
 }
 
+// ── parseBazaarResponse ───────────────────────────────────────────────────────
+
+function parseBazaarResponse(d) {
+  const map = {};
+  for (const item of (d.items ?? [])) {
+    map[item.item_id] = item.bazaar_average ?? null;
+  }
+  return map;
+}
+
+console.log('\nparseBazaarResponse — Behavior 1: normal response → itemId keys mapped to bazaar_average');
+{
+  const d = { items: [
+    { item_id: 123, bazaar_average: 50_000 },
+    { item_id: 456, bazaar_average: 120_000 },
+  ]};
+  const result = parseBazaarResponse(d);
+  assertEq('item 123', result[123], 50_000);
+  assertEq('item 456', result[456], 120_000);
+}
+
+console.log('\nparseBazaarResponse — Behavior 2: bazaar_average of 0 → stores 0, not null');
+{
+  const d = { items: [{ item_id: 1, bazaar_average: 0 }] };
+  assertEq('stores 0', parseBazaarResponse(d)[1], 0);
+}
+
+console.log('\nparseBazaarResponse — Behavior 3: bazaar_average null → stores null');
+{
+  const d = { items: [{ item_id: 1, bazaar_average: null }] };
+  assertEq('stores null', parseBazaarResponse(d)[1], null);
+}
+
+console.log('\nparseBazaarResponse — Behavior 4: bazaar_average missing → stores null');
+{
+  const d = { items: [{ item_id: 1, item_name: 'Tribulus' }] };
+  assertEq('stores null', parseBazaarResponse(d)[1], null);
+}
+
+console.log('\nparseBazaarResponse — Behavior 5: empty items array → empty object');
+{
+  const result = parseBazaarResponse({ items: [] });
+  assertEq('key count', Object.keys(result).length, 0);
+}
+
+console.log('\nparseBazaarResponse — Behavior 6: missing items key → empty object');
+{
+  const result = parseBazaarResponse({});
+  assertEq('key count', Object.keys(result).length, 0);
+}
+
+// ── parseItemsResponse ────────────────────────────────────────────────────────
+
+function parseItemsResponse(d) {
+  const map = {};
+  for (const [id, v] of Object.entries(d.items ?? {})) {
+    map[parseInt(id, 10)] = v.market_value ?? null;
+  }
+  return map;
+}
+
+console.log('\nparseItemsResponse — Behavior 1: string keys → numeric keys, market_value preserved');
+{
+  const d = { items: {
+    '123': { name: 'Foo', market_value: 45_000 },
+    '456': { name: 'Bar', market_value: 90_000 },
+  }};
+  const result = parseItemsResponse(d);
+  assertEq('item 123', result[123], 45_000);
+  assertEq('item 456', result[456], 90_000);
+}
+
+console.log('\nparseItemsResponse — Behavior 2: market_value null → stores null');
+{
+  const d = { items: { '1': { name: 'Foo', market_value: null } } };
+  assertEq('stores null', parseItemsResponse(d)[1], null);
+}
+
+console.log('\nparseItemsResponse — Behavior 3: market_value missing → stores null');
+{
+  const d = { items: { '1': { name: 'Foo' } } };
+  assertEq('stores null', parseItemsResponse(d)[1], null);
+}
+
+console.log('\nparseItemsResponse — Behavior 4: empty items object → empty object');
+{
+  const result = parseItemsResponse({ items: {} });
+  assertEq('key count', Object.keys(result).length, 0);
+}
+
+console.log('\nparseItemsResponse — Behavior 5: missing items key → empty object');
+{
+  const result = parseItemsResponse({});
+  assertEq('key count', Object.keys(result).length, 0);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 console.log('\n── summary ──────────────────────────────────────────────────────────────────');
 console.log(`${passed + failed} tests: ${passed} passed, ${failed} failed`);

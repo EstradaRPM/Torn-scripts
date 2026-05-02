@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.56.0
+// @version      1.57.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.56.0';
+  const SCRIPT_VERSION   = '1.57.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -94,6 +94,11 @@
       lastVaultAmount:  0,
       apiCallLog:       [],  // timestamps of api.torn.com calls (rolling 60s window)
     },
+    price: {
+      bazaarMap:     null,  // itemId -> bazaarAverage; null until PriceDataModule.init() resolves
+      marketValueMap: null, // itemId -> marketValue;   null until PriceDataModule.init() resolves
+    },
+    fetchError: null,       // string | null — set by PriceDataModule.init() on partial/full failure
     ui: {
       collapsed:        Store.get(KEYS.collapsed) ?? false,
       cardCollapsed:    {},  // itemId -> bool
@@ -1315,6 +1320,60 @@
       });
     });
   }
+
+  // ─── PriceDataModule ──────────────────────────────────────────────────────────
+
+  function parseBazaarResponse(d) {
+    const map = {};
+    for (const item of (d.items ?? [])) {
+      map[item.item_id] = item.bazaar_average ?? null;
+    }
+    return map;
+  }
+
+  function parseItemsResponse(d) {
+    const map = {};
+    for (const [id, v] of Object.entries(d.items ?? {})) {
+      map[parseInt(id, 10)] = v.market_value ?? null;
+    }
+    return map;
+  }
+
+  const PriceDataModule = {
+    async init() {
+      const key = getApiKey();
+      const [weav3rResult, tornResult] = await Promise.allSettled([
+        gmFetch('https://weav3r.dev/api/marketplace').then(t => parseBazaarResponse(JSON.parse(t))),
+        gmFetch(`https://api.torn.com/torn/?selections=items&key=${key}`).then(t => {
+          const d = JSON.parse(t);
+          if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
+          return parseItemsResponse(d);
+        }),
+      ]);
+
+      const errors = [];
+      if (weav3rResult.status === 'fulfilled') {
+        MEM.price.bazaarMap = weav3rResult.value;
+      } else {
+        errors.push(`weav3r: ${weav3rResult.reason.message}`);
+        console.error('[SnipeTracker] PriceDataModule weav3r failed:', weav3rResult.reason.message);
+      }
+      if (tornResult.status === 'fulfilled') {
+        MEM.price.marketValueMap = tornResult.value;
+      } else {
+        errors.push(`torn items: ${tornResult.reason.message}`);
+        console.error('[SnipeTracker] PriceDataModule torn items failed:', tornResult.reason.message);
+      }
+      if (errors.length) MEM.fetchError = errors.join('; ');
+    },
+
+    getItemData(itemId) {
+      return {
+        bazaarAverage: MEM.price.bazaarMap?.[itemId] ?? null,
+        marketValue:   MEM.price.marketValueMap?.[itemId] ?? null,
+      };
+    },
+  };
 
   // Listing-count percentile fair value. Each listing is one data point regardless
   // of quantity — a bulk seller with 500 units gets one vote, not 500, so large
@@ -2870,6 +2929,8 @@
       MEM.poll.availableCapital = 0;
     }
   })();
+
+  PriceDataModule.init();
 
   schedulePoll();
   startImarketObserver();
