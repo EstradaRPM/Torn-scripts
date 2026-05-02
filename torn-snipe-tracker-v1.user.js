@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.58.0
+// @version      1.59.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.58.0';
+  const SCRIPT_VERSION   = '1.59.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -97,6 +97,10 @@
     price: {
       bazaarMap:     null,  // itemId -> bazaarAverage; null until PriceDataModule.init() resolves
       marketValueMap: null, // itemId -> marketValue;   null until PriceDataModule.init() resolves
+    },
+    sellerRow: {
+      p50:      null,   // computed from per-item weav3r Refresh; null until user taps Refresh
+      fetching: false,  // prevents double-tap
     },
     fetchError: null,       // string | null — set by PriceDataModule.init() on partial/full failure
     ui: {
@@ -463,6 +467,25 @@
       background: rgba(255, 153, 68, 0.15);
       color: #ff9944;
       border: 1px solid rgba(255, 153, 68, 0.3);
+    }
+
+    /* ── Seller row Refresh button ── */
+    .st-seller-refresh-btn {
+      display: block;
+      margin: 6px 8px;
+      padding: 6px 14px;
+      background: #0c1e2e;
+      border: 1px solid #2a3a4a;
+      border-radius: 4px;
+      color: #00ccff;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .st-seller-refresh-btn:disabled {
+      color: #556677;
+      cursor: default;
     }
 
     /* ── Section labels ── */
@@ -1393,6 +1416,103 @@
         node.querySelectorAll?.('.itemTile___cbw7w').forEach(tile => injectBadgeOnTile(tile, itemId));
       }
     }
+  }
+
+  // ─── Seller row badges + per-item Refresh (#213) ────────────────────────────
+
+  const SELLER_ROW_SELECTOR = '.sellerRow___AI0m6, .sellerRow___Ca2pK';
+
+  function computeRoiBadge(listingPrice, p50) {
+    if (p50 == null || listingPrice <= 0) return null;
+    const roi = ((p50 - listingPrice) / listingPrice) * 100;
+    if (roi <= 0) return null;
+    return { color: 'green', text: `${roi.toFixed(1)}% ROI` };
+  }
+
+  function injectBadgeOnSellerRow(row, itemId) {
+    if (row.querySelector('.st-profit-badge')) return;
+    const prices = parseNodePrices(row);
+    if (!prices.length) return;
+    const listingPrice = prices[0];
+    const { bazaarAverage, marketValue } = PriceDataModule.getItemData(itemId);
+    const badge = MEM.sellerRow.p50 != null
+      ? computeRoiBadge(listingPrice, MEM.sellerRow.p50)
+      : computeBadge(listingPrice, bazaarAverage, marketValue);
+    if (!badge) return;
+    const el = document.createElement('span');
+    el.className = `st-profit-badge st-badge-${badge.color}`;
+    el.textContent = badge.text;
+    const anchor = row.querySelector('[class*="price"]') ?? row.querySelector('[class*="value"]') ?? row;
+    anchor.appendChild(el);
+  }
+
+  function injectBadgesOnAllSellerRows() {
+    const itemId = getImarketItemId();
+    if (!itemId) return;
+    document.querySelectorAll(SELLER_ROW_SELECTOR).forEach(row => injectBadgeOnSellerRow(row, itemId));
+  }
+
+  function injectSellerRowsFromNodes(addedNodes) {
+    const itemId = getImarketItemId();
+    if (!itemId) return;
+    for (const node of addedNodes) {
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (node.matches?.(SELLER_ROW_SELECTOR)) {
+        injectBadgeOnSellerRow(node, itemId);
+      } else {
+        node.querySelectorAll?.(SELLER_ROW_SELECTOR).forEach(row => injectBadgeOnSellerRow(row, itemId));
+      }
+    }
+  }
+
+  function updateSellerRowBadgesToRoi() {
+    const itemId = getImarketItemId();
+    document.querySelectorAll(SELLER_ROW_SELECTOR).forEach(row => {
+      row.querySelector('.st-profit-badge')?.remove();
+      injectBadgeOnSellerRow(row, itemId);
+    });
+  }
+
+  function injectRefreshButton(itemId) {
+    if (document.getElementById('st-seller-refresh')) return;
+    const firstRow = document.querySelector(SELLER_ROW_SELECTOR);
+    if (!firstRow) return;
+    const container = firstRow.parentElement;
+    if (!container) return;
+    const btn = document.createElement('button');
+    btn.id = 'st-seller-refresh';
+    btn.className = 'st-seller-refresh-btn';
+    btn.textContent = 'Refresh Prices';
+    btn.addEventListener('click', () => handleSellerRowRefresh(itemId));
+    container.insertBefore(btn, container.firstChild);
+  }
+
+  async function handleSellerRowRefresh(itemId) {
+    if (MEM.sellerRow.fetching) return;
+    MEM.sellerRow.fetching = true;
+    const btn = document.getElementById('st-seller-refresh');
+    if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
+    try {
+      const text = await gmFetch(`https://weav3r.dev/api/marketplace/${itemId}`);
+      const d = JSON.parse(text);
+      if (d.error) throw new Error(d.error);
+      const listings = (d.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity }));
+      const { p50 } = computeFairValue(listings);
+      MEM.sellerRow.p50 = p50;
+      updateSellerRowBadgesToRoi();
+      if (btn) btn.textContent = p50 ? `Refreshed — p50 $${Math.round(p50).toLocaleString()}` : 'Refresh Prices';
+    } catch (err) {
+      console.error('[SnipeTracker] seller row refresh failed:', err.message);
+      if (btn) btn.textContent = 'Refresh failed';
+    } finally {
+      MEM.sellerRow.fetching = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function maybeInjectRefreshButton() {
+    const itemId = getImarketItemId();
+    if (itemId) injectRefreshButton(itemId);
   }
 
   // ─── PriceDataModule ──────────────────────────────────────────────────────────
@@ -2852,7 +2972,7 @@
     _ioMutObs = new MutationObserver(mutations => {
       for (const m of mutations) m.addedNodes.forEach(n => buf.push(n));
       clearTimeout(debounce);
-      debounce = setTimeout(() => { const nodes = buf.splice(0); checkNodesForSnipes(nodes); injectBadgesFromNodes(nodes); }, 150);
+      debounce = setTimeout(() => { const nodes = buf.splice(0); checkNodesForSnipes(nodes); injectBadgesFromNodes(nodes); injectSellerRowsFromNodes(nodes); maybeInjectRefreshButton(); }, 150);
     });
     _ioMutObs.observe(target, { childList: true, subtree: true });
 
@@ -3004,7 +3124,7 @@
     }
   })();
 
-  PriceDataModule.init().then(() => injectBadgesOnAllTiles());
+  PriceDataModule.init().then(() => { injectBadgesOnAllTiles(); injectBadgesOnAllSellerRows(); maybeInjectRefreshButton(); });
 
   schedulePoll();
   startImarketObserver();
