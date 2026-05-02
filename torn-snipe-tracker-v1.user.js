@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.57.0
+// @version      1.58.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.57.0';
+  const SCRIPT_VERSION   = '1.58.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -440,6 +440,29 @@
     .st-roi {
       color: #00ff88;
       text-shadow: 0 0 8px rgba(0,255,136,0.35);
+    }
+
+    /* ── Tile profit badges ── */
+    .st-profit-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      line-height: 1.4;
+      vertical-align: middle;
+      pointer-events: none;
+    }
+    .st-profit-badge.st-badge-green {
+      background: rgba(0, 255, 136, 0.15);
+      color: #00ff88;
+      border: 1px solid rgba(0, 255, 136, 0.3);
+    }
+    .st-profit-badge.st-badge-amber {
+      background: rgba(255, 153, 68, 0.15);
+      color: #ff9944;
+      border: 1px solid rgba(255, 153, 68, 0.3);
     }
 
     /* ── Section labels ── */
@@ -1319,6 +1342,57 @@
         onerror: () => reject(new Error('GM_xmlhttpRequest network error')),
       });
     });
+  }
+
+  // ─── Tile profit badges ───────────────────────────────────────────────────────
+
+  function computeBadge(listingPrice, bazaarAverage, marketValue) {
+    if (bazaarAverage == null && marketValue == null) return null;
+    const refs = [bazaarAverage, marketValue].filter(v => v != null);
+    const hiRef = Math.max(...refs);
+    const loRef = Math.min(...refs);
+    const hiProfit = hiRef - listingPrice;
+    const loProfit = loRef - listingPrice;
+    if (hiProfit <= 0) return null;
+    const fmt = n => '$' + Math.round(n).toLocaleString();
+    if (loProfit > 0) {
+      const text = loRef === hiRef ? `${fmt(hiProfit)} profit` : `${fmt(loProfit)} – ${fmt(hiProfit)} profit`;
+      return { color: 'green', text };
+    }
+    return { color: 'amber', text: `${fmt(hiProfit)} profit` };
+  }
+
+  function injectBadgeOnTile(tile, itemId) {
+    if (tile.querySelector('.st-profit-badge')) return;
+    const { bazaarAverage, marketValue } = PriceDataModule.getItemData(itemId);
+    const prices = parseNodePrices(tile);
+    if (!prices.length) return;
+    const badge = computeBadge(prices[0], bazaarAverage, marketValue);
+    if (!badge) return;
+    const priceEl = tile.querySelector('[class*="price"]') ?? tile.querySelector('[class*="value"]') ?? tile;
+    const el = document.createElement('span');
+    el.className = `st-profit-badge st-badge-${badge.color}`;
+    el.textContent = badge.text;
+    priceEl.appendChild(el);
+  }
+
+  function injectBadgesOnAllTiles() {
+    const itemId = getImarketItemId();
+    if (!itemId) return;
+    document.querySelectorAll('.itemTile___cbw7w').forEach(tile => injectBadgeOnTile(tile, itemId));
+  }
+
+  function injectBadgesFromNodes(addedNodes) {
+    const itemId = getImarketItemId();
+    if (!itemId) return;
+    for (const node of addedNodes) {
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (node.classList?.contains('itemTile___cbw7w')) {
+        injectBadgeOnTile(node, itemId);
+      } else {
+        node.querySelectorAll?.('.itemTile___cbw7w').forEach(tile => injectBadgeOnTile(tile, itemId));
+      }
+    }
   }
 
   // ─── PriceDataModule ──────────────────────────────────────────────────────────
@@ -2778,7 +2852,7 @@
     _ioMutObs = new MutationObserver(mutations => {
       for (const m of mutations) m.addedNodes.forEach(n => buf.push(n));
       clearTimeout(debounce);
-      debounce = setTimeout(() => { checkNodesForSnipes(buf.splice(0)); }, 150);
+      debounce = setTimeout(() => { const nodes = buf.splice(0); checkNodesForSnipes(nodes); injectBadgesFromNodes(nodes); }, 150);
     });
     _ioMutObs.observe(target, { childList: true, subtree: true });
 
@@ -2930,7 +3004,7 @@
     }
   })();
 
-  PriceDataModule.init();
+  PriceDataModule.init().then(() => injectBadgesOnAllTiles());
 
   schedulePoll();
   startImarketObserver();
