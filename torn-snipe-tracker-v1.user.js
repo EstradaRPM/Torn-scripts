@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.55.0
+// @version      1.56.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.55.0';
+  const SCRIPT_VERSION   = '1.56.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1174,6 +1174,36 @@
     if (aggressiveness === 'conservative') return baz;
     if (aggressiveness === 'aggressive')   return market;
     return Math.round((baz + market) / 2);
+  }
+
+  function LogParser(logText) {
+    if (!logText || !logText.trim()) return [];
+
+    const lines   = logText.split('\n').map(l => l.trim()).filter(Boolean);
+    const entries = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const buyM = lines[i].match(/^You bought (\d+)x (.+?) on .+? at \$([0-9,]+) each/);
+      if (!buyM) continue;
+
+      const quantity      = parseInt(buyM[1], 10);
+      const itemName      = buyM[2].trim();
+      const purchasePrice = parseInt(buyM[3].replace(/,/g, ''), 10);
+
+      let timestamp = null;
+      const next = lines[i + 1] ?? '';
+      const tsM  = next.match(/^(\d{2}:\d{2}:\d{2})\s*-\s*(\d{2})\/(\d{2})\/(\d{2,4})$/);
+      if (tsM) {
+        const [, time, mm, dd, yy] = tsM;
+        const year = yy.length === 2 ? 2000 + parseInt(yy, 10) : parseInt(yy, 10);
+        const t    = new Date(`${year}-${mm}-${dd}T${time}`).getTime();
+        if (!isNaN(t)) { timestamp = t; i++; }
+      }
+
+      entries.push({ itemId: null, itemName, purchasePrice, quantity, timestamp });
+    }
+
+    return entries;
   }
 
   function playSnipeChime() {

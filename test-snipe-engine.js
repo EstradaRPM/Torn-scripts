@@ -536,6 +536,38 @@ console.log('\ncomputePollResult — Sell target falls back to P75 when no volum
   assert('recommendedSellTarget = P75 fallback', result.recommendedSellTarget === 950_000);
 }
 
+// ── LogParser ────────────────────────────────────────────────────────────────
+
+function LogParser(logText) {
+  if (!logText || !logText.trim()) return [];
+
+  const lines   = logText.split('\n').map(l => l.trim()).filter(Boolean);
+  const entries = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const buyM = lines[i].match(/^You bought (\d+)x (.+?) on .+? at \$([0-9,]+) each/);
+    if (!buyM) continue;
+
+    const quantity      = parseInt(buyM[1], 10);
+    const itemName      = buyM[2].trim();
+    const purchasePrice = parseInt(buyM[3].replace(/,/g, ''), 10);
+
+    let timestamp = null;
+    const next = lines[i + 1] ?? '';
+    const tsM  = next.match(/^(\d{2}:\d{2}:\d{2})\s*-\s*(\d{2})\/(\d{2})\/(\d{2,4})$/);
+    if (tsM) {
+      const [, time, mm, dd, yy] = tsM;
+      const year = yy.length === 2 ? 2000 + parseInt(yy, 10) : parseInt(yy, 10);
+      const t    = new Date(`${year}-${mm}-${dd}T${time}`).getTime();
+      if (!isNaN(t)) { timestamp = t; i++; }
+    }
+
+    entries.push({ itemId: null, itemName, purchasePrice, quantity, timestamp });
+  }
+
+  return entries;
+}
+
 // ── SellTargetEngine ─────────────────────────────────────────────────────────
 
 function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
@@ -593,6 +625,108 @@ console.log('\nSellTargetEngine — Behavior 7: marketValue null/undefined → f
   assertEq('aggressive null mkt',    SellTargetEngine(80_000, null,      'aggressive'),   80_000);
   assertEq('aggressive undef mkt',   SellTargetEngine(80_000, undefined, 'aggressive'),   80_000);
   assertEq('moderate null mkt',      SellTargetEngine(80_000, null,      'moderate'),     80_000);
+}
+
+// ── LogParser ────────────────────────────────────────────────────────────────
+
+console.log('\nLogParser — Behavior 1: empty string → []');
+{
+  assertEq('returns empty array', LogParser('').length, 0);
+}
+
+console.log('\nLogParser — Behavior 2: whitespace-only → []');
+{
+  assertEq('returns empty array', LogParser('   \n  \n  ').length, 0);
+}
+
+console.log('\nLogParser — Behavior 3: bazaar purchase — all fields extracted');
+{
+  const log = [
+    "You bought 26x Tribulus Omanense on PittH's bazaar at $69,000 each for a total of $1,794,000",
+    '19:29:33 - 01/05/26',
+  ].join('\n');
+  const result = LogParser(log);
+  assertEq('one entry', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Tribulus Omanense');
+  assertEq('quantity', result[0].quantity, 26);
+  assertEq('purchasePrice (unit price)', result[0].purchasePrice, 69_000);
+  assertEq('itemId is null', result[0].itemId, null);
+  assert('timestamp is a number', typeof result[0].timestamp === 'number');
+  assert('timestamp is positive', result[0].timestamp > 0);
+}
+
+console.log('\nLogParser — Behavior 4: item market purchase → parsed same as bazaar');
+{
+  const log = [
+    'You bought 31x Tribulus Omanense on the item market from Dismas_Hart at $69,357 each for a total of $2,150,067',
+    '19:21:36 - 01/05/26',
+  ].join('\n');
+  const result = LogParser(log);
+  assertEq('one entry', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Tribulus Omanense');
+  assertEq('quantity', result[0].quantity, 31);
+  assertEq('purchasePrice', result[0].purchasePrice, 69_357);
+  assert('timestamp is a number', typeof result[0].timestamp === 'number');
+}
+
+console.log('\nLogParser — Behavior 5: "You sold" line → skipped');
+{
+  const log = [
+    'You sold 38x Tribulus Omanense on your bazaar to Fairfax1991 at $70,428 each for a total of $2,676,264',
+    '19:15:00 - 01/05/26',
+  ].join('\n');
+  assertEq('returns empty array', LogParser(log).length, 0);
+}
+
+console.log('\nLogParser — Behavior 6: malformed line → skipped, no throw');
+{
+  const log = 'Random text with no price or bought keyword\nAnother garbage line';
+  let threw = false;
+  let result;
+  try { result = LogParser(log); } catch { threw = true; }
+  assert('did not throw', !threw);
+  assertEq('returns empty array', result.length, 0);
+}
+
+console.log('\nLogParser — Behavior 7: missing timestamp line → timestamp null, entry included');
+{
+  // No line follows the buy line
+  const log = "You bought 5x Xanax on PittH's bazaar at $48,000,000 each for a total of $240,000,000";
+  const result = LogParser(log);
+  assertEq('one entry', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Xanax');
+  assertEq('purchasePrice', result[0].purchasePrice, 48_000_000);
+  assertEq('timestamp is null', result[0].timestamp, null);
+}
+
+console.log('\nLogParser — Behavior 8: multiple entries → all returned in order');
+{
+  const log = [
+    "You bought 26x Tribulus Omanense on PittH's bazaar at $69,000 each for a total of $1,794,000",
+    '19:29:33 - 01/05/26',
+    'You bought 31x Tribulus Omanense on the item market from Dismas_Hart at $69,357 each for a total of $2,150,067',
+    '19:21:36 - 01/05/26',
+  ].join('\n');
+  const result = LogParser(log);
+  assertEq('two entries', result.length, 2);
+  assertEq('first quantity', result[0].quantity, 26);
+  assertEq('second quantity', result[1].quantity, 31);
+}
+
+console.log('\nLogParser — Behavior 9: sold line between two buys → sold skipped, both buys returned');
+{
+  const log = [
+    "You bought 10x Xanax on PittH's bazaar at $48,000,000 each for a total of $480,000,000",
+    '10:00:00 - 01/05/26',
+    'You sold 38x Tribulus Omanense on your bazaar to Fairfax1991 at $70,428 each for a total of $2,676,264',
+    '09:55:00 - 01/05/26',
+    "You bought 5x Melatonin on PittH's bazaar at $1,000 each for a total of $5,000",
+    '09:50:00 - 01/05/26',
+  ].join('\n');
+  const result = LogParser(log);
+  assertEq('two entries (sold skipped)', result.length, 2);
+  assertEq('first itemName', result[0].itemName, 'Xanax');
+  assertEq('second itemName', result[1].itemName, 'Melatonin');
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────
