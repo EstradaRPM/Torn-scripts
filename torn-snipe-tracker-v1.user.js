@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.59.0
+// @version      1.60.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.59.0';
+  const SCRIPT_VERSION   = '1.60.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -82,7 +82,7 @@
   const MEM = {
     data: {
       watchlist:  Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-      settings:   Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true },
+      settings:   Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true, aggressiveness: 'moderate' },
       trades:     Store.get(KEYS.trades)    ?? [],
       snapshots:  Store.get(KEYS.snapshots) ?? {},
       trendCache: Store.get(KEYS.trendcache) ?? {},
@@ -882,6 +882,20 @@
       color: #00ff88;
       min-width: 52px;
     }
+    .st-aggr-btn.st-aggr-active {
+      border-color: #00ff88;
+      color: #00ff88;
+      background: #0a2018;
+    }
+    .st-sell-target-cell {
+      cursor: pointer;
+      color: #4ecdc4;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .st-sell-target-cell.st-copied {
+      color: #00ff88;
+    }
   `;
   document.head.appendChild(style);
 
@@ -966,7 +980,14 @@
           </div>
         </div>
 
-        <div class="st-section-label">Open Trades</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 4px">
+          <div class="st-section-label" style="margin:0">Open Trades</div>
+          <div id="st-aggr-toggle" style="display:flex;gap:4px">
+            <button class="st-btn st-aggr-btn" data-aggr="conservative" style="font-size:11px;padding:3px 8px">Conservative</button>
+            <button class="st-btn st-aggr-btn" data-aggr="moderate"     style="font-size:11px;padding:3px 8px">Moderate</button>
+            <button class="st-btn st-aggr-btn" data-aggr="aggressive"   style="font-size:11px;padding:3px 8px">Aggressive</button>
+          </div>
+        </div>
         <table class="st-table">
           <thead>
             <tr>
@@ -975,6 +996,7 @@
               <th>Qty</th>
               <th>Buy Price</th>
               <th>Total</th>
+              <th>Sell Target</th>
               <th></th>
             </tr>
           </thead>
@@ -1220,6 +1242,7 @@
   }
 
   function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
+    if (bazaarAverage == null && marketValue == null) return null;
     const baz    = bazaarAverage ?? marketValue;
     const market = marketValue   ?? bazaarAverage;
     if (aggressiveness === 'conservative') return baz;
@@ -2512,22 +2535,39 @@
       .map((t, i) => ({ ...t, _idx: i }))
       .filter(t => t.sellPrice === null);
     if (!open.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8aa898;padding:12px 8px">No open trades</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8aa898;padding:12px 8px">No open trades</td></tr>';
       return;
     }
-    tbody.innerHTML = open.map(t => `
-      <tr data-trade-idx="${t._idx}">
-        <td>${fmtDate(t.buyDate)}</td>
-        <td>${t.name}</td>
-        <td>${t.qty}</td>
-        <td>${fmtMoney(t.buyPrice)}</td>
-        <td>${fmtMoney(t.buyPrice * t.qty)}</td>
-        <td style="white-space:nowrap">
-          <button class="st-log-sell-btn st-btn" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px">Log Sell</button>
-          <button class="st-delete-trade-btn st-btn st-btn-danger" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px" title="Delete this trade">✕</button>
-        </td>
-      </tr>
-    `).join('');
+    const aggr = MEM.data.settings.aggressiveness ?? 'moderate';
+    tbody.innerHTML = open.map(t => {
+      const { bazaarAverage, marketValue } = PriceDataModule.getItemData(t.itemId);
+      const target = SellTargetEngine(bazaarAverage, marketValue, aggr);
+      const targetCell = target != null
+        ? `<span class="st-sell-target-cell" data-target="${target}" title="Tap to copy">${fmtMoney(target)}</span>`
+        : `<span style="color:#8aa898">—</span>`;
+      return `
+        <tr data-trade-idx="${t._idx}">
+          <td>${fmtDate(t.buyDate)}</td>
+          <td>${t.name}</td>
+          <td>${t.qty}</td>
+          <td>${fmtMoney(t.buyPrice)}</td>
+          <td>${fmtMoney(t.buyPrice * t.qty)}</td>
+          <td>${targetCell}</td>
+          <td style="white-space:nowrap">
+            <button class="st-log-sell-btn st-btn" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px">Log Sell</button>
+            <button class="st-delete-trade-btn st-btn st-btn-danger" data-trade-idx="${t._idx}" style="font-size:11px;padding:3px 8px" title="Delete this trade">✕</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    tbody.querySelectorAll('.st-sell-target-cell').forEach(cell => {
+      cell.addEventListener('click', () => {
+        navigator.clipboard.writeText(String(cell.dataset.target)).catch(() => {});
+        cell.classList.add('st-copied');
+        setTimeout(() => cell.classList.remove('st-copied'), 1000);
+      });
+    });
 
     tbody.querySelectorAll('.st-log-sell-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -2540,7 +2580,7 @@
         const formRow = document.createElement('tr');
         formRow.className = 'st-sell-form-row';
         formRow.innerHTML = `
-          <td colspan="6" style="padding:6px 8px 10px">
+          <td colspan="7" style="padding:6px 8px 10px">
             <div style="background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
               <div class="st-field">
                 <label>Sell price / unit ($)</label>
@@ -2649,16 +2689,20 @@
     const wins    = closed.filter(t => t.sellPrice > t.buyPrice).length;
     const winRate = closed.length ? (wins / closed.length * 100).toFixed(0) + '%' : null;
 
+    const aggr = MEM.data.settings.aggressiveness ?? 'moderate';
+
     // Unrealized P&L for open trades that have a known sell target
     let liveEst = null;
     for (const t of open) {
-      const sellTarget = MEM.poll.pollResults[t.itemId]?.recommendedSellTarget ?? null;
+      const { bazaarAverage, marketValue } = PriceDataModule.getItemData(t.itemId);
+      const sellTarget = SellTargetEngine(bazaarAverage, marketValue, aggr);
       if (sellTarget != null) liveEst = (liveEst ?? 0) + (sellTarget - t.buyPrice) * t.qty;
     }
 
     // Capital in open positions where expected sale value >= mug threshold
     const atRisk = open.reduce((s, t) => {
-      const sellTarget = MEM.poll.pollResults[t.itemId]?.recommendedSellTarget ?? null;
+      const { bazaarAverage, marketValue } = PriceDataModule.getItemData(t.itemId);
+      const sellTarget = SellTargetEngine(bazaarAverage, marketValue, aggr);
       return (sellTarget != null && sellTarget * t.qty >= MUG_THRESHOLD)
         ? s + t.buyPrice * t.qty : s;
     }, 0);
@@ -2888,17 +2932,37 @@
     Store.set(KEYS.settings, MEM.data.settings);
   });
 
+  function updateAggrButtons() {
+    const current = MEM.data.settings.aggressiveness ?? 'moderate';
+    panel.querySelectorAll('.st-aggr-btn').forEach(btn => {
+      btn.classList.toggle('st-aggr-active', btn.dataset.aggr === current);
+    });
+  }
+
+  panel.querySelectorAll('.st-aggr-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      MEM.data.settings.aggressiveness = btn.dataset.aggr;
+      Store.set(KEYS.settings, MEM.data.settings);
+      updateAggrButtons();
+      renderOpenTrades();
+      renderSummary();
+    });
+  });
+
+  updateAggrButtons();
+
   clearBtn.addEventListener('click', () => {
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
     MEM.data.watchlist = [...SEED_WATCHLIST];
-    MEM.data.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true };
+    MEM.data.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true, aggressiveness: 'moderate' };
     MEM.poll.availableCapital = 0;
     MEM.ui.collapsed = false;
     inputInterval.value      = MEM.data.settings.interval;
     inputThreshold.value     = MEM.data.settings.threshold;
     inputVaultFloor.value    = MEM.data.settings.vaultFloorPct;
     inputSnipeAlerts.checked = true;
+    updateAggrButtons();
     openDrawer();
     panel.style.height = '';
     renderWatchlist();
