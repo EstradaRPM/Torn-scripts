@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.54.1
+// @version      1.55.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.54.1';
+  const SCRIPT_VERSION   = '1.55.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1166,6 +1166,14 @@
   function calcMugScenario(sellTarget, qty, buyPrice, mugPct) {
     const muggedNet = sellTarget * qty * (1 - mugPct / 100) - buyPrice * qty;
     return { muggedNet, isLoss: muggedNet < 0 };
+  }
+
+  function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
+    const baz    = bazaarAverage ?? marketValue;
+    const market = marketValue   ?? bazaarAverage;
+    if (aggressiveness === 'conservative') return baz;
+    if (aggressiveness === 'aggressive')   return market;
+    return Math.round((baz + market) / 2);
   }
 
   function playSnipeChime() {

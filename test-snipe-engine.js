@@ -536,6 +536,65 @@ console.log('\ncomputePollResult — Sell target falls back to P75 when no volum
   assert('recommendedSellTarget = P75 fallback', result.recommendedSellTarget === 950_000);
 }
 
+// ── SellTargetEngine ─────────────────────────────────────────────────────────
+
+function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
+  const baz    = bazaarAverage ?? marketValue;
+  const market = marketValue   ?? bazaarAverage;
+  if (aggressiveness === 'conservative') return baz;
+  if (aggressiveness === 'aggressive')   return market;
+  return Math.round((baz + market) / 2);
+}
+
+console.log('\nSellTargetEngine — Behavior 1: conservative → bazaarAverage');
+{
+  assertEq('returns bazaarAverage', SellTargetEngine(80_000, 100_000, 'conservative'), 80_000);
+}
+
+console.log('\nSellTargetEngine — Behavior 2: aggressive → marketValue');
+{
+  assertEq('returns marketValue', SellTargetEngine(80_000, 100_000, 'aggressive'), 100_000);
+}
+
+console.log('\nSellTargetEngine — Behavior 3: moderate → rounded midpoint');
+
+{
+  // (80_000 + 100_000) / 2 = 90_000 — even, no rounding needed
+  assertEq('even midpoint', SellTargetEngine(80_000, 100_000, 'moderate'), 90_000);
+  // (80_000 + 101_000) / 2 = 90_500 — rounds to 90_500
+  assertEq('odd midpoint rounds correctly', SellTargetEngine(80_000, 101_000, 'moderate'), 90_500);
+}
+
+console.log('\nSellTargetEngine — Behavior 4: equal references → same value across all modes');
+{
+  assertEq('conservative', SellTargetEngine(90_000, 90_000, 'conservative'), 90_000);
+  assertEq('aggressive',   SellTargetEngine(90_000, 90_000, 'aggressive'),   90_000);
+  assertEq('moderate',     SellTargetEngine(90_000, 90_000, 'moderate'),     90_000);
+}
+
+console.log('\nSellTargetEngine — Behavior 5: zero values → 0');
+{
+  assertEq('conservative zero', SellTargetEngine(0, 0, 'conservative'), 0);
+  assertEq('aggressive zero',   SellTargetEngine(0, 0, 'aggressive'),   0);
+  assertEq('moderate zero',     SellTargetEngine(0, 0, 'moderate'),     0);
+}
+
+console.log('\nSellTargetEngine — Behavior 6: bazaarAverage null/undefined → falls back to marketValue');
+{
+  assertEq('conservative null baz',   SellTargetEngine(null,      100_000, 'conservative'), 100_000);
+  assertEq('conservative undef baz',  SellTargetEngine(undefined, 100_000, 'conservative'), 100_000);
+  assertEq('aggressive null baz',     SellTargetEngine(null,      100_000, 'aggressive'),   100_000);
+  assertEq('moderate null baz',       SellTargetEngine(null,      100_000, 'moderate'),     100_000);
+}
+
+console.log('\nSellTargetEngine — Behavior 7: marketValue null/undefined → falls back to bazaarAverage');
+{
+  assertEq('conservative null mkt',  SellTargetEngine(80_000, null,      'conservative'), 80_000);
+  assertEq('aggressive null mkt',    SellTargetEngine(80_000, null,      'aggressive'),   80_000);
+  assertEq('aggressive undef mkt',   SellTargetEngine(80_000, undefined, 'aggressive'),   80_000);
+  assertEq('moderate null mkt',      SellTargetEngine(80_000, null,      'moderate'),     80_000);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 console.log('\n── summary ──────────────────────────────────────────────────────────────────');
 console.log(`${passed + failed} tests: ${passed} passed, ${failed} failed`);
