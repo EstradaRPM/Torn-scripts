@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.60.0
+// @version      1.61.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.60.0';
+  const SCRIPT_VERSION   = '1.61.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -485,6 +485,31 @@
     }
     .st-seller-refresh-btn:disabled {
       color: #556677;
+      cursor: default;
+    }
+
+    /* ── Seller row log button ── */
+    .st-log-btn {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      margin-left: 5px;
+      line-height: 1.4;
+      vertical-align: middle;
+      background: rgba(0, 204, 255, 0.12);
+      color: #00ccff;
+      border: 1px solid rgba(0, 204, 255, 0.3);
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: background 0.15s, color 0.15s;
+    }
+    .st-log-btn:active { background: rgba(0, 204, 255, 0.25); }
+    .st-log-btn.st-log-btn-confirmed {
+      background: rgba(0, 255, 136, 0.15);
+      color: #00ff88;
+      border-color: rgba(0, 255, 136, 0.3);
       cursor: default;
     }
 
@@ -1445,6 +1470,29 @@
 
   const SELLER_ROW_SELECTOR = '.sellerRow___AI0m6, .sellerRow___Ca2pK';
 
+  function logSellerRowTrade(btn, itemId, listingPrice) {
+    if (btn.classList.contains('st-log-btn-confirmed')) return;
+    const name = getImarketItemName(itemId);
+    MEM.data.trades.push({
+      itemId,
+      name,
+      qty:       1,
+      buyPrice:  listingPrice,
+      buyDate:   Date.now(),
+      sellPrice: null,
+      sellDate:  null,
+    });
+    Store.set(KEYS.trades, MEM.data.trades);
+    renderOpenTrades();
+    renderSummary();
+    btn.textContent = '✓';
+    btn.classList.add('st-log-btn-confirmed');
+    setTimeout(() => {
+      btn.textContent = 'Log';
+      btn.classList.remove('st-log-btn-confirmed');
+    }, 2000);
+  }
+
   function computeRoiBadge(listingPrice, p50) {
     if (p50 == null || listingPrice <= 0) return null;
     const roi = ((p50 - listingPrice) / listingPrice) * 100;
@@ -1465,8 +1513,13 @@
     const el = document.createElement('span');
     el.className = `st-profit-badge st-badge-${badge.color}`;
     el.textContent = badge.text;
+    const logBtn = document.createElement('button');
+    logBtn.className = 'st-log-btn';
+    logBtn.textContent = 'Log';
+    logBtn.addEventListener('click', e => { e.stopPropagation(); logSellerRowTrade(logBtn, itemId, listingPrice); });
     const anchor = row.querySelector('[class*="price"]') ?? row.querySelector('[class*="value"]') ?? row;
     anchor.appendChild(el);
+    anchor.appendChild(logBtn);
   }
 
   function injectBadgesOnAllSellerRows() {
@@ -2975,6 +3028,14 @@
     //          page.php?sid=ItemMarket#/market/...&itemID=206
     const m = window.location.href.match(/[?&#](?:item)?ID=(\d+)/i);
     return m ? parseInt(m[1], 10) : null;
+  }
+
+  function getImarketItemName(itemId) {
+    const wl = MEM.data.watchlist.find(w => w.itemId === itemId);
+    if (wl) return wl.name;
+    const heading = document.querySelector('[class*="itemName"], [class*="title"] h4, h4');
+    if (heading?.textContent?.trim()) return heading.textContent.trim();
+    return `Item #${itemId}`;
   }
 
   function parseNodePrices(node) {
