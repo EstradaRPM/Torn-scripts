@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.61.0
+// @version      1.62.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -31,7 +31,7 @@
     window.__stPollTimer = null;
   }
 
-  const SCRIPT_VERSION   = '1.61.0';
+  const SCRIPT_VERSION   = '1.62.0';
   const API_KEY          = '###PDA-APIKEY###';
   const BLOCK_VALUE_PCT  = 0.10;
   const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
@@ -1005,6 +1005,16 @@
           </div>
         </div>
 
+        <!-- Import from log -->
+        <details id="st-import-section" style="margin-bottom:8px">
+          <summary style="cursor:pointer;color:#8aa898;font-size:12px;user-select:none;padding:4px 0">Import from log</summary>
+          <textarea id="st-import-textarea" rows="4" style="width:100%;box-sizing:border-box;margin-top:6px;background:#1a2820;color:#c8e6c9;border:1px solid #3a5244;border-radius:4px;padding:6px;font-size:11px;resize:vertical" placeholder="Paste Torn market log here…"></textarea>
+          <div class="st-btn-row" style="margin-top:4px">
+            <button id="st-import-btn" class="st-btn">Import</button>
+            <span id="st-import-status" style="font-size:11px;color:#8aa898;margin-left:8px"></span>
+          </div>
+        </details>
+
         <div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 4px">
           <div class="st-section-label" style="margin:0">Open Trades</div>
           <div id="st-aggr-toggle" style="display:flex;gap:4px">
@@ -1303,6 +1313,69 @@
     }
 
     return entries;
+  }
+
+  // ─── Log import (paste + API) ─────────────────────────────────────────────
+
+  function parseApiLogEntry(entry) {
+    const data      = entry.data ?? entry.params ?? {};
+    const itemName  = data.item ?? data.name ?? data.itemname ?? null;
+    const qty       = parseInt(data.quantity ?? data.qty ?? 1, 10);
+    const totalCost = data.cost ?? data.total ?? null;
+    const unitPrice = data.price != null
+      ? parseInt(data.price, 10)
+      : totalCost != null ? Math.round(parseInt(totalCost, 10) / qty) : null;
+    if (!itemName || unitPrice == null) return null;
+    const itemId    = data.item_id ?? data.itemid ?? data.itemId ?? null;
+    const ts        = entry.timestamp ? entry.timestamp * 1000 : null;
+    return { itemId: itemId ? parseInt(itemId, 10) : null, itemName, purchasePrice: unitPrice, quantity: qty, timestamp: ts };
+  }
+
+  async function fetchApiLogEntries() {
+    const key = getApiKey();
+    if (!key) return [];
+    try {
+      const text    = await gmFetch(`https://api.torn.com/v2/user/log?log=1112,1125&limit=100&key=${key}`);
+      const d       = JSON.parse(text);
+      if (d.error) return [];
+      const raw     = Array.isArray(d.log) ? d.log : Object.values(d.log ?? {});
+      return raw.flatMap(e => { const r = parseApiLogEntry(e); return r ? [r] : []; });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function logEntryDedupeKey(name, buyDate) {
+    return `${name}|${buyDate}`;
+  }
+
+  function importLogEntries(entries) {
+    const existing = new Set(MEM.data.trades.map(t => logEntryDedupeKey(t.name, t.buyDate)));
+    let added = 0;
+    for (const e of entries) {
+      const trade = {
+        itemId:    e.itemId,
+        name:      e.itemName,
+        qty:       e.quantity,
+        buyPrice:  e.purchasePrice,
+        buyDate:   e.timestamp ?? Date.now(),
+        sellPrice: null,
+        sellDate:  null,
+      };
+      const key = logEntryDedupeKey(trade.name, trade.buyDate);
+      if (!existing.has(key)) {
+        MEM.data.trades.push(trade);
+        existing.add(key);
+        added++;
+      }
+    }
+    if (added > 0) {
+      Store.set(KEYS.trades, MEM.data.trades);
+      renderOpenTrades();
+      renderClosedTrades();
+      renderSummary();
+    }
+    return added;
   }
 
   function playSnipeChime() {
@@ -2859,6 +2932,18 @@
     renderQueueStrip();
   });
 
+  // ─── Log import button ────────────────────────────────────────────────────
+
+  panel.querySelector('#st-import-btn').addEventListener('click', () => {
+    const ta     = panel.querySelector('#st-import-textarea');
+    const status = panel.querySelector('#st-import-status');
+    const entries = LogParser(ta.value);
+    if (!entries.length) { status.textContent = 'No valid entries found.'; return; }
+    const added = importLogEntries(entries);
+    status.textContent = added > 0 ? `Added ${added} trade${added === 1 ? '' : 's'}.` : 'No new entries (all duplicates).';
+    if (added > 0) ta.value = '';
+  });
+
   // ─── Tab switching ─────────────────────────────────────────────────────────
 
   panel.querySelectorAll('.st-tab').forEach(tab => {
@@ -2867,7 +2952,13 @@
       panel.querySelectorAll('.st-pane').forEach(p => p.classList.remove('st-active'));
       tab.classList.add('st-active');
       panel.querySelector(`#st-pane-${tab.dataset.tab}`).classList.add('st-active');
-      if (tab.dataset.tab === 'ledger') { renderQueueStrip(); renderOpenTrades(); renderClosedTrades(); renderSummary(); }
+      if (tab.dataset.tab === 'ledger') {
+        renderQueueStrip();
+        renderOpenTrades();
+        renderClosedTrades();
+        renderSummary();
+        fetchApiLogEntries().then(entries => { if (entries.length) importLogEntries(entries); });
+      }
     });
   });
 
