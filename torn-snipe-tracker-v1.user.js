@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.62.0
+// @version      1.63.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -26,16 +26,8 @@
 
   if (PAGE_MODE === 'market' && document.getElementById('st-drawer')) return;
 
-  if (window.__stPollTimer) {
-    clearInterval(window.__stPollTimer);
-    window.__stPollTimer = null;
-  }
-
-  const SCRIPT_VERSION   = '1.62.0';
+  const SCRIPT_VERSION   = '1.63.0';
   const API_KEY          = '###PDA-APIKEY###';
-  const BLOCK_VALUE_PCT  = 0.10;
-  const FREQ_WINDOW      = 2 * 24 * 60 * 60 * 1000;
-  const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
   // Prefer PDA-injected key; fall back to manually stored key
   function getApiKey() {
@@ -46,14 +38,12 @@
   // ─── Persistence ──────────────────────────────────────────────────────────
 
   const KEYS = {
-    watchlist:    'st_watchlist',
-    settings:     'st_settings',
-    collapsed:    'st_collapsed',
-    trades:       'st_trades',
-    apiKey:       'st_apikey',
-    snapshots:    'st_snapshots',
-    trendcache:   'st_trendcache',
-    lastPollTime: 'st_last_poll_time',
+    settings:   'st_settings',
+    collapsed:  'st_collapsed',
+    trades:     'st_trades',
+    apiKey:     'st_apikey',
+    snapshots:  'st_snapshots',
+    trendcache: 'st_trendcache',
   };
 
   const Store = {
@@ -73,26 +63,25 @@
     },
   };
 
-  const SEED_WATCHLIST = [
-    { itemId: 206, name: 'Xanax',    fairValue: 850000, threshold: 10 },
-    { itemId: 197, name: 'Cannabis', fairValue: 95000,  threshold: 10 },
-    { itemId: 198, name: 'Speed',    fairValue: 320000, threshold: 10 },
-  ];
+  // One-time migration: move stale watchlist/poll keys to tombstone so data isn't silently lost
+  (function migrateStaleKeys() {
+    const staleKeys = ['st_watchlist', 'st_last_poll_time'];
+    const hasStale = staleKeys.some(k => localStorage.getItem(k) !== null);
+    if (!hasStale) return;
+    const tombstone = {};
+    staleKeys.forEach(k => {
+      const v = localStorage.getItem(k);
+      if (v !== null) { tombstone[k] = v; localStorage.removeItem(k); }
+    });
+    localStorage.setItem('st_tombstone_v1', JSON.stringify(tombstone));
+  })();
 
   const MEM = {
     data: {
-      watchlist:  Store.get(KEYS.watchlist) ?? SEED_WATCHLIST,
-      settings:   Store.get(KEYS.settings)  ?? { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true, aggressiveness: 'moderate' },
+      settings:   Store.get(KEYS.settings)  ?? { aggressiveness: 'moderate' },
       trades:     Store.get(KEYS.trades)    ?? [],
       snapshots:  Store.get(KEYS.snapshots) ?? {},
       trendCache: Store.get(KEYS.trendcache) ?? {},
-    },
-    poll: {
-      pollResults:      {},  // itemId -> { fairValue, lowestListed, … }
-      availableCapital: 0,
-      lastAlertedAt:    {},  // itemId -> timestamp; rate-limits alerts to ALERT_COOLDOWN_MS
-      lastVaultAmount:  0,
-      apiCallLog:       [],  // timestamps of api.torn.com calls (rolling 60s window)
     },
     price: {
       bazaarMap:     null,  // itemId -> bazaarAverage; null until PriceDataModule.init() resolves
@@ -105,18 +94,12 @@
     fetchError: null,       // string | null — set by PriceDataModule.init() on partial/full failure
     ui: {
       collapsed:        Store.get(KEYS.collapsed) ?? false,
-      cardCollapsed:    {},  // itemId -> bool
-      bookExpanded:     {},  // itemId -> bool
-      logBuyIdx:        null,
       storageWarnShown: false,
       pendingQueue:     [],
     },
   };
 
-  if (PAGE_MODE === 'background') {
-    schedulePoll();
-    return;
-  }
+  if (PAGE_MODE !== 'market') return;
 
   // ─── Styles ───────────────────────────────────────────────────────────────
 
@@ -238,14 +221,6 @@
     }
 
 
-    /* ── Drawer pinned actions ── */
-    #st-drawer-actions {
-      display: flex;
-      gap: 8px;
-      padding: 6px 10px 8px;
-      flex-shrink: 0;
-      border-top: 1px solid #1a2a3a;
-    }
 
     /* ── Body (tabs + pane container) ── */
     #st-body {
@@ -337,33 +312,6 @@
       text-shadow: 0 0 8px rgba(0,255,136,0.45);
     }
 
-    /* ── Real-time snipe flash (MutationObserver detection) ── */
-    @keyframes st-flash-green {
-      0%   { box-shadow: 0 0 0 2px #00ff88, inset 0 0 0 1px #00ff8822; background: rgba(0,255,136,0.07); }
-      60%  { box-shadow: 0 0 0 2px #00ff88, inset 0 0 0 1px #00ff8822; background: rgba(0,255,136,0.07); }
-      100% { box-shadow: none; background: transparent; }
-    }
-    .st-card.st-snipe-flash {
-      animation: st-flash-green 2.5s ease-out forwards;
-    }
-    .st-status-flood {
-      color: #ff9944;
-      font-weight: 700;
-      font-size: 12px;
-      letter-spacing: 0.05em;
-      text-shadow: 0 0 8px rgba(255,153,68,0.45);
-    }
-    .st-status-watch {
-      color: #7a9888;
-      font-size: 12px;
-      letter-spacing: 0.04em;
-    }
-    .st-status-error {
-      color: #ff4444;
-      font-weight: 700;
-      font-size: 12px;
-      letter-spacing: 0.04em;
-    }
 
     /* ── Pending queue strip ── */
     #st-queue-section {
@@ -529,13 +477,6 @@
       margin-top: 0;
     }
 
-    /* ── Scan line ── */
-    .st-scan-line {
-      font-size: 12px;
-      color: #8aa898;
-      margin-top: 10px;
-    }
-
     /* ── Summary row ── */
     .st-summary {
       display: flex;
@@ -596,17 +537,6 @@
       color: #ff4444;
     }
 
-    .st-rm-btn {
-      background: none;
-      border: none;
-      color: #4a6070;
-      cursor: pointer;
-      font-size: 12px;
-      padding: 2px 4px;
-      transition: color 0.15s;
-    }
-    .st-rm-btn:hover { color: #ff4444; }
-
     .st-btn-row {
       display: flex;
       gap: 8px;
@@ -658,143 +588,6 @@
       border-color: #00ccff;
     }
 
-    /* ── Mobile adjustments ── */
-    /* ── Search dropdown ── */
-    #st-add-dropdown .st-dd-item {
-      padding: 7px 10px;
-      font-size: 13px;
-      color: #c0d0c8;
-      cursor: pointer;
-      border-bottom: 1px solid #0f1e2e;
-    }
-    #st-add-dropdown .st-dd-item:last-child { border-bottom: none; }
-    #st-add-dropdown .st-dd-item:hover {
-      background: rgba(0,255,136,0.08);
-      color: #00ff88;
-    }
-    #st-add-dropdown .st-dd-empty {
-      padding: 7px 10px;
-      font-size: 12px;
-      color: #8aa898;
-    }
-
-    /* ── Watchlist card layout ── */
-    #st-watchlist-cards {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .st-card {
-      background: #080e18;
-      border: 1px solid #1a2a3a;
-      border-radius: 6px;
-      overflow: hidden;
-    }
-    .st-card-disabled {
-      opacity: 0.4;
-    }
-    .st-card-r1 {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 7px 10px;
-      background: #0c1622;
-      border-bottom: 1px solid #1a2a3a;
-    }
-    .st-card-name {
-      flex: 1;
-      font-weight: 700;
-      font-size: 13px;
-      color: #d0e0d8;
-      text-decoration: none;
-      cursor: pointer;
-    }
-    .st-card-name:hover { color: #00ccff; }
-    .st-card-trend-badge {
-      font-size: 11px;
-    }
-    .st-card-r2, .st-card-r3 {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      border-bottom: 1px solid #0f1e2e;
-    }
-    .st-card-col {
-      padding: 5px 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      border-right: 1px solid #0f1e2e;
-    }
-    .st-card-col:last-child {
-      border-right: none;
-    }
-    .st-card-lbl {
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #3a5060;
-    }
-    .st-card-val {
-      font-size: 12px;
-      color: #c0d0c8;
-    }
-    .st-card-book-toggle {
-      width: 100%;
-      background: none;
-      border: none;
-      border-bottom: 1px solid #0f1e2e;
-      padding: 5px 10px;
-      text-align: left;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #3a5060;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-family: inherit;
-    }
-    .st-card-book-toggle:hover {
-      color: #00ccff;
-      background: rgba(0,204,255,0.04);
-    }
-    .st-card-book-content {
-      background: #05080f;
-      border-bottom: 1px solid #0f1e2e;
-    }
-    .st-card-proj {
-      border-bottom: 1px solid #0f1e2e;
-    }
-    .st-card-log-buy {
-      padding: 6px 10px;
-      border-bottom: 1px solid #0f1e2e;
-      background: #07100a;
-    }
-    .st-card-r6 {
-      display: flex;
-      align-items: center;
-      padding: 5px 10px;
-      gap: 8px;
-      background: #070c14;
-    }
-    .st-card-snap-info {
-      flex: 1;
-      font-size: 10px;
-      color: #3a5060;
-      letter-spacing: 0.02em;
-    }
-
-    /* ── Order book buy rows ── */
-    .st-book-row-buy {
-      cursor: pointer;
-    }
-    .st-book-row-buy:hover > td {
-      background: rgba(0,255,136,0.06) !important;
-    }
-
     @media (max-width: 560px) {
       .st-table th,
       .st-table td {
@@ -803,110 +596,6 @@
       }
     }
 
-    /* ── Injected snipe card (DOM insertion on imarket page) ── */
-    /* Alert cards float top-centre, independent of page DOM structure */
-    #st-inject-alerts {
-      position: fixed;
-      top: 12px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 999998;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      pointer-events: none;
-      max-width: 380px;
-      width: calc(100vw - 24px);
-    }
-    #st-inject-alerts > * { pointer-events: auto; }
-    .st-injected-card {
-      background: #080e18;
-      border: 2px solid #00ff88;
-      border-radius: 8px;
-      box-shadow: 0 4px 24px rgba(0,255,136,0.18);
-      padding: 12px 14px;
-      font-family: 'Segoe UI', Arial, sans-serif;
-      font-size: 13px;
-      color: #c0d0c8;
-      user-select: none;
-    }
-    .st-injected-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 10px;
-    }
-    .st-injected-title {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #00ff88;
-      text-shadow: 0 0 10px rgba(0,255,136,0.5);
-    }
-    .st-injected-dismiss {
-      background: none;
-      border: none;
-      color: #4a6070;
-      cursor: pointer;
-      font-size: 15px;
-      padding: 0 4px;
-      line-height: 1;
-      transition: color 0.15s;
-    }
-    .st-injected-dismiss:hover { color: #ff4444; }
-    .st-injected-stats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 18px;
-      margin-bottom: 10px;
-    }
-    .st-injected-stat { display: flex; flex-direction: column; }
-    .st-injected-lbl {
-      font-size: 10px;
-      color: #4a6070;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      margin-bottom: 2px;
-    }
-    .st-injected-val {
-      font-size: 13px;
-      font-weight: 600;
-      color: #c0d0c8;
-    }
-    .st-injected-mug {
-      background: rgba(255,100,60,0.07);
-      border: 1px solid rgba(255,100,60,0.25);
-      border-radius: 4px;
-      padding: 5px 9px;
-      margin-bottom: 10px;
-      font-size: 11px;
-      color: #ff9944;
-    }
-    .st-injected-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .st-injected-queue-btn {
-      background: #00ff88;
-      color: #080e18;
-      border: none;
-      border-radius: 4px;
-      padding: 5px 14px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      letter-spacing: 0.04em;
-      transition: background 0.15s;
-    }
-    .st-injected-queue-btn:hover { background: #00cc70; }
-    .st-injected-queue-confirm {
-      font-size: 11px;
-      font-weight: 600;
-      color: #00ff88;
-      min-width: 52px;
-    }
     .st-aggr-btn.st-aggr-active {
       border-color: #00ff88;
       color: #00ff88;
@@ -937,63 +626,16 @@
     <div id="st-drawer-handle"></div>
     <div id="st-drawer-titlebar">
       <span id="st-title">Snipe Tracker v${SCRIPT_VERSION}</span>
-      <span id="st-api-counter" style="display:none"></span>
     </div>
     <div id="st-body">
       <!-- Tabs -->
       <div id="st-tabs">
-        <div class="st-tab st-active" data-tab="snipe">Snipe</div>
-        <div class="st-tab" data-tab="ledger">Ledger<span id="st-ledger-tab-badge" class="st-queue-badge" style="display:none"></span></div>
+        <div class="st-tab st-active" data-tab="ledger">Ledger<span id="st-ledger-tab-badge" class="st-queue-badge" style="display:none"></span></div>
         <div class="st-tab" data-tab="settings">Settings</div>
       </div>
 
-      <!-- ── SNIPE pane ── -->
-      <div id="st-pane-snipe" class="st-pane st-active">
-        <div id="st-watchlist-cards"></div>
-        <div class="st-scan-line" style="margin-top:10px">Last scan: &mdash;</div>
-        <div id="st-add-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
-          <div class="st-settings-row" style="margin-bottom:0;align-items:flex-start">
-            <div class="st-field" style="position:relative">
-              <label>Search item name</label>
-              <input id="st-add-search" class="st-input" type="text" placeholder="e.g. Xanax" autocomplete="off" style="width:180px">
-              <div id="st-add-dropdown" style="display:none;position:absolute;top:100%;left:0;width:220px;background:#0c1622;border:1px solid #1a2a3a;border-radius:0 0 4px 4px;z-index:10;max-height:200px;overflow-y:auto"></div>
-            </div>
-            <div class="st-field">
-              <label>Threshold %</label>
-              <input id="st-add-threshold" class="st-input" type="number" min="1" max="100" style="width:80px">
-            </div>
-          </div>
-          <div class="st-btn-row" style="margin-top:8px">
-            <button id="st-add-confirm-btn" class="st-btn">Add</button>
-            <button id="st-add-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
-          </div>
-          <div id="st-add-error" style="display:none;color:#ff4444;font-size:12px;margin-top:6px"></div>
-        </div>
-        <div id="st-buy-form" style="display:none;margin-top:10px;background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:10px 12px">
-          <div class="st-settings-row" style="margin-bottom:0">
-            <div class="st-field">
-              <label>Item</label>
-              <span id="st-buy-item-name" style="font-size:13px;color:#c0d0c8"></span>
-            </div>
-            <div class="st-field">
-              <label>Qty</label>
-              <input id="st-buy-qty" class="st-input" type="number" min="1" style="width:80px">
-            </div>
-            <div class="st-field">
-              <label>Buy price / unit ($)</label>
-              <input id="st-buy-price" class="st-input" type="number" min="1">
-            </div>
-          </div>
-          <div class="st-btn-row" style="margin-top:8px">
-            <button id="st-buy-confirm-btn" class="st-btn">Confirm</button>
-            <button id="st-buy-cancel-btn" class="st-btn st-btn-danger">Cancel</button>
-          </div>
-        </div>
-        <div id="st-capital-bar" style="margin-top:10px"></div>
-      </div>
-
       <!-- ── LEDGER pane ── -->
-      <div id="st-pane-ledger" class="st-pane">
+      <div id="st-pane-ledger" class="st-pane st-active">
 
         <!-- Pending Queue -->
         <div id="st-queue-section" style="display:none">
@@ -1095,26 +737,6 @@
       <div id="st-pane-settings" class="st-pane">
         <div class="st-settings">
           <div class="st-settings-title">Settings</div>
-          <div class="st-settings-row">
-            <div class="st-field">
-              <label for="st-input-interval">Scan interval (sec)</label>
-              <input id="st-input-interval" class="st-input" type="number" min="10">
-            </div>
-            <div class="st-field">
-              <label for="st-input-threshold">Default threshold %</label>
-              <input id="st-input-threshold" class="st-input" type="number" min="1" max="100">
-              <span id="st-thresh-hint" style="font-size:11px;color:#8aa898;margin-top:3px">—</span>
-            </div>
-            <div class="st-field">
-              <label for="st-input-vault-floor">Vault Reserve Floor (%)</label>
-              <input id="st-input-vault-floor" class="st-input" type="number" min="0" max="100" style="width:130px">
-            </div>
-            <div class="st-field">
-              <label for="st-input-snipe-alerts" style="cursor:pointer">
-                <input id="st-input-snipe-alerts" type="checkbox" style="margin-right:6px;cursor:pointer">Snipe alerts
-              </label>
-            </div>
-          </div>
           <div class="st-field" style="margin-bottom:10px">
             <label for="st-input-apikey">API Key <span style="font-weight:400;color:#4a6070">(only needed if not auto-injected by Torn PDA)</span></label>
             <input id="st-input-apikey" class="st-input" type="password" placeholder="paste key here" style="width:240px">
@@ -1123,158 +745,10 @@
         </div>
       </div>
     </div>
-    <div id="st-drawer-actions">
-      <button id="st-scan-btn" class="st-btn">Scan Now</button>
-      <button id="st-add-item-btn" class="st-btn st-btn-blue">+ Add Item</button>
-    </div>
   `;
   document.body.appendChild(panel);
 
   // ─── Pure functions ───────────────────────────────────────────────────────
-
-  function calcWeightedScore(grossProfit, roi, baseROI) {
-    return grossProfit * Math.min(roi / baseROI, 1.0);
-  }
-
-  function computeAvailableCapital(vaultAmount, vaultFloorPct) {
-    return vaultAmount * (1 - vaultFloorPct / 100);
-  }
-
-  function detectVolumeBlock(listings, abovePrice, blockValueThreshold) {
-    const tiers = new Map();
-    for (const l of listings) {
-      if (l.price <= abovePrice) continue;
-      tiers.set(l.price, (tiers.get(l.price) ?? 0) + l.quantity);
-    }
-    for (const [price, quantity] of [...tiers.entries()].sort((a, b) => a[0] - b[0])) {
-      if (price * quantity >= blockValueThreshold) return { price, quantity };
-    }
-    return null;
-  }
-
-  function computeSmartSellPosition(listings, snipePrice, availableCapital, trend) {
-    const above = listings.filter(l => l.price > snipePrice).sort((a, b) => a.price - b.price);
-    if (!above.length) return null;
-
-    const blockValueThreshold = availableCapital * BLOCK_VALUE_PCT;
-
-    if (trend === 'falling') {
-      return above[0].price;
-    }
-
-    const block = detectVolumeBlock(above, snipePrice, blockValueThreshold);
-    if (block) {
-      return block.price - 1;
-    }
-
-    // P75 fallback of the full listing set
-    const sorted = [...listings].sort((a, b) => a.price - b.price);
-    const p75idx = Math.floor(sorted.length * 0.75);
-    const p75 = sorted[Math.min(p75idx, sorted.length - 1)].price;
-    return Math.max(p75, above[0].price);
-  }
-
-  function computePollResult(bazaarListings, itemMarketListings, item, availableCapital, snapshots, trend) {
-    const merged = [...bazaarListings, ...itemMarketListings].sort((a, b) => a.price - b.price);
-
-    // fairValue and IQR derived from bazaar-only data (TornW3B). Bazaar is the
-    // canonical price reference; item market listings are a sell venue, not a
-    // source of truth for what the item is worth.
-    const { p25, p50, p75 } = computeFairValue(bazaarListings.slice(0, 20));
-    const iqr          = p75 - p25;
-    const outlierFloor = Math.round(p25 - 1.5 * iqr);
-    // Only a true outlier if small quantity — a 5k-unit dump at sub-floor price
-    // is a market event that sets the sell ceiling, not a typo to ignore.
-    const outlierExcluded = merged[0].price < outlierFloor && merged[0].quantity < 100;
-    const fairValue    = p50;
-
-    // Informational: cheapest large-quantity listing below fair value, across both venues.
-    // source field ('bazaar' | 'itemmarket') reflects detection confidence:
-    // item market = real-time via MO; bazaar = poll-lagged.
-    const marketFlood = merged.find(l => l.quantity >= 100 && l.price < fairValue) ?? null;
-
-    // Actionable flood play requires four constraints:
-    // 1. Flood is at or near the true floor (within 5% of the cheapest non-outlier listing).
-    // 2. Fair value is at least threshold% above the flood — profitable exit exists.
-    // 3. Macro gate: trend is not 'falling' (skip gate entirely during warmup / 'insufficient').
-    //    A falling market means the whole price level is repricing downward, not a flash.
-    // 4. Micro gate: flood price is not below the historical lowestBazaar floor.
-    //    If it is, the flood is setting a novel floor — not a recurring flash opportunity.
-    //    Vacuous pass when fewer than 3 snapshots exist.
-    const firstNonOutlierPrice = merged.find(l => l.price >= outlierFloor)?.price ?? p25;
-    const macroGatePasses = trend === 'insufficient' || trend !== 'falling';
-    const bazaarFloors = (snapshots ?? []).filter(s => s.lowestBazaar != null).map(s => s.lowestBazaar);
-    const historicalBazaarFloor = bazaarFloors.length >= 3 ? Math.min(...bazaarFloors) : null;
-    const microGatePasses = marketFlood == null || historicalBazaarFloor == null || marketFlood.price >= historicalBazaarFloor;
-    const isFloodPlay = marketFlood != null
-      && marketFlood.price <= firstNonOutlierPrice * 1.05
-      && fairValue >= marketFlood.price * (1 + item.threshold / 100)
-      && macroGatePasses
-      && microGatePasses;
-
-    // Historical fair-value series for 7-day range display
-    const historicalFVs = (snapshots ?? [])
-      .filter(s => s.fairValue != null)
-      .map(s => s.fairValue)
-      .sort((a, b) => a - b);
-    let historicalMedian = null, historicalLow = null, historicalHigh = null;
-    if (historicalFVs.length >= 3) {
-      const mid = Math.floor(historicalFVs.length / 2);
-      historicalMedian = historicalFVs.length % 2 !== 0
-        ? historicalFVs[mid]
-        : Math.round((historicalFVs[mid - 1] + historicalFVs[mid]) / 2);
-      historicalLow  = historicalFVs[0];
-      historicalHigh = historicalFVs[historicalFVs.length - 1];
-    }
-
-    // Sell target anchored to bazaar listings only — that is where items are relisted.
-    const recommendedSellTarget = bazaarListings.length
-      ? computeSmartSellPosition(bazaarListings, bazaarListings[0].price, availableCapital, trend ?? 'flat')
-      : null;
-
-    return {
-      fairValue,
-      p25,
-      p75,
-      outlierExcluded,
-      outlierFloor,
-      lowestListed:       merged[0]?.price ?? null,
-      lowestListedQty:    merged[0]?.price != null
-        ? merged.filter(l => l.price === merged[0].price).reduce((s, l) => s + l.quantity, 0)
-        : null,
-      lowestMarketListed:    merged.find(l => l.source !== 'bazaar')?.price ?? null,
-      lowestMarketListedQty: (() => {
-        const p = merged.find(l => l.source !== 'bazaar')?.price ?? null;
-        return p != null ? merged.filter(l => l.source !== 'bazaar' && l.price === p).reduce((s, l) => s + l.quantity, 0) : null;
-      })(),
-      secondLowest:       merged[1]?.price ?? null,
-      listings:        merged,
-      marketFlood,
-      isFloodPlay,
-      historicalMedian,
-      historicalLow,
-      historicalHigh,
-      recommendedSellTarget,
-    };
-  }
-
-  function calcSnipeFrequency(snapshots, threshold, windowMs) {
-    const cutoff = Date.now() - windowMs;
-    const inWindow = snapshots.filter(s => s.timestamp >= cutoff).sort((a, b) => a.timestamp - b.timestamp);
-    let count = 0;
-    for (let i = 1; i < inWindow.length; i++) {
-      const snipeThreshold = inWindow[i].fairValue * (1 - threshold / 100);
-      const prev = inWindow[i - 1].lowestMarket ?? inWindow[i - 1].lowestListed;
-      const curr = inWindow[i].lowestMarket ?? inWindow[i].lowestListed;
-      if (prev != null && curr != null && prev >= snipeThreshold && curr < snipeThreshold) count++;
-    }
-    return count;
-  }
-
-  function calcMugScenario(sellTarget, qty, buyPrice, mugPct) {
-    const muggedNet = sellTarget * qty * (1 - mugPct / 100) - buyPrice * qty;
-    return { muggedNet, isLoss: muggedNet < 0 };
-  }
 
   function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
     if (bazaarAverage == null && marketValue == null) return null;
@@ -1378,106 +852,9 @@
     return added;
   }
 
-  function playSnipeChime() {
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const tones = [440, 554, 659]; // A4, C#5, E5 — ascending major arpeggio
-      tones.forEach((freq, i) => {
-        const osc  = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type = 'sine';
-        osc.frequency.value = freq;
-        const t = ctx.currentTime + i * 0.07;
-        gain.gain.setValueAtTime(0.3, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-        osc.start(t);
-        osc.stop(t + 0.12);
-      });
-    } catch (e) {}
-  }
-
-  function fireSnipeAlert(item) {
-    playSnipeChime();
-    const title = 'Snipe opportunity';
-    const text  = `${item.name} is below threshold`;
-    try {
-      // TornPDA native bridge (iOS/Android WebView)
-      const handler = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
-        ?.webkit?.messageHandlers?.PDA;
-      if (handler) {
-        handler.postMessage(JSON.stringify({ action: 'notification', title, text }));
-        return;
-      }
-    } catch (e) {}
-    try { GM_notification({ title, text, timeout: 5000 }); } catch (e) {}
-  }
-
-  function updateApiCounter() {
-    const now = Date.now();
-    MEM.poll.apiCallLog = MEM.poll.apiCallLog.filter(t => now - t < 60000);
-    const count = MEM.poll.apiCallLog.length;
-    const color = count >= 80 ? '#ff4444' : count >= 50 ? '#ffaa00' : '#00ff88';
-
-    const counterEl = document.getElementById('st-api-counter');
-    if (counterEl) {
-      counterEl.textContent = `API: ${count}/100`;
-      counterEl.style.color = color;
-      counterEl.style.display = '';
-    }
-
-    const fabApi = document.getElementById('st-fab-api');
-    if (fabApi) {
-      if (count >= 50) {
-        fabApi.style.background = color;
-        fabApi.style.display = '';
-      } else {
-        fabApi.style.display = 'none';
-      }
-    }
-  }
-
-  function checkSnipeAlerts() {
-    let snipeCount = 0;
-    for (const item of MEM.data.watchlist) {
-      if (!(item.itemId > 0) || item.enabled === false) continue;
-      const res       = MEM.poll.pollResults[item.itemId];
-      const threshold = item.threshold ?? MEM.data.settings.threshold ?? 10;
-      const sellTarget = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
-      const isSnipe   = res != null && !res.error && res.lowestMarketListed != null && (() => {
-        if (sellTarget != null) {
-          return (sellTarget - res.lowestMarketListed) / res.lowestMarketListed >= threshold / 100;
-        }
-        return res.fairValue != null
-          && res.lowestMarketListed < res.fairValue * (1 - threshold / 100);
-      })();
-      if (isSnipe) snipeCount++;
-      if (!(MEM.data.settings.snipeAlerts ?? true)) continue;
-      const lastFired = MEM.poll.lastAlertedAt[item.itemId] ?? 0;
-      if (isSnipe && Date.now() - lastFired > ALERT_COOLDOWN_MS) {
-        fireSnipeAlert(item);
-        MEM.poll.lastAlertedAt[item.itemId] = Date.now();
-      }
-    }
-    const fabBadge = document.getElementById('st-fab-badge');
-    if (fabBadge) {
-      if (snipeCount > 0) {
-        fab.classList.add('st-fab-alert');
-        fabBadge.textContent = snipeCount;
-        fabBadge.style.display = '';
-      } else {
-        fab.classList.remove('st-fab-alert');
-        fabBadge.style.display = 'none';
-      }
-    }
-    updateApiCounter();
-  }
-
   // ─── API ──────────────────────────────────────────────────────────────────
 
   function gmFetch(url) {
-    if (url.includes('api.torn.com')) MEM.poll.apiCallLog.push(Date.now());
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method:  'GET',
@@ -1747,888 +1124,6 @@
     panel.querySelector('#st-storage-warn-dismiss').addEventListener('click', () => warn.remove());
   }
 
-  // ─── Trend calculation ────────────────────────────────────────────────────
-
-  function calculateTrend(itemId) {
-    const TREND_BAND_PCT    = 0.005;           // 0.5% of current price per hour; tune here
-    const MIN_TIMESPAN_MS   = 2 * 60 * 60 * 1000; // 2 hour minimum span; tune here
-
-    const snaps = MEM.data.snapshots[itemId] ?? [];
-    if (snaps.length < 6) {
-      return { trend: 'insufficient', slopePerHour: null, dataPoints: snaps.length, oldestSnapshot: null, newestSnapshot: null };
-    }
-
-    // Use stored fair value (P50 by volume) per snapshot; fall back to raw median
-    // for legacy snapshots that pre-date the fairValue field.
-    const points = snaps
-      .map(s => {
-        if (s.fairValue != null) return { t: s.timestamp, price: s.fairValue };
-        const prices = (s.listings ?? []).map(l => l.price).filter(p => p > 0);
-        if (!prices.length) return null;
-        const sorted = [...prices].sort((a, b) => a - b);
-        const mid    = Math.floor(sorted.length / 2);
-        return { t: s.timestamp, price: sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2) };
-      })
-      .filter(Boolean);
-
-    if (points.length < 6) {
-      return { trend: 'insufficient', slopePerHour: null, dataPoints: points.length, oldestSnapshot: snaps[0].timestamp, newestSnapshot: snaps[snaps.length - 1].timestamp };
-    }
-
-    const oldestSnapshot = points[0].t;
-    const newestSnapshot = points[points.length - 1].t;
-    const n              = points.length;
-
-    if (newestSnapshot - oldestSnapshot < MIN_TIMESPAN_MS) {
-      return { trend: 'insufficient', slopePerHour: null, dataPoints: n, oldestSnapshot, newestSnapshot };
-    }
-
-    // Timestamps in hours relative to oldest point (numerical stability)
-    const xs = points.map(p => (p.t - oldestSnapshot) / 3600000);
-    const ys = points.map(p => p.price);
-
-    const sumX  = xs.reduce((a, v) => a + v, 0);
-    const sumY  = ys.reduce((a, v) => a + v, 0);
-    const sumXY = xs.reduce((a, v, i) => a + v * ys[i], 0);
-    const sumX2 = xs.reduce((a, v) => a + v * v, 0);
-
-    const denom       = n * sumX2 - sumX * sumX;
-    const slopePerHour = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
-
-    // Band threshold relative to most recent observed price
-    const currentPrice = ys[ys.length - 1];
-    const band = TREND_BAND_PCT * currentPrice;
-
-    let trend;
-    if (slopePerHour > band)       trend = 'rising';
-    else if (slopePerHour < -band) trend = 'falling';
-    else                           trend = 'flat';
-
-    return { trend, slopePerHour, dataPoints: n, oldestSnapshot, newestSnapshot };
-  }
-
-  async function fetchItemPrice(item) {
-    const key       = getApiKey();
-    const weav3rUrl = `https://weav3r.dev/api/marketplace/${item.itemId}`;
-    const tornUrl   = `https://api.torn.com/v2/market/${item.itemId}/itemmarket?key=${key}`;
-
-    let bazaarListings  = [];
-    let itemMktListings = [];
-
-    try {
-      const text = await gmFetch(weav3rUrl);
-      const d    = JSON.parse(text);
-      if (d.error) throw new Error(d.error);
-      bazaarListings = (d.listings ?? []).map(l => ({ price: l.price, quantity: l.quantity, source: 'bazaar' }));
-    } catch (err) {
-      console.error(`[SnipeTracker] weav3r fetch failed for itemId ${item.itemId}:`, err.message);
-    }
-
-    try {
-      const text = await gmFetch(tornUrl);
-      const d    = JSON.parse(text);
-      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      itemMktListings = (d.itemmarket?.listings ?? []).map(l => ({ price: l.price, quantity: l.amount, source: 'itemmarket' }));
-    } catch (err) {
-      console.error(`[SnipeTracker] torn fetch failed for itemId ${item.itemId}:`, err.message);
-    }
-
-    const merged = [...bazaarListings, ...itemMktListings].sort((a, b) => a.price - b.price);
-    console.log(`[SnipeTracker] merged listings itemId=${item.itemId}:`, JSON.stringify(merged));
-
-    if (!merged.length) {
-      MEM.poll.pollResults[item.itemId] = { error: true, errorMsg: 'no listings found', updatedAt: Date.now() };
-      return;
-    }
-
-    // Capture snapshots before this cycle so computePollResult sees historical-only data
-    const snapshotsBefore = MEM.data.snapshots[item.itemId] ?? [];
-
-    // Push new snapshot first so calculateTrend sees this cycle's price (original ordering)
-    const { p50: cycleP50 } = computeFairValue(bazaarListings.slice(0, 20));
-    if (!MEM.data.snapshots[item.itemId]) MEM.data.snapshots[item.itemId] = [];
-    MEM.data.snapshots[item.itemId].push({ timestamp: Date.now(), fairValue: cycleP50, lowestBazaar: bazaarListings[0]?.price ?? null, lowestMarket: itemMktListings[0]?.price ?? null, lowestListed: merged[0]?.price ?? null });
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].filter(s => s.timestamp >= cutoff);
-    if (MEM.data.snapshots[item.itemId].length > 500) MEM.data.snapshots[item.itemId] = MEM.data.snapshots[item.itemId].slice(-500);
-    try {
-      localStorage.setItem(KEYS.snapshots, JSON.stringify(MEM.data.snapshots));
-    } catch (e) {
-      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22)) {
-        console.warn(`[SnipeTracker] QuotaExceededError: snapshot for itemId ${item.itemId} not saved this cycle.`);
-        showStorageWarning();
-      }
-    }
-
-    MEM.data.trendCache[item.itemId] = { ...calculateTrend(item.itemId), calculatedAt: Date.now() };
-    Store.set(KEYS.trendcache, MEM.data.trendCache);
-
-    const trend = MEM.data.trendCache[item.itemId].trend;
-    MEM.poll.pollResults[item.itemId] = {
-      ...computePollResult(bazaarListings, itemMktListings, item, MEM.poll.availableCapital, snapshotsBefore, trend),
-      updatedAt: Date.now(),
-    };
-  }
-
-  // ─── Poll loop ────────────────────────────────────────────────────────────
-
-  let pollTimer  = null;
-  let _ioMutObs  = null;
-
-  async function runPoll() {
-    const scanLine = PAGE_MODE === 'market' ? panel.querySelector('.st-scan-line') : null;
-    if (!getApiKey()) {
-      console.warn('[SnipeTracker] No API key available — enter one in Settings.');
-      if (scanLine) scanLine.textContent = 'Error: no API key — paste one in Settings below';
-      if (PAGE_MODE === 'market') renderWatchlist();
-      return;
-    }
-    for (const item of MEM.data.watchlist) {
-      if (!(item.itemId > 0) || item.enabled === false) continue;
-      await fetchItemPrice(item);
-    }
-    checkSnipeAlerts();
-    if (PAGE_MODE === 'market') { renderWatchlist(); }
-    if (scanLine) scanLine.textContent = `Last scan: ${new Date().toLocaleTimeString()}`;
-    Store.set(KEYS.lastPollTime, Date.now());
-  }
-
-  function startPollLoop() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(runPoll, MEM.data.settings.interval * 1000);
-    window.__stPollTimer = pollTimer;
-  }
-
-  function schedulePoll() {
-    const elapsed    = Date.now() - (Store.get(KEYS.lastPollTime) ?? 0);
-    const intervalMs = MEM.data.settings.interval * 1000;
-    const delay      = Math.max(0, intervalMs - elapsed);
-    if (delay === 0) {
-      runPoll();
-      startPollLoop();
-    } else {
-      setTimeout(() => { runPoll(); startPollLoop(); }, delay);
-    }
-  }
-
-  // ─── Watchlist render ──────────────────────────────────────────────────────
-
-  function renderTrendCell(itemId) {
-    const cache     = MEM.data.trendCache[itemId];
-    const snapCount = (MEM.data.snapshots[itemId] ?? []).length;
-    const ageText   = cache ? 'updated ' + fmtAgo(cache.calculatedAt) : 'pending';
-    const ageLine   = `<br><span class="st-trend-age">${ageText}</span>`;
-
-    let signal;
-    if (!cache || cache.trend === 'insufficient') {
-      signal = `<span class="st-trend-dim">… building history · ${snapCount} snapshot${snapCount === 1 ? '' : 's'}</span>`;
-    } else {
-      const { trend, slopePerHour } = cache;
-      if (trend === 'rising') {
-        const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
-        signal = `<span class="st-trend-rising">▲ Rising <span style="font-size:11px">${s}</span></span>`;
-      } else if (trend === 'falling') {
-        const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
-        signal = `<span class="st-trend-falling">▼ Falling <span style="font-size:11px">${s}</span></span>`;
-      } else {
-        signal = `<span class="st-trend-flat">→ stable</span>`;
-      }
-    }
-    return signal + ageLine + renderSparkline(itemId);
-  }
-
-  function renderSparkline(itemId) {
-    const snaps = MEM.data.snapshots[itemId] ?? [];
-    const prices = snaps
-      .map(s => {
-        if (s.fairValue != null) return s.fairValue;
-        const p = (s.listings ?? []).map(l => l.price).filter(v => v > 0);
-        return p.length ? Math.min(...p) : null;
-      })
-      .filter(v => v !== null);
-
-    if (prices.length < 2) return '';
-
-    const W = 80, H = 24;
-    const min   = Math.min(...prices);
-    const max   = Math.max(...prices);
-    const range = max - min || 1;
-    const n     = prices.length;
-
-    const cache = MEM.data.trendCache[itemId];
-    const trend = cache?.trend;
-    const color = trend === 'rising'  ? '#00ff88'
-                : trend === 'falling' ? '#ff4444'
-                : '#3a5060';
-
-    const pts = prices.map((p, i) => {
-      const x = (i / (n - 1)) * W;
-      const y = (H - 2) - ((p - min) / range) * (H - 4);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-
-    return `<svg width="${W}" height="${H}" style="display:block;margin-top:3px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
-  }
-
-  function renderCapitalBar() {
-    const bar = panel.querySelector('#st-capital-bar');
-    if (!bar) return;
-    const available = MEM.poll.availableCapital ?? 0;
-    if (!available) {
-      bar.innerHTML = '<div style="font-size:11px;color:#3a5060;text-align:center;padding:4px 0">Vault balance not yet loaded — check API key in settings</div>';
-      return;
-    }
-
-    let committed = 0;
-    for (const item of MEM.data.watchlist) {
-      if (item.enabled === false) continue;
-      const res = MEM.poll.pollResults[item.itemId];
-      if (!res || res.error) continue;
-      const { lowestMarketListed, lowestMarketListedQty } = res;
-      if (lowestMarketListed != null && lowestMarketListedQty > 0) {
-        const sellTarget = item.manualSellTarget ?? res.recommendedSellTarget ?? null;
-        const threshold  = item.threshold ?? MEM.data.settings.threshold ?? 10;
-        const qualifies  = sellTarget != null
-          ? (sellTarget - lowestMarketListed) / lowestMarketListed >= threshold / 100
-          : (res.fairValue != null && lowestMarketListed < res.fairValue * (1 - threshold / 100));
-        if (qualifies) committed += lowestMarketListed * lowestMarketListedQty;
-      }
-    }
-
-    const remaining   = available - committed;
-    const utilPct     = (committed / available * 100).toFixed(1);
-    const remColor    = remaining >= 0 ? '#00ff88' : '#ff4444';
-    const fmt         = n => '$' + Math.round(n).toLocaleString();
-
-    bar.innerHTML = `
-      <div style="background:#0a1220;border:1px solid #1a2a3a;border-radius:6px;padding:8px 12px">
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Capital</div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap">
-          <div class="st-summary-item">
-            <span class="st-summary-label">Available</span>
-            <span class="st-summary-value" style="font-size:13px">${fmt(available)}</span>
-          </div>
-          <div class="st-summary-item">
-            <span class="st-summary-label">Committed</span>
-            <span class="st-summary-value" style="font-size:13px">${fmt(committed)}</span>
-          </div>
-          <div class="st-summary-item">
-            <span class="st-summary-label">Remaining</span>
-            <span class="st-summary-value" style="font-size:13px;color:${remColor}">${fmt(remaining)}</span>
-          </div>
-          <div class="st-summary-item">
-            <span class="st-summary-label">Utilization</span>
-            <span class="st-summary-value" style="font-size:13px">${utilPct}%</span>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  function renderFloodPlay(item, res) {
-    const flood = res?.marketFlood;
-    const fv    = res?.fairValue;
-    if (!flood || !fv) return '';
-
-    // Units listed between flood price and fair value — must sell before you can hit FV.
-    const competingUnits = (res.listings ?? [])
-      .filter(l => l.price > flood.price && l.price < fv)
-      .reduce((s, l) => s + l.quantity, 0);
-
-    const discount = ((fv - flood.price) / fv * 100);
-    const roi      = ((fv - flood.price) / flood.price * 100);
-    const fmt      = n => '$' + Math.round(n).toLocaleString();
-    const compColor = competingUnits > 1000 ? '#ff4444' : competingUnits > 200 ? '#ff9944' : '#00ff88';
-
-    const stats = [
-      { label: 'Flood Price',     value: fmt(flood.price),                style: 'color:#ff9944' },
-      { label: 'Flood Qty',       value: flood.quantity.toLocaleString(), style: '' },
-      { label: 'Discount',        value: discount.toFixed(1) + '%',       style: 'color:#ff9944' },
-      { label: 'Max ROI',         value: roi.toFixed(1) + '%',            style: 'color:#ff9944' },
-      { label: 'Competing Units', value: competingUnits.toLocaleString(), style: `color:${compColor}` },
-    ];
-
-    const statsHtml = stats.map(s => `
-      <div class="st-summary-item">
-        <span class="st-summary-label">${s.label}</span>
-        <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
-      </div>`).join('');
-
-    return `<div class="st-card-proj" style="background:rgba(255,153,68,0.06)">
-      <div style="padding:8px 12px">
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#ff9944;margin-bottom:6px">Flood Play</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
-      </div>
-    </div>`;
-  }
-
-  function roiTier(roi) {
-    if (roi < 0)  return { bg: 'rgba(255,60,60,0.10)',   color: '#ff4444', label: '' };
-    if (roi < 3)  return { bg: '',                        color: '#c0d0c8', label: '' };
-    if (roi < 8)  return { bg: 'rgba(0,255,136,0.06)',   color: '#00ff88', label: '' };
-    if (roi < 15) return { bg: 'rgba(0,255,136,0.12)',   color: '#00ff88', label: '' };
-    return        { bg: 'rgba(0,255,136,0.20)',           color: '#00ff88', label: 'STRONG' };
-  }
-
-  function renderProjection(item, res) {
-    const snipePrice = res?.lowestMarketListed;
-    const snipeQty   = res?.lowestMarketListedQty;
-    if (snipePrice == null || !(snipeQty > 0)) return '';
-
-    const sellTarget  = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
-    if (sellTarget == null) return '';
-
-    const totalCost   = snipePrice * snipeQty;
-    const grossRev    = sellTarget * snipeQty;
-    const grossProfit = grossRev - totalCost;
-    const roi         = (grossProfit / totalCost) * 100;
-    const fmt         = n => '$' + Math.round(n).toLocaleString();
-    const tier        = roiTier(roi);
-
-    const roiLabel = tier.label
-      ? `${roi.toFixed(1)}% <span style="font-size:11px;color:#00ff88;text-shadow:0 0 8px rgba(0,255,136,0.6);letter-spacing:0.06em">${tier.label}</span>`
-      : roi.toFixed(1) + '%';
-
-    const stats = [
-      { label: 'Snipe Price',   value: fmt(snipePrice),           style: '' },
-      { label: 'Snipe Qty',     value: snipeQty.toLocaleString(), style: '' },
-      { label: 'Total Cost',    value: fmt(totalCost),            style: '' },
-      { label: 'Sell Target',   value: fmt(sellTarget),           style: '' },
-      { label: 'Gross Revenue', value: fmt(grossRev),             style: '' },
-      { label: 'Gross Profit',  value: fmt(grossProfit),          style: `color:${tier.color}` },
-      { label: 'ROI %',         value: roiLabel,                  style: `color:${tier.color}` },
-    ];
-
-    const statsHtml = stats.map(s => `
-      <div class="st-summary-item">
-        <span class="st-summary-label">${s.label}</span>
-        <span class="st-summary-value" style="font-size:13px;${s.style}">${s.value}</span>
-      </div>`).join('');
-
-    let mugHtml = '';
-    if (grossRev >= MUG_THRESHOLD) {
-      const mug = calcMugScenario(sellTarget, snipeQty, snipePrice, 15);
-      const mugColor = mug.isLoss ? '#ff4444' : '#00ff88';
-      const mugLabel = mug.isLoss ? '⚠ If mugged (15%): loss' : '✓ If mugged (15%): net';
-      mugHtml = `<div style="margin-top:6px;padding:4px 0;border-top:1px solid rgba(255,255,255,0.06);font-size:11px;color:${mugColor}">
-        ${mugLabel} <strong>${fmt(mug.muggedNet)}</strong>
-      </div>`;
-    }
-
-    return `<div class="st-card-proj" style="${tier.bg ? 'background:' + tier.bg : ''}">
-      <div style="padding:8px 12px">
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8aa0b0;margin-bottom:6px">Snipe Projection</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">${statsHtml}</div>
-        ${mugHtml}
-      </div>
-    </div>`;
-  }
-
-  function renderOrderBook(item, res) {
-    const TH = `style="text-align:left;color:#00ccff;font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid #1a2a3a"`;
-    const listings = (res?.listings ?? []).filter(l => l.source !== 'bazaar' && Number.isFinite(l.price) && Number.isFinite(l.quantity));
-    if (!listings.length) {
-      return `<div class="st-card-book-content"><div style="padding:10px 12px;font-size:12px;color:#3a5060">scan required</div></div>`;
-    }
-
-    const byPrice = new Map();
-    for (const l of listings) byPrice.set(l.price, (byPrice.get(l.price) ?? 0) + l.quantity);
-    let cumQty = 0;
-    const tiers = [...byPrice.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([price, qty]) => { cumQty += qty; return { price, qty, cumQty }; });
-
-    const effectiveTarget = item.manualSellTarget ?? res?.recommendedSellTarget ?? null;
-    const unitsAhead = effectiveTarget != null
-      ? tiers.filter(t => t.price < effectiveTarget).reduce((s, t) => s + t.qty, 0)
-      : null;
-
-    const bookRows = tiers.map(t => {
-      const isPos    = effectiveTarget != null && t.price === effectiveTarget;
-      const rowStyle = isPos ? 'background:rgba(0,204,255,0.07);' : '';
-      const posNote  = isPos ? ' <span style="font-size:10px;color:#00ccff;opacity:0.6">← your position</span>' : '';
-      return `<tr class="st-book-row-buy" data-itemid="${item.itemId}" data-price="${t.price}" style="${rowStyle}" title="Click to log a buy at $${t.price.toLocaleString()}">
-        <td style="padding:3px 8px;font-size:12px;color:#c0d0c8">$${t.price.toLocaleString()}${posNote}</td>
-        <td style="padding:3px 8px;font-size:12px;color:#8aa898">${t.qty.toLocaleString()}</td>
-        <td style="padding:3px 8px;font-size:12px;color:#6a8070">${t.cumQty.toLocaleString()}</td>
-      </tr>`;
-    }).join('');
-
-    const aheadNote = unitsAhead != null && unitsAhead > 0
-      ? `<div style="font-size:11px;color:#3a5060;padding:4px 8px 6px">${unitsAhead.toLocaleString()} units listed cheaper</div>`
-      : '';
-
-    return `<div class="st-card-book-content">
-      <div style="max-height:180px;overflow-y:auto">
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr><th ${TH}>Price</th><th ${TH}>Qty</th><th ${TH}>Cum. Qty</th></tr></thead>
-          <tbody>${bookRows}</tbody>
-        </table>
-      </div>
-      ${aheadNote}
-    </div>`;
-  }
-
-  function computeCardScore(item, res) {
-    if (!res || res.error) return -Infinity;
-    const { fairValue, lowestMarketListed, lowestMarketListedQty, recommendedSellTarget } = res;
-    if (fairValue == null || lowestMarketListed == null) return -Infinity;
-    if (lowestMarketListed >= fairValue * (1 - item.threshold / 100)) return -Infinity;
-    const sellTarget = item.manualSellTarget ?? recommendedSellTarget;
-    if (!sellTarget || sellTarget <= lowestMarketListed) return -Infinity;
-    const qty = lowestMarketListedQty ?? 1;
-    const grossProfit = (sellTarget - lowestMarketListed) * qty;
-    const roi = (sellTarget - lowestMarketListed) / lowestMarketListed * 100;
-    return calcWeightedScore(grossProfit, roi, 2);
-  }
-
-  function renderWatchlist() {
-    const container = panel.querySelector('#st-watchlist-cards');
-    if (MEM.data.watchlist.length === 0) {
-      container.innerHTML = '<div style="text-align:center;color:#8aa898;padding:16px 8px">No items — click + Add Item to start</div>';
-      renderCapitalBar();
-      return;
-    }
-
-    const _sorted = MEM.data.watchlist
-      .map((item, i) => ({ item, i }))
-      .sort((a, b) => {
-        const ra = MEM.poll.pollResults[a.item.itemId];
-        const rb = MEM.poll.pollResults[b.item.itemId];
-        const sa = computeCardScore(a.item, ra);
-        const sb = computeCardScore(b.item, rb);
-        const aSnipe = isFinite(sa);
-        const bSnipe = isFinite(sb);
-        if (aSnipe !== bSnipe) return bSnipe ? 1 : -1;
-        if (aSnipe && bSnipe) return sb - sa;
-        const fa = calcSnipeFrequency(MEM.data.snapshots[a.item.itemId] ?? [], a.item.threshold, FREQ_WINDOW);
-        const fb = calcSnipeFrequency(MEM.data.snapshots[b.item.itemId] ?? [], b.item.threshold, FREQ_WINDOW);
-        return fb - fa;
-      });
-    container.innerHTML = _sorted.map(({ item, i }) => {
-      const res     = MEM.poll.pollResults[item.itemId];
-      const enabled = item.enabled !== false;
-      let fairValStr, lowestStr, gapStr, statusHtml, snipe = false, isFlood = false;
-
-      if (!res) {
-        fairValStr = '—'; lowestStr = '—'; gapStr = '—';
-        statusHtml = '<span class="st-status-watch">watch</span>';
-      } else if (res.error) {
-        fairValStr = '—'; lowestStr = '—'; gapStr = '—';
-        statusHtml = '<span class="st-status-error">API error</span>';
-      } else {
-        const fv  = res.fairValue;
-        const low = res.lowestMarketListed;
-        const outlierNote = res.outlierExcluded
-          ? '<br><span style="font-size:10px;color:#3a5060">⚠ outlier excl.</span>'
-          : '';
-        const histLine = res.historicalMedian != null
-          ? `<br><span style="font-size:9px;color:#3a5060">7d: $${res.historicalLow.toLocaleString()}–$${res.historicalHigh.toLocaleString()}</span>`
-          : '';
-        fairValStr = fv  != null ? '$' + fv.toLocaleString() + outlierNote + histLine : '—';
-        lowestStr  = low != null ? '$' + low.toLocaleString() : '—';
-        if (fv != null && low != null) {
-          const gap = (fv - low) / fv * 100;
-          snipe   = low < fv * (1 - item.threshold / 100);
-          isFlood = !snipe && res.isFloodPlay === true;
-          gapStr  = gap.toFixed(1) + '%';
-          statusHtml = snipe
-            ? '<span class="st-status-snipe">SNIPE</span>'
-            : isFlood
-            ? '<span class="st-status-flood">FLOOD</span>'
-            : '<span class="st-status-watch">watch</span>';
-        } else {
-          gapStr     = '—';
-          statusHtml = '<span class="st-status-watch">watch</span>';
-        }
-      }
-
-      // Row 1: trend signal only (no sparkline/age — those go in Row 6)
-      const cache = MEM.data.trendCache[item.itemId];
-      let trendSignal;
-      if (!cache || cache.trend === 'insufficient') {
-        trendSignal = '<span class="st-trend-dim">…</span>';
-      } else {
-        const { trend, slopePerHour } = cache;
-        if (trend === 'rising') {
-          const s = '+$' + Math.round(slopePerHour).toLocaleString() + '/hr';
-          trendSignal = `<span class="st-trend-rising">▲ <span style="font-size:10px">${s}</span></span>`;
-        } else if (trend === 'falling') {
-          const s = '-$' + Math.abs(Math.round(slopePerHour)).toLocaleString() + '/hr';
-          trendSignal = `<span class="st-trend-falling">▼ <span style="font-size:10px">${s}</span></span>`;
-        } else {
-          trendSignal = '<span class="st-trend-flat">→ stable</span>';
-        }
-      }
-
-      // Row 2: threshold annotation under fair value label
-      const fvForAnnot    = (res && !res.error) ? res.fairValue : null;
-      const snipePriceAnnot = fvForAnnot != null
-        ? ' ≤ $' + Math.round(fvForAnnot * (1 - item.threshold / 100)).toLocaleString()
-        : '';
-
-      // Row 3: sell target + ROI
-      const recTarget  = res?.recommendedSellTarget ?? null;
-      const manTarget  = item.manualSellTarget ?? null;
-      const isManual   = manTarget != null;
-      const showTarget = isManual ? manTarget : recTarget;
-      const targetColor  = isManual ? '#00ccff' : '#c0d0c8';
-      const targetBorder = isManual ? 'border-color:#004466;' : '';
-      const clearBtnHtml = isManual
-        ? `<button class="st-sell-target-clear" data-idx="${i}" title="Clear manual override" style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s" onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>`
-        : '';
-      const floodNote = (!isManual && res?.marketFlood != null)
-        ? `<div style="font-size:9px;color:#ff9944;margin-top:2px">⚠ flood ${res.marketFlood.quantity.toLocaleString()} @ $${res.marketFlood.price.toLocaleString()}</div>`
-        : '';
-
-      const snipePrice = res?.lowestMarketListed ?? null;
-      const roiVal     = (showTarget != null && snipePrice != null && snipePrice > 0)
-        ? ((showTarget - snipePrice) / snipePrice * 100)
-        : null;
-      const tier       = roiVal != null ? roiTier(roiVal) : null;
-      const roiStr     = roiVal != null ? roiVal.toFixed(1) + '%' : '—';
-      const tierStr    = tier?.label || '—';
-      const tierColor  = tier?.color ?? '#c0d0c8';
-
-      // Row 4: order book
-      const isExpanded  = !!MEM.ui.bookExpanded[item.itemId];
-      const expandIcon  = isExpanded ? '▼' : '▶';
-
-      // Card collapse — default true (collapsed) unless explicitly expanded
-      const isCollapsed  = !MEM.ui.cardCollapsed[item.itemId];
-      const collapseIcon = isCollapsed ? '▶' : '▼';
-
-      // Row 6: snapshot info
-      const snaps = MEM.data.snapshots[item.itemId] ?? [];
-      const snipeFreq = calcSnipeFrequency(snaps, item.threshold, FREQ_WINDOW);
-      const snapLabel = snaps.length === 0
-        ? 'no history yet'
-        : `${snaps.length} snapshot${snaps.length === 1 ? '' : 's'} · oldest ${fmtAgo(snaps[0].timestamp)}`;
-
-      return `
-        <div class="st-card${enabled ? '' : ' st-card-disabled'}">
-
-          <!-- Row 1: checkbox | name | trend | status | remove -->
-          <div class="st-card-r1">
-            <input type="checkbox" class="st-toggle-chk" data-idx="${i}" ${enabled ? 'checked' : ''}
-                   style="cursor:pointer;accent-color:#00ff88;width:14px;height:14px;flex-shrink:0">
-            <a class="st-card-name" href="https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${item.itemId}" target="_blank" rel="noopener">${item.name}</a>
-            <span class="st-card-trend-badge">${trendSignal}</span>
-            <span>${statusHtml}</span>
-            ${isCollapsed && roiVal != null ? `<span style="font-size:11px;color:${tierColor};padding:0 4px">${roiStr}</span>` : ''}
-            ${snipeFreq > 0 ? `<span style="font-size:10px;color:#4a8070;padding:0 3px">${snipeFreq}×/2d</span>` : ''}
-            <button class="st-card-collapse-btn" data-itemid="${item.itemId}"
-                    title="${isCollapsed ? 'Expand card' : 'Collapse card'}"
-                    style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:10px;padding:2px 4px;flex-shrink:0">
-              ${collapseIcon}
-            </button>
-            <button class="st-rm-btn" data-idx="${i}" title="Remove item"
-                    style="background:none;border:none;color:#4a6070;cursor:pointer;font-size:12px;padding:2px 4px;flex-shrink:0;transition:color 0.15s"
-                    onmouseover="this.style.color='#ff4444'" onmouseout="this.style.color='#4a6070'">✕</button>
-          </div>
-          ${!isCollapsed ? `
-
-          <!-- Row 2: fair value | lowest price | gap % -->
-          <div class="st-card-r2">
-            <div class="st-card-col">
-              <span class="st-card-lbl">Fair Value (${item.threshold}%${snipePriceAnnot})</span>
-              <span class="st-card-val">${fairValStr}</span>
-            </div>
-            <div class="st-card-col">
-              <span class="st-card-lbl">Lowest Price</span>
-              <span class="st-card-val">${lowestStr}</span>
-            </div>
-            <div class="st-card-col">
-              <span class="st-card-lbl">Gap %</span>
-              <span class="st-card-val">${gapStr}</span>
-            </div>
-          </div>
-
-          <!-- Row 3: sell target | ROI | tier -->
-          <div class="st-card-r3">
-            <div class="st-card-col">
-              <span class="st-card-lbl">Sell Target</span>
-              <div style="display:flex;align-items:center;gap:3px">
-                <input class="st-sell-target-input st-input" type="number" min="1" data-idx="${i}"
-                       ${showTarget != null ? `value="${showTarget}"` : 'placeholder="—"'}
-                       style="width:78px;font-size:12px;padding:3px 6px;color:${targetColor};${targetBorder}">
-                ${clearBtnHtml}
-              </div>
-              ${floodNote}
-            </div>
-            <div class="st-card-col">
-              <span class="st-card-lbl">ROI</span>
-              <span class="st-card-val" style="color:${tierColor}">${roiStr}</span>
-            </div>
-            <div class="st-card-col">
-              <span class="st-card-lbl">Tier</span>
-              <span class="st-card-val" style="color:${tierColor}">${tierStr}</span>
-            </div>
-          </div>
-
-          <!-- Row 4: order book toggle + content -->
-          <button class="st-card-book-toggle st-book-expand-btn" data-itemid="${item.itemId}">
-            ${expandIcon} Order Book
-          </button>
-          ${isExpanded ? renderOrderBook(item, res) : ''}
-
-          <!-- Row 5: snipe projection or flood play panel -->
-          ${snipe ? renderProjection(item, res) : isFlood ? renderFloodPlay(item, res) : ''}
-          ${(snipe || isFlood) ? `<div class="st-card-log-buy"><button class="st-log-buy-btn st-btn" data-idx="${i}" style="font-size:11px;padding:3px 8px">Log Buy</button></div>` : ''}
-
-          <!-- Row 6: snapshot count + sparkline -->
-          <div class="st-card-r6">
-            <span class="st-card-snap-info">${snapLabel}</span>
-            ${renderSparkline(item.itemId)}
-          </div>
-          ` : ''}
-
-        </div>
-      `;
-    }).join('');
-
-    container.querySelectorAll('.st-rm-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        MEM.data.watchlist.splice(parseInt(btn.dataset.idx, 10), 1);
-        Store.set(KEYS.watchlist, MEM.data.watchlist);
-        renderWatchlist();
-      });
-    });
-    container.querySelectorAll('.st-log-buy-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        MEM.ui.logBuyIdx = parseInt(btn.dataset.idx, 10);
-        const item = MEM.data.watchlist[MEM.ui.logBuyIdx];
-        buyItemName.textContent  = item.name;
-        buyPriceInput.value      = MEM.poll.pollResults[item.itemId]?.lowestListed ?? '';
-        buyQtyInput.value        = '';
-        buyForm.style.display    = 'block';
-        buyQtyInput.focus();
-      });
-    });
-    container.querySelectorAll('.st-toggle-chk').forEach(chk => {
-      chk.addEventListener('change', () => {
-        const idx = parseInt(chk.dataset.idx, 10);
-        MEM.data.watchlist[idx].enabled = chk.checked;
-        Store.set(KEYS.watchlist, MEM.data.watchlist);
-        renderWatchlist();
-      });
-    });
-    container.querySelectorAll('.st-sell-target-input').forEach(input => {
-      input.addEventListener('change', () => {
-        const idx = parseInt(input.dataset.idx, 10);
-        const val = parseInt(input.value, 10);
-        if (val > 0) {
-          MEM.data.watchlist[idx].manualSellTarget = val;
-          Store.set(KEYS.watchlist, MEM.data.watchlist);
-          renderWatchlist();
-        }
-      });
-    });
-    container.querySelectorAll('.st-sell-target-clear').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        delete MEM.data.watchlist[idx].manualSellTarget;
-        Store.set(KEYS.watchlist, MEM.data.watchlist);
-        renderWatchlist();
-      });
-    });
-    container.querySelectorAll('.st-card-collapse-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const itemId = parseInt(btn.dataset.itemid, 10);
-        MEM.ui.cardCollapsed[itemId] = !MEM.ui.cardCollapsed[itemId];
-        renderWatchlist();
-      });
-    });
-    container.querySelectorAll('.st-book-expand-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const itemId = parseInt(btn.dataset.itemid, 10);
-        MEM.ui.bookExpanded[itemId] = !MEM.ui.bookExpanded[itemId];
-        renderWatchlist();
-      });
-    });
-    container.querySelectorAll('.st-book-row-buy').forEach(row => {
-      row.addEventListener('click', () => {
-        const itemId = parseInt(row.dataset.itemid, 10);
-        const price  = parseInt(row.dataset.price, 10);
-        const idx    = MEM.data.watchlist.findIndex(w => w.itemId === itemId);
-        if (idx === -1) return;
-        MEM.ui.logBuyIdx           = idx;
-        buyItemName.textContent = MEM.data.watchlist[idx].name;
-        buyPriceInput.value     = price;
-        buyQtyInput.value       = '';
-        buyForm.style.display   = 'block';
-        buyQtyInput.focus();
-      });
-    });
-    renderCapitalBar();
-  }
-
-
-  // ─── Add Item form ─────────────────────────────────────────────────────────
-
-  const addItemBtn    = panel.querySelector('#st-add-item-btn');
-  const addForm       = panel.querySelector('#st-add-form');
-  const addSearch     = panel.querySelector('#st-add-search');
-  const addDropdown   = panel.querySelector('#st-add-dropdown');
-  const addThresh     = panel.querySelector('#st-add-threshold');
-  const addConfirmBtn = panel.querySelector('#st-add-confirm-btn');
-  const addCancelBtn  = panel.querySelector('#st-add-cancel-btn');
-  const addError      = panel.querySelector('#st-add-error');
-
-  let addSelectedItem = null;  // { itemId, name } populated by dropdown click
-  let itemLookupCache = null;  // full item list cached after first fetch
-  let searchDebounceT = null;
-
-  function showAddError(msg) {
-    addError.textContent    = msg;
-    addError.style.display  = 'block';
-  }
-
-  function hideAddForm() {
-    addForm.style.display     = 'none';
-    addSearch.value           = '';
-    addDropdown.style.display = 'none';
-    addDropdown.innerHTML     = '';
-    addError.style.display    = 'none';
-    addError.textContent      = '';
-    addSelectedItem           = null;
-  }
-
-  function renderDropdown(items) {
-    if (!items.length) {
-      addDropdown.innerHTML = '<div class="st-dd-empty">No matches</div>';
-    } else {
-      addDropdown.innerHTML = items.slice(0, 8).map(it =>
-        `<div class="st-dd-item" data-id="${it.itemId}" data-name="${it.name.replace(/"/g, '&quot;')}">${it.name}</div>`
-      ).join('');
-      addDropdown.querySelectorAll('.st-dd-item').forEach(el => {
-        el.addEventListener('click', () => {
-          addSelectedItem       = { itemId: parseInt(el.dataset.id, 10), name: el.dataset.name };
-          addSearch.value       = el.dataset.name;
-          addDropdown.style.display = 'none';
-        });
-      });
-    }
-    addDropdown.style.display = 'block';
-  }
-
-  async function fetchItemLookup() {
-    if (itemLookupCache) return itemLookupCache;
-    try {
-      const text = await gmFetch(`https://api.torn.com/torn/?selections=items&key=${getApiKey()}`);
-      const d    = JSON.parse(text);
-      console.log('[SnipeTracker] fetchItemLookup raw response:', d);
-      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      const raw = d.items ?? {};
-      itemLookupCache = Object.entries(raw)
-        .map(([id, v]) => ({ itemId: parseInt(id, 10), name: v.name }))
-        .filter(it => it.itemId && it.name);
-      return itemLookupCache;
-    } catch (err) {
-      console.error('[SnipeTracker] fetchItemLookup failed:', err.message);
-      return [];
-    }
-  }
-
-  addSearch.addEventListener('input', () => {
-    clearTimeout(searchDebounceT);
-    addSelectedItem        = null;
-    addError.style.display = 'none';
-    const q = addSearch.value.trim();
-    if (!q) {
-      addDropdown.style.display = 'none';
-      addDropdown.innerHTML     = '';
-      return;
-    }
-    searchDebounceT = setTimeout(async () => {
-      const all    = await fetchItemLookup();
-      const ql     = q.toLowerCase();
-      const matches = all.filter(it => it.name.toLowerCase().includes(ql));
-      renderDropdown(matches);
-    }, 400);
-  });
-
-  document.addEventListener('click', e => {
-    if (!addForm.contains(e.target)) addDropdown.style.display = 'none';
-  });
-
-  addItemBtn.addEventListener('click', () => {
-    const opening = addForm.style.display === 'none';
-    if (opening) {
-      addThresh.value       = MEM.data.settings.threshold;
-      addForm.style.display = 'block';
-      addSearch.focus();
-    } else {
-      hideAddForm();
-    }
-  });
-
-  addCancelBtn.addEventListener('click', hideAddForm);
-
-  addConfirmBtn.addEventListener('click', () => {
-    addError.style.display = 'none';
-
-    if (!addSelectedItem) {
-      showAddError('Select an item from the dropdown first.');
-      return;
-    }
-
-    const pct = parseInt(addThresh.value, 10);
-    if (isNaN(pct) || pct < 1 || pct > 50) {
-      showAddError('Threshold must be a number between 1 and 50.');
-      return;
-    }
-
-    if (MEM.data.watchlist.some(it => it.itemId === addSelectedItem.itemId)) {
-      showAddError(`${addSelectedItem.name} is already on the watchlist.`);
-      return;
-    }
-
-    MEM.data.watchlist.push({ itemId: addSelectedItem.itemId, name: addSelectedItem.name, threshold: pct, enabled: true });
-    Store.set(KEYS.watchlist, MEM.data.watchlist);
-    renderWatchlist();
-    hideAddForm();
-  });
-
-  renderWatchlist();
-
-  // ─── Buy form ──────────────────────────────────────────────────────────────
-
-  const buyForm        = panel.querySelector('#st-buy-form');
-  const buyItemName    = panel.querySelector('#st-buy-item-name');
-  const buyQtyInput    = panel.querySelector('#st-buy-qty');
-  const buyPriceInput  = panel.querySelector('#st-buy-price');
-  const buyConfirmBtn  = panel.querySelector('#st-buy-confirm-btn');
-  const buyCancelBtn   = panel.querySelector('#st-buy-cancel-btn');
-
-  function hideBuyForm() {
-    buyForm.style.display = 'none';
-    buyQtyInput.value     = '';
-    buyPriceInput.value   = '';
-    MEM.ui.logBuyIdx         = null;
-  }
-
-  buyCancelBtn.addEventListener('click', hideBuyForm);
-
-  buyConfirmBtn.addEventListener('click', () => {
-    const qty   = parseInt(buyQtyInput.value, 10);
-    const price = parseInt(buyPriceInput.value, 10);
-    if (!(qty > 0) || !(price > 0) || MEM.ui.logBuyIdx === null) return;
-    const item = MEM.data.watchlist[MEM.ui.logBuyIdx];
-    MEM.data.trades.push({
-      itemId:    item.itemId,
-      name:      item.name,
-      qty,
-      buyPrice:  price,
-      buyDate:   Date.now(),
-      sellPrice: null,
-      sellDate:  null,
-    });
-    Store.set(KEYS.trades, MEM.data.trades);
-    hideBuyForm();
-    renderOpenTrades();
-    renderSummary();
-  });
-
   // ─── Ledger helpers ────────────────────────────────────────────────────────
 
   function fmtDate(ts) {
@@ -2757,6 +1252,14 @@
     const days  = Math.floor(totalHours / 24);
     const hours = totalHours % 24;
     return `${days}d ${hours}h`;
+  }
+
+  function roiTier(roi) {
+    if (roi < 0)  return { bg: 'rgba(255,60,60,0.10)',   color: '#ff4444', label: '' };
+    if (roi < 3)  return { bg: '',                        color: '#c0d0c8', label: '' };
+    if (roi < 8)  return { bg: 'rgba(0,255,136,0.06)',   color: '#00ff88', label: '' };
+    if (roi < 15) return { bg: 'rgba(0,255,136,0.12)',   color: '#00ff88', label: '' };
+    return        { bg: 'rgba(0,255,136,0.20)',           color: '#00ff88', label: 'STRONG' };
   }
 
   function renderClosedTrades() {
@@ -3019,18 +1522,9 @@
 
   // ─── Settings inputs ───────────────────────────────────────────────────────
 
-  const inputInterval    = panel.querySelector('#st-input-interval');
-  const inputThreshold   = panel.querySelector('#st-input-threshold');
-  const threshHint       = panel.querySelector('#st-thresh-hint');
-  const inputApiKey      = panel.querySelector('#st-input-apikey');
-  const inputVaultFloor  = panel.querySelector('#st-input-vault-floor');
-  const inputSnipeAlerts = panel.querySelector('#st-input-snipe-alerts');
-  const clearBtn         = panel.querySelector('#st-clear-btn');
+  const inputApiKey = panel.querySelector('#st-input-apikey');
+  const clearBtn    = panel.querySelector('#st-clear-btn');
 
-  inputInterval.value       = MEM.data.settings.interval;
-  inputThreshold.value      = MEM.data.settings.threshold;
-  inputVaultFloor.value     = MEM.data.settings.vaultFloorPct ?? 10;
-  inputSnipeAlerts.checked  = MEM.data.settings.snipeAlerts ?? true;
   // show stored key placeholder but not the actual value for security
   if (localStorage.getItem('st_apikey')) inputApiKey.placeholder = '(key saved)';
 
@@ -3041,39 +1535,6 @@
       inputApiKey.value       = '';
       inputApiKey.placeholder = '(key saved)';
     }
-  });
-
-  inputInterval.addEventListener('change', () => {
-    MEM.data.settings.interval = Math.max(10, parseInt(inputInterval.value, 10) || 60);
-    inputInterval.value = MEM.data.settings.interval;
-    Store.set(KEYS.settings, MEM.data.settings);
-    startPollLoop();
-  });
-
-  function updateThreshHint() {
-    // Global default has no associated item; always "—"
-    threshHint.textContent = '—';
-  }
-
-  inputThreshold.addEventListener('input', updateThreshHint);
-
-  inputThreshold.addEventListener('change', () => {
-    MEM.data.settings.threshold = Math.min(100, Math.max(1, parseInt(inputThreshold.value, 10) || 10));
-    inputThreshold.value = MEM.data.settings.threshold;
-    Store.set(KEYS.settings, MEM.data.settings);
-  });
-
-  inputVaultFloor.addEventListener('change', () => {
-    MEM.data.settings.vaultFloorPct = Math.min(100, Math.max(0, parseFloat(inputVaultFloor.value) || 10));
-    inputVaultFloor.value = MEM.data.settings.vaultFloorPct;
-    Store.set(KEYS.settings, MEM.data.settings);
-    MEM.poll.availableCapital = computeAvailableCapital(MEM.poll.lastVaultAmount ?? 0, MEM.data.settings.vaultFloorPct);
-    renderCapitalBar();
-  });
-
-  inputSnipeAlerts.addEventListener('change', () => {
-    MEM.data.settings.snipeAlerts = inputSnipeAlerts.checked;
-    Store.set(KEYS.settings, MEM.data.settings);
   });
 
   function updateAggrButtons() {
@@ -3098,18 +1559,14 @@
   clearBtn.addEventListener('click', () => {
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
-    MEM.data.watchlist = [...SEED_WATCHLIST];
-    MEM.data.settings  = { interval: 60, threshold: 10, vaultFloorPct: 10, snipeAlerts: true, aggressiveness: 'moderate' };
-    MEM.poll.availableCapital = 0;
+    MEM.data.settings  = { aggressiveness: 'moderate' };
     MEM.ui.collapsed = false;
-    inputInterval.value      = MEM.data.settings.interval;
-    inputThreshold.value     = MEM.data.settings.threshold;
-    inputVaultFloor.value    = MEM.data.settings.vaultFloorPct;
-    inputSnipeAlerts.checked = true;
     updateAggrButtons();
     openDrawer();
     panel.style.height = '';
-    renderWatchlist();
+    renderOpenTrades();
+    renderClosedTrades();
+    renderSummary();
   });
 
   // ─── MutationObserver — real-time imarket snipe detection ────────────────
@@ -3122,8 +1579,6 @@
   }
 
   function getImarketItemName(itemId) {
-    const wl = MEM.data.watchlist.find(w => w.itemId === itemId);
-    if (wl) return wl.name;
     const heading = document.querySelector('[class*="itemName"], [class*="title"] h4, h4');
     if (heading?.textContent?.trim()) return heading.textContent.trim();
     return `Item #${itemId}`;
@@ -3136,45 +1591,7 @@
       .filter(p => p > 10000);
   }
 
-  function flashCardGreen(itemId) {
-    const container = panel.querySelector('#st-watchlist-cards');
-    const btn = container.querySelector(`.st-card-collapse-btn[data-itemid="${itemId}"]`);
-    const card = btn?.closest('.st-card');
-    if (!card || card.classList.contains('st-snipe-flash')) return;
-    card.classList.add('st-snipe-flash');
-    setTimeout(() => card.classList.remove('st-snipe-flash'), 2500);
-  }
-
-  function checkNodesForSnipes(addedNodes) {
-    const itemId = getImarketItemId();
-    if (!itemId) return;
-    const entry = MEM.data.watchlist.find(w => w.itemId === itemId && w.enabled !== false);
-    if (!entry) return;
-    const res = MEM.poll.pollResults[itemId];
-    if (!res || res.error) return;
-    const threshold  = entry.threshold ?? MEM.data.settings.threshold ?? 10;
-    const sellTarget = entry.manualSellTarget ?? res.recommendedSellTarget ?? null;
-    for (const node of addedNodes) {
-      if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      const prices = parseNodePrices(node);
-      const hit = prices.find(p => {
-        if (sellTarget != null) return (sellTarget - p) / p >= threshold / 100;
-        return res.fairValue != null && p < res.fairValue * (1 - threshold / 100);
-      });
-      if (hit != null) {
-        flashCardGreen(itemId);
-        injectSnipeCard(itemId, hit, node);
-        if (MEM.data.settings.snipeAlerts ?? true) {
-          const lastFired = MEM.poll.lastAlertedAt[itemId] ?? 0;
-          if (Date.now() - lastFired > ALERT_COOLDOWN_MS) {
-            fireSnipeAlert(entry);
-            MEM.poll.lastAlertedAt[itemId] = Date.now();
-          }
-        }
-        return;
-      }
-    }
-  }
+  let _ioMutObs = null;
 
   function startImarketObserver() {
     if (_ioMutObs) { _ioMutObs.disconnect(); _ioMutObs = null; }
@@ -3188,7 +1605,7 @@
     _ioMutObs = new MutationObserver(mutations => {
       for (const m of mutations) m.addedNodes.forEach(n => buf.push(n));
       clearTimeout(debounce);
-      debounce = setTimeout(() => { const nodes = buf.splice(0); checkNodesForSnipes(nodes); injectBadgesFromNodes(nodes); injectSellerRowsFromNodes(nodes); maybeInjectRefreshButton(); }, 150);
+      debounce = setTimeout(() => { const nodes = buf.splice(0); injectBadgesFromNodes(nodes); injectSellerRowsFromNodes(nodes); maybeInjectRefreshButton(); }, 150);
     });
     _ioMutObs.observe(target, { childList: true, subtree: true });
 
@@ -3200,98 +1617,6 @@
   }
 
   const MUG_THRESHOLD = 10_000_000;
-
-  function injectSnipeCard(itemId, detectedPrice, triggerNode) {
-    const cardId = 'st-injected-' + itemId;
-    if (document.getElementById(cardId)) return;
-
-    const entry = MEM.data.watchlist.find(w => w.itemId === itemId);
-    const res   = MEM.poll.pollResults[itemId];
-    if (!entry || !res || res.error) return;
-
-    const sellTarget  = entry.manualSellTarget ?? res.recommendedSellTarget ?? null;
-    const qty         = res.lowestListedQty ?? null;
-    const fmt         = n => '$' + Math.round(n).toLocaleString();
-
-    const grossProfit = sellTarget != null
-      ? (sellTarget - detectedPrice) * (qty ?? 1)
-      : null;
-
-    const saleValue = sellTarget != null ? sellTarget * (qty ?? 1) : null;
-    const showMug   = saleValue != null && saleValue >= MUG_THRESHOLD;
-    const mugScenario = showMug ? calcMugScenario(sellTarget, qty ?? 1, detectedPrice, 15) : null;
-
-    const stats = [
-      { lbl: 'Item',         val: entry.name },
-      { lbl: 'Snipe Price',  val: fmt(detectedPrice) },
-      { lbl: 'Qty',          val: qty != null ? qty.toLocaleString() : '—' },
-      { lbl: 'Sell Position', val: sellTarget != null ? fmt(sellTarget) : '—' },
-      { lbl: 'Gross Profit', val: grossProfit != null ? fmt(grossProfit) : '—', color: grossProfit > 0 ? '#00ff88' : '#ff4444' },
-    ];
-
-    const statsHtml = stats.map(s =>
-      `<div class="st-injected-stat">
-        <span class="st-injected-lbl">${s.lbl}</span>
-        <span class="st-injected-val"${s.color ? ` style="color:${s.color}"` : ''}>${s.val}</span>
-      </div>`
-    ).join('');
-
-    const mugHtml = showMug && mugScenario
-      ? `<div class="st-injected-mug" style="color:${mugScenario.isLoss ? '#ff4444' : '#e8a838'}">⚠ Mug risk: if mugged at 15%, net ${mugScenario.isLoss ? 'loss' : 'profit'} ${fmt(mugScenario.muggedNet)}</div>`
-      : '';
-
-    const card = document.createElement('div');
-    card.id        = cardId;
-    card.className = 'st-injected-card';
-    card.innerHTML = `
-      <div class="st-injected-header">
-        <span class="st-injected-title">⚡ Snipe Alert</span>
-        <button class="st-injected-dismiss" title="Dismiss">✕</button>
-      </div>
-      <div class="st-injected-stats">${statsHtml}</div>
-      ${mugHtml}
-      <div class="st-injected-actions">
-        <button class="st-injected-queue-btn">Queue</button>
-        <span class="st-injected-queue-confirm"></span>
-      </div>
-    `;
-
-    let alertBox = document.getElementById('st-inject-alerts');
-    if (!alertBox) {
-      alertBox = document.createElement('div');
-      alertBox.id = 'st-inject-alerts';
-      document.body.appendChild(alertBox);
-    }
-    alertBox.appendChild(card);
-
-    card.querySelector('.st-injected-dismiss').addEventListener('click', () => card.remove());
-
-    card.querySelector('.st-injected-queue-btn').addEventListener('click', () => {
-      MEM.ui.pendingQueue.push({ itemId, name: entry.name, price: detectedPrice, qty: null, source: 'queue', ts: Date.now() });
-      updateQueueBadge();
-      const confirm = card.querySelector('.st-injected-queue-confirm');
-      confirm.textContent = 'Queued!';
-      setTimeout(() => { confirm.textContent = ''; }, 2000);
-    });
-
-    // Watch for removal of the trigger node; card persists 30 s after that
-    const nodeParent = triggerNode.parentNode;
-    if (nodeParent) {
-      let removalTimer = null;
-      const removalObs = new MutationObserver(mutations => {
-        for (const m of mutations) {
-          for (const removed of m.removedNodes) {
-            if (removed === triggerNode || (removed.contains && removed.contains(triggerNode))) {
-              removalObs.disconnect();
-              if (!removalTimer) removalTimer = setTimeout(() => card.remove(), 30000);
-              return;
-            }
-          }
-        }
-      });
-      removalObs.observe(nodeParent, { childList: true });
-    }
-  }
 
   // ─── Export CSV ───────────────────────────────────────────────────────────
 
@@ -3324,25 +1649,14 @@
 
   // ─── Init ─────────────────────────────────────────────────────────────────
 
-  panel.querySelector('#st-scan-btn').addEventListener('click', runPoll);
-
-  (async () => {
-    try {
-      const text = await gmFetch(`https://api.torn.com/user/?selections=money&key=${getApiKey()}`);
-      const d = JSON.parse(text);
-      if (d.error) throw new Error(d.error.error ?? `API error ${d.error.code}`);
-      MEM.poll.lastVaultAmount = d.vault_amount ?? 0;
-      MEM.poll.availableCapital = computeAvailableCapital(MEM.poll.lastVaultAmount, MEM.data.settings.vaultFloorPct ?? 10);
-      renderCapitalBar();
-    } catch (e) {
-      console.warn('[SnipeTracker] vault fetch failed:', e.message);
-      MEM.poll.availableCapital = 0;
-    }
-  })();
+  renderQueueStrip();
+  renderOpenTrades();
+  renderClosedTrades();
+  renderSummary();
+  fetchApiLogEntries().then(entries => { if (entries.length) importLogEntries(entries); });
 
   PriceDataModule.init().then(() => { injectBadgesOnAllTiles(); injectBadgesOnAllSellerRows(); maybeInjectRefreshButton(); });
 
-  schedulePoll();
   startImarketObserver();
 
 })();
