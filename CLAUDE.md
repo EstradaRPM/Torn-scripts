@@ -154,40 +154,11 @@ A deep module has a simple interface and a lot of functionality behind it. A sha
 
 The gym optimizer establishes patterns worth reusing in future scripts:
 
-### State management
-```js
-const MEM = { /* all runtime state */ };
-```
-A single flat object holds all mutable state. Avoids scattered module-level variables. Assign to `MEM` fields, never rebind `MEM` itself.
-
-### Persistence layer
-```js
-const Store = {
-  get(k)    { try { return localStorage.getItem(k); }    catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); }        catch {} },
-};
-const KEYS = { /* namespaced key constants */ };
-```
-Always wrap `localStorage` in try/catch. Namespace keys with a short script-specific prefix (e.g. `nc17_`) to avoid collisions with other scripts or Torn itself.
-
-### Render cycle
-```js
-function render() { /* full re-render from MEM state */ }
-```
-Single render function rebuilds the entire UI from state. No partial DOM patching. Call `render()` whenever state changes. This is simple and debuggable.
-
-### Torn API fetch pattern
-```js
-const r = await fetch(`https://api.torn.com/user/?selections=battlestats&key=${API_KEY}`);
-const d = await r.json();
-if (!d.error) { /* use data */ } else { /* store d.error.code + d.error.error */ }
-```
-- Always check `d.error` before using data
-- Store the error string in `MEM.fetchError` so `render()` can surface it in the UI
-- Refresh on an interval (5 min is appropriate for battle stats) rather than on every render
-
-### DOM energy reading
-Prefer reading values directly from the page DOM before making extra API calls. The `readEnergyFromDOM()` pattern (multiple CSS selector fallbacks + text regex fallback) is the right approach for scraping Torn UI values that the API also exposes — it's faster and doesn't consume API rate limit.
+- **State management**: Single `const MEM = {}` holds all mutable state. Assign to fields, never rebind `MEM`.
+- **Persistence**: `Store.get(k)` / `Store.set(k, v)` wrap localStorage in try/catch. Namespace keys with a short script-specific prefix to avoid collisions.
+- **Render cycle**: Single `render()` rebuilds the entire UI from `MEM` state. No partial DOM patching. Call on every state change.
+- **Torn API fetch**: Always check `d.error` before using data. Store error in `MEM.fetchError` for UI surfacing. 5-min polling interval minimum.
+- **DOM reading**: Prefer reading from the page DOM before making API calls. Use multiple CSS selector fallbacks + text regex fallback.
 
 ---
 
@@ -225,108 +196,17 @@ Torn factions grant stat buffs (%) that rotate monthly. Scripts that plan traini
 
 ## RW Auction Advisor
 
-### Goal
+**Status: PARKED at v1.33.1.** Do not touch until user switches back. Next: ledger UI overhaul — must `/grill-me` first.
 
-Help the player evaluate Riot and Assault armor listings in the auction house
-for flip potential. For each listing the script calculates a recommended max
-offer price and displays whether the current bid leaves room for profit.
+**Target page:** `https://www.torn.com/amarket.php` (`@match https://www.torn.com/amarket.php*`)
 
-### Target page
+**Goal:** Evaluate Riot/Assault armor auction listings for flip potential. Calculates recommended max offer price per listing based on BB floor, item market comps, armor quality scoring, and target profit margin.
 
-`https://www.torn.com/amarket.php` — the Torn City auction house.
-Tampermonkey `@match`: `https://www.torn.com/amarket.php*`
+**Reference docs:** [`docs/rw-pricing-logic.md`](docs/rw-pricing-logic.md), [`docs/rw-api-reference.md`](docs/rw-api-reference.md), [`docs/rw-community-context.md`](docs/rw-community-context.md), [`docs/rw-armor-guide.md`](docs/rw-armor-guide.md)
 
-### Development phase
+**Data sources:** Torn API v2, `amarket.php` DOM, TornW3B (`weav3r.dev/api`) — unconditional, no opt-in. Key via `###PDA-APIKEY###`. No automated bids or form submissions ever.
 
-**Active — v1.21.1.** Inline advisory tool is fully implemented. The floating
-panel has been replaced with per-listing injected UI on `amarket.php`.
-All core features are complete and on branch `claude/inline-auction-advisor-MxQCI`.
-
-Implemented features:
-- Inline advisory strip per listing (max offer, ROI %, color-coded)
-- `▼ Details` expandable context panel (BB floor, comp price + source badge, quality/tier badge, King's cap warning, net profit)
-- Market and Bazaar comp panels (top-5 lowest-priced, split-column, live fetch with staleness indicator)
-- Settings modal (API key mask/reveal, profit/mug/trade settings, comp tolerances, Data Sources freshness)
-- Ledger sidebar scaffold (Log button snapshots listing data; table with Date/Item/Rarity/Q%/Bonus%/Score/Bid/Max Offer/ROI/Result; persists to localStorage)
-
-### Reference documentation
-
-All design decisions for this script must be consistent with the four docs
-in `docs/`:
-
-| Doc | Contents |
-|-----|---------|
-| [`docs/rw-pricing-logic.md`](docs/rw-pricing-logic.md) | BB floor formula, auction max bid targets, armor quality scoring (King's method), net profit calculation, fee structure, core max-offer formula, price reference hierarchy |
-| [`docs/rw-api-reference.md`](docs/rw-api-reference.md) | Torn API v2 endpoints (auction house, item market), full response schemas, DOM selectors for amarket.php, TornW3B API (opt-in), armor item IDs, rate limiting rules |
-| [`docs/rw-community-context.md`](docs/rw-community-context.md) | Trader mindset, auction red flags, safe bid patterns, mug risk, negotiation rules, selling strategy, market manipulation awareness, common mistakes |
-| [`docs/rw-armor-guide.md`](docs/rw-armor-guide.md) | All eight armor set use cases, piece priority, Riot Helmet special role, mixed set logic, full set bonuses, yellow quality vs bonus % tradeoff, orange/red behavior, advisor scope |
-
-### Torn PDA constraints
-
-All constraints in the **Torn Scripting Rules & API Compliance** section
-below apply in full. Specific constraints most relevant to this script:
-
-- **Key placeholder:** `###PDA-APIKEY###` — PDA injects the real key at
-  install time; never prompt for a key unless PDA injection is unavailable
-- **Permitted data sources:** Torn official API (`api.torn.com/v2`), the
-  DOM of `amarket.php`, and **TornW3B (`weav3r.dev/api`)**.
-  TornW3B is a standard unconditional API call — no opt-in toggle, no
-  disclosure table, no compliance concern. It is a community-maintained
-  bazaar data API that users contribute to voluntarily. The Torn "item
-  market" is only one part of the full market; bazaar listings (via
-  TornW3B) are equally valid pricing data. Both sources must be queried
-  together to form an accurate market comp. Do not ever treat TornW3B as
-  optional, gated, or a compliance issue in this script.
-- **API polling:** Only on user action or page load; no background timers
-  that fire while the user is away from the page. Item market endpoint is
-  globally cached — do not hammer it
-- **No automation:** The script displays pricing information only. It must
-  never place bids, click buttons, or submit any form on behalf of the user
-
-### Future ledger steps
-
-The following 5 features are not yet implemented. Each should be a separate
-session with user confirmation before starting. All changes go in
-`torn-rw-auction-advisor-v1.user.js`. Increment the minor version for each.
-
-**Step A — Result capture (version → 1.22.0)**
-Add a `result` field UI per ledger entry. Each row in the ledger table gets
-a compact dropdown: `—` / `Won` / `Lost` / `Passed`. On change, update
-`entry.result` in `MEM.ledger` and re-persist via `Store.set(KEYS.LEDGER, ...)`.
-No other changes needed — the Result column already exists as a placeholder.
-
-**Step B — P&L calculation (version → 1.23.0)**
-For entries with `result === 'Won'`, add an "Actual sell price" input per row.
-On blur/enter: compute `actualNet = sellPrice × (1 − marketFee) × (1 − mugBuffer) − entry.currentBid`.
-Display `actualNet` alongside the projected max offer. Add a `actualSellPrice`
-and `actualNet` field to the entry schema and persist.
-
-**Step C — CSV export (version → 1.24.0)**
-Add a "Copy CSV" button to the ledger header. On click, serialize all
-`MEM.ledger` entries to a comma-separated string (one header row + one row
-per entry, all columns including result and actualNet) and copy to clipboard
-via `navigator.clipboard.writeText()`. Show a brief "Copied!" confirmation
-in the button label that resets after 2 seconds.
-
-**Step D — Filtering (version → 1.25.0)**
-Add a filter bar above the ledger table with four controls:
-- Item set: `All` / `Riot` / `Assault` (derive from `entry.itemName`)
-- Rarity: `All` / `yellow` / `orange` / `red`
-- Outcome: `All` / `Won` / `Lost` / `Passed` / `Pending`
-- Date range: two `<input type="date">` fields for start/end
-
-Filter state is held in a local `ledgerFilter` object (not persisted). Apply
-filters inside `renderLedger()` before building the table rows.
-
-**Step E — Summary stats (version → 1.26.0)**
-Add a summary bar between the ledger header and the filter bar showing:
-- Total entries
-- Win rate (Won ÷ decided entries, as %)
-- Average actual ROI (mean of `actualNet / currentBid` for Won entries)
-- Total P&L (sum of all `actualNet` values for Won entries)
-
-Render the summary bar inside `renderLedger()` before the table. Display `—`
-for any stat that requires data not yet available (e.g. no Won entries yet).
+**Ledger roadmap (Steps A–E, not yet implemented):** See [`docs/rw-advisor-context.md`](docs/rw-advisor-context.md).
 
 ---
 

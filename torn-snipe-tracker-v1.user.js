@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.63.0
+// @version      1.63.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -26,7 +26,7 @@
 
   if (PAGE_MODE === 'market' && document.getElementById('st-drawer')) return;
 
-  const SCRIPT_VERSION   = '1.63.0';
+  const SCRIPT_VERSION   = '1.63.1';
   const API_KEY          = '###PDA-APIKEY###';
 
   // Prefer PDA-injected key; fall back to manually stored key
@@ -396,14 +396,14 @@
 
     /* ── Tile profit badges ── */
     .st-profit-badge {
-      display: inline-block;
+      display: block;
       font-size: 11px;
       font-weight: 700;
       padding: 2px 6px;
       border-radius: 4px;
-      margin-left: 6px;
+      margin: 4px 4px 0;
       line-height: 1.4;
-      vertical-align: middle;
+      white-space: nowrap;
       pointer-events: none;
     }
     .st-profit-badge.st-badge-green {
@@ -890,11 +890,10 @@
     if (!prices.length) return;
     const badge = computeBadge(prices[0], bazaarAverage, marketValue);
     if (!badge) return;
-    const priceEl = tile.querySelector('[class*="price"]') ?? tile.querySelector('[class*="value"]') ?? tile;
-    const el = document.createElement('span');
+    const el = document.createElement('div');
     el.className = `st-profit-badge st-badge-${badge.color}`;
     el.textContent = badge.text;
-    priceEl.appendChild(el);
+    tile.appendChild(el);
   }
 
   function injectBadgesOnAllTiles() {
@@ -1655,7 +1654,23 @@
   renderSummary();
   fetchApiLogEntries().then(entries => { if (entries.length) importLogEntries(entries); });
 
-  PriceDataModule.init().then(() => { injectBadgesOnAllTiles(); injectBadgesOnAllSellerRows(); maybeInjectRefreshButton(); });
+  function reInjectAllBadges() {
+    injectBadgesOnAllTiles();
+    injectBadgesOnAllSellerRows();
+    maybeInjectRefreshButton();
+  }
+
+  PriceDataModule.init().then(() => {
+    reInjectAllBadges();
+    // React may finish rendering tiles after init resolves — retry to catch late renders
+    setTimeout(reInjectAllBadges, 400);
+    setTimeout(reInjectAllBadges, 1200);
+  });
+
+  // Re-inject on SPA navigation (Torn item market updates hash/query when switching items)
+  const _navHandler = () => setTimeout(reInjectAllBadges, 300);
+  window.addEventListener('hashchange', _navHandler);
+  window.addEventListener('popstate',   _navHandler);
 
   startImarketObserver();
 
