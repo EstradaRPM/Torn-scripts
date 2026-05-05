@@ -2,23 +2,15 @@
 
 ## Session Memory
 
-At the **start of every session**, immediately read `.claude/memory.md`. The SessionStart hook will output its contents automatically, but if for any reason it wasn't shown, read the file explicitly before doing anything else.
-
-At the **end of any session where meaningful work was done**, update `.claude/memory.md` with:
-- What is currently WIP (be specific: file names, function names, line numbers)
-- Key decisions made this session and the reasoning
-- Any open questions or blockers
-- Concrete next steps for the following session
-
-Keep the file under 300 lines. Replace stale entries rather than appending indefinitely. Use the date in the `_Last updated_` line.
+Session state is managed by the auto-memory system. The SessionStart hook outputs memory automatically at session start — trust that output. No need to manually read or write `.claude/memory.md`.
 
 ---
 
 ## Shell & CLI Constraints (Windows)
 
-PowerShell 5.1 (the shell available here) cannot pass long strings to native executables via here-strings — arguments over ~893 bytes are silently truncated or cause a parse error.
+PowerShell 5.1 cannot pass long strings to native executables via here-strings — arguments over ~893 bytes are silently truncated.
 
-**Rule: never use `--body` or `--title` with long inline strings when calling `gh`.** Instead, write the body to a temp file and use `--body-file`:
+**Rule: never use `--body` or `--title` with long inline strings when calling `gh`.** Write the body to a temp file and use `--body-file`:
 
 ```powershell
 $body = @'
@@ -31,13 +23,13 @@ $tmp = [System.IO.Path]::GetTempFileName()
 Remove-Item $tmp
 ```
 
-**`gh` is only available via full path** (`C:\Program Files\GitHub CLI\gh.exe`) in PowerShell. It is not on the PATH in Bash. Always use the full path in PowerShell tool calls.
+**`gh` is only available via full path** (`C:\Program Files\GitHub CLI\gh.exe`) in PowerShell. Not on PATH in Bash.
 
 ---
 
 ## Repository Purpose
 
-Personal collection of scripts for the browser game **Torn City** (torn.com). Scripts range from Tampermonkey/Greasemonkey userscripts (`.user.js`) to standalone tools and utilities. All scripts are Torn-specific.
+Personal collection of scripts for the browser game **Torn City** (torn.com). All scripts are Torn-specific.
 
 ---
 
@@ -45,9 +37,9 @@ Personal collection of scripts for the browser game **Torn City** (torn.com). Sc
 
 | File | Type | Purpose |
 |------|------|---------|
-| `torn-gym-optomizer-v5.js` | Userscript | Multi-month gym training planner with real-time energy tracking and buff rotation support. Note: filename has a typo ("optomizer"); the canonical name is "Torn Gym Optimizer". |
-| `torn-snipe-tracker-v1.user.js` | Userscript | Bazaar snipe detector and trade ledger. Watches a configurable item list, flags listings priced below a threshold, and tracks open/closed trades with P&L. |
-| `torn-rw-auction-advisor-v1.user.js` | Userscript *(in development)* | Auction house advisor for Riot and Assault armor. Evaluates listings for flip potential by calculating a recommended max offer price based on BB floor value, item market comps, armor quality scoring, and a user-defined target profit margin. |
+| `torn-gym-optomizer-v5.js` | Userscript | Multi-month gym training planner with real-time energy tracking and buff rotation support. Note: filename has a typo ("optomizer"); canonical name is "Torn Gym Optimizer". |
+| `torn-snipe-tracker-v1.user.js` | Userscript | Bazaar snipe detector and trade ledger. Watches configurable item list, flags listings below threshold, tracks trades with P&L. |
+| `torn-rw-auction-advisor-v1.user.js` | Userscript *(parked)* | Auction house advisor for Riot/Assault armor. Evaluates flip potential via BB floor, comps, quality scoring, and target margin. |
 
 ---
 
@@ -58,10 +50,8 @@ torn-[feature]-v[N].user.js    # Tampermonkey/Greasemonkey userscript
 torn-[feature]-v[N].js         # Standalone script / other tool
 ```
 
-- Use lowercase, hyphen-separated names
-- Include a version suffix (`-v1`, `-v2`) when a script has had major rewrites
-- Never omit `torn-` prefix — all scripts in this repo are Torn-specific
-- The `.user.js` extension signals Tampermonkey-installable scripts; omit it for non-userscripts
+- Lowercase, hyphen-separated; always prefix `torn-`; include version suffix on major rewrites
+- `.user.js` = Tampermonkey-installable; omit for non-userscripts
 
 ---
 
@@ -81,16 +71,14 @@ Every userscript must open with a well-formed metadata block:
 // ==/UserScript==
 ```
 
-Key rules:
-- `@grant none` unless a specific GM API is actually needed (none of the current scripts need it)
-- `@match` must be scoped to the exact Torn page(s) the script runs on — never use `https://www.torn.com/*` unless truly needed
-- `@version` follows semver; bump the minor for new features, major for rewrites
-- `API_KEY` should use the `###PDA-APIKEY###` placeholder so the script works with Torn PDA's auto-injection
-- `@updateURL` and `@downloadURL` must point to the raw file on the `main` branch (GitHub raw URL)
+- `@grant none` unless a specific GM API is actually needed
+- `@match` scoped to exact Torn page(s) — never `https://www.torn.com/*` unless truly needed
+- `@version` follows semver; `@updateURL` / `@downloadURL` point to the raw file on the `main` branch
+- API key: `###PDA-APIKEY###` placeholder — Torn PDA injects the real key at install time
 
 ### Version bump rules (required for PDA update detection)
 
-PDA detects updates by fetching `@updateURL` and comparing the remote `@version` against the installed version. **Every PR that changes script behavior MUST include a `@version` bump in the same commit.** Do not defer version bumps to a follow-up commit.
+PDA detects updates by comparing remote `@version` against installed. **Every commit that changes script behavior MUST include a `@version` bump.**
 
 | Change type | Bump | Example |
 |-------------|------|---------|
@@ -98,67 +86,35 @@ PDA detects updates by fetching `@updateURL` and comparing the remote `@version`
 | New feature / UI change | minor | `5.8.1 → 5.9.0` |
 | Full rewrite / breaking change | major | `5.9.0 → 6.0.0` |
 
-**Rule:** If `torn-gym-optomizer-v5.js` (or any userscript) is modified in a commit, `@version` must change in that same commit. No exceptions. This is what makes PDA's "Check for update" work.
-
-**Also update `SCRIPT_VERSION`:** Every userscript defines `const SCRIPT_VERSION = 'x.y.z'` near the top of the IIFE. This constant is what the UI footer displays. It must always match `@version` exactly — change both in the same edit.
+**Also update `SCRIPT_VERSION`:** Every userscript defines `const SCRIPT_VERSION = 'x.y.z'` near the top of the IIFE. Must match `@version` exactly — change both in the same edit.
 
 ---
 
 ## JavaScript Style
 
-**ES6+ throughout.** Specific patterns to follow:
-
-- `const`/`let` only — never `var`
-- Arrow functions for callbacks and short utilities
-- Template literals for string interpolation
-- `async/await` for all async operations (no raw `.then()` chains)
-- Destructuring where it aids readability
-- No external libraries or imports — scripts must be self-contained single files
-- Wrap the entire script body in an IIFE: `(function () { 'use strict'; ... })();`
+ES6+ throughout: `const`/`let` only (never `var`), arrow functions, template literals, `async/await` (no raw `.then()` chains), destructuring where readable. No external libraries — self-contained single files. Wrap the entire body in an IIFE: `(function () { 'use strict'; ... })();`
 
 ---
 
-## Engineering Principles
+## Engineering Principles — Hard constraints on every task
 
-Apply these to every task, plan, review, or design decision. They are constraints, not guidelines — check work against all of them before proceeding.
+Full detail: [`docs/engineering-principles.md`](docs/engineering-principles.md)
 
-### 1. Avoid complexity
-
-Complexity takes two forms:
-- **Obscurity** — important information is not obvious; a reader has to dig to understand what something does or why.
-- **Change amplification** — a simple change requires modifications in many places.
-
-Before adding anything — a parameter, an abstraction, a file, a concept — ask: does this make the system easier or harder to understand and modify? If harder, don't add it. The symptom of complexity is always the same: you have to hold too many things in your head at once.
-
-### 2. Always take small, deliberate steps
-
-Never make several changes at once. Each step should do exactly one thing, leave the system in a working state, and be verifiable on its own before the next step begins. If you need a list to describe the step, it's too big.
-
-### 3. The rate of feedback is your speed limit
-
-Before starting any step, know: how will I know this worked? If the answer is "I'll check it later" or "it's hard to test," stop and find a faster feedback path first. Slow feedback forces guessing. Guessing creates bugs. Bugs create complexity.
-
-### 4. Never take on a task that's too big
-
-A task is too big when you can't hold the full change in your head, can't describe a clean intermediate state, or the feedback loop spans the entire change. Decompose first. Find the smallest change that is independently useful and verifiable. Do that. Then reassess. If you can't decompose it, you don't understand it well enough yet — understanding it is the first step.
-
-### 5. The best modules are deep
-
-A deep module has a simple interface and a lot of functionality behind it. A shallow module has an interface nearly as complex as its implementation — it leaks internals and adds complexity instead of hiding it. Push complexity inward, not outward. Make the interface the smallest surface that still gives callers what they need.
-
-**Deletion test:** if you deleted this module, would its complexity disappear (shallow, not earning its keep) or reappear in N different callers (deep, earning its keep)? Only keep modules that pass.
+1. **Avoid complexity** — before adding anything, ask: easier or harder to understand/modify? If harder, don't.
+2. **Small steps** — each step does one thing, leaves the system working, and is verifiable before the next begins.
+3. **Feedback first** — before starting, know exactly how you'll verify it worked.
+4. **Scope limit** — can't hold the full change in your head or describe a clean intermediate state? Decompose first.
+5. **Deep modules** — simple interface, rich implementation. Push complexity inward. **Deletion test:** removing this module — does the complexity disappear (shallow, cut it) or reappear in N callers (deep, keep it)?
 
 ---
 
 ## Architecture Patterns
 
-The gym optimizer establishes patterns worth reusing in future scripts:
-
-- **State management**: Single `const MEM = {}` holds all mutable state. Assign to fields, never rebind `MEM`.
-- **Persistence**: `Store.get(k)` / `Store.set(k, v)` wrap localStorage in try/catch. Namespace keys with a short script-specific prefix to avoid collisions.
-- **Render cycle**: Single `render()` rebuilds the entire UI from `MEM` state. No partial DOM patching. Call on every state change.
-- **Torn API fetch**: Always check `d.error` before using data. Store error in `MEM.fetchError` for UI surfacing. 5-min polling interval minimum.
-- **DOM reading**: Prefer reading from the page DOM before making API calls. Use multiple CSS selector fallbacks + text regex fallback.
+- **State**: Single `const MEM = {}` for all mutable state. Assign fields, never rebind `MEM`.
+- **Persistence**: `Store.get(k)` / `Store.set(k, v)` wrap localStorage in try/catch. Namespace keys with a script-specific prefix.
+- **Render cycle**: Single `render()` rebuilds the entire UI from `MEM`. No partial DOM patching. Call on every state change.
+- **Torn API fetch**: Always check `d.error` before using data. Store error in `MEM.fetchError` for UI surfacing. 5-min polling minimum.
+- **DOM reading**: Prefer reading from page DOM before API calls. Multiple CSS selector fallbacks + text regex fallback.
 
 ---
 
@@ -176,195 +132,118 @@ The gym optimizer establishes patterns worth reusing in future scripts:
 | Balboa's | DEF + DEX 7.5× | 25 |
 | George's | All stats 7.3× | 10 |
 
-**Gym access (headroom) rules:**
-- Isoyama's opens when: `DEF ≥ 1.25 × max(STR, SPD, DEX)`
-- Frontline opens when: `STR + SPD ≥ 1.25 × (DEF + DEX)`
+Gym access: Isoyama's: `DEF ≥ 1.25 × max(STR, SPD, DEX)` · Frontline: `STR + SPD ≥ 1.25 × (DEF + DEX)`
 
 Headroom = how far a stat can grow before the condition reverses and the gym closes.
 
 ### Torn API
-- Base URL: `https://api.torn.com/`
-- Key auth: `?key=API_KEY` query param
-- Always use `###PDA-APIKEY###` as the placeholder — Torn PDA injects the real key at install time
-- Relevant endpoints for combat scripts: `user/?selections=battlestats`, `user/?selections=bars`
-- Rate limit: 100 calls/minute on public API keys
+- Base: `https://api.torn.com/` · Auth: `?key=###PDA-APIKEY###` · Rate limit: 100 calls/min
+- Combat endpoints: `user/?selections=battlestats`, `user/?selections=bars`
 
 ### Faction buffs
-Torn factions grant stat buffs (%) that rotate monthly. Scripts that plan training across months need to accept a buff schedule as user-defined input (not hardcoded) since buffs vary per faction and change over time.
+Rotate monthly. Accept as user-defined input — never hardcode, since buffs vary per faction.
 
 ---
 
 ## RW Auction Advisor
 
-**Status: PARKED at v1.33.1.** Do not touch until user switches back. Next: ledger UI overhaul — must `/grill-me` first.
+**PARKED at v1.33.1.** Do not touch until user switches back. Next session must `/grill-me` before any changes.
 
-**Target page:** `https://www.torn.com/amarket.php` (`@match https://www.torn.com/amarket.php*`)
-
-**Goal:** Evaluate Riot/Assault armor auction listings for flip potential. Calculates recommended max offer price per listing based on BB floor, item market comps, armor quality scoring, and target profit margin.
-
-**Reference docs:** [`docs/rw-pricing-logic.md`](docs/rw-pricing-logic.md), [`docs/rw-api-reference.md`](docs/rw-api-reference.md), [`docs/rw-community-context.md`](docs/rw-community-context.md), [`docs/rw-armor-guide.md`](docs/rw-armor-guide.md)
-
-**Data sources:** Torn API v2, `amarket.php` DOM, TornW3B (`weav3r.dev/api`) — unconditional, no opt-in. Key via `###PDA-APIKEY###`. No automated bids or form submissions ever.
-
-**Ledger roadmap (Steps A–E, not yet implemented):** See [`docs/rw-advisor-context.md`](docs/rw-advisor-context.md).
+- Target page: `https://www.torn.com/amarket.php`
+- Data sources: Torn API v2, page DOM, TornW3B (`weav3r.dev/api`) — unconditional, no opt-in
+- Reference docs: `docs/rw-pricing-logic.md`, `docs/rw-api-reference.md`, `docs/rw-armor-guide.md`, `docs/rw-community-context.md`, `docs/prd-steps-i-through-l.md`
 
 ---
 
 ## Development Workflow
 
-This is the standard pipeline for iterative improvements. Each stage is **one session**. Every session has an explicit completion contract — what must be written to memory before the session closes — so the next session can start cold with full context.
+| Trigger | Skill | Session complete when |
+|---------|-------|-----------------------|
+| Bug reported | `/qa` | Issue filed with TDD fix plan; memory updated |
+| Non-trivial design | `/grill-me` | Decisions in CONTEXT.md / `docs/adr/`; memory updated |
+| Spec → multiple tickets | `/to-issues` | All tickets filed; memory updated |
+| New/changed pure function | `/tdd` vs `test-snipe-engine.js` | Tests pass, committed; memory updated |
+| Implementation | (direct) | Commit + version bump, issue closed; memory updated |
+| Post-feature | `/simplify` | Follow-up commit or confirmed nothing needed; memory updated |
 
-### Bug fix trigger — `/qa`
-
-**This is the entry point when the user reports a bug.** Do not start implementing. Run `/qa` to interview the user about the symptom, explore the root cause, and file a properly structured GitHub issue. The session is not done until:
-- Issue is filed with a TDD-based fix plan
-- Memory updated: `"issue #X filed (<one-line summary>); next session: /grill-me on #X if design is non-trivial, else implement directly"`
-
-### Design lock — `/grill-me`
-
-For any non-trivial fix or new feature (behavioral change, new UI surface, new data flow). Interview until all decisions are locked. The session is not done until:
-- Relevant decisions added to `CONTEXT.md` and/or `docs/adr/` if durable
-- Memory updated: `"design locked for #X; decisions: <summary>; next session: /to-issues or implement directly"`
-
-### Ticket breakdown — `/to-issues`
-
-When a spec produces multiple independent pieces of work. The session is not done until:
-- All tickets filed on GitHub
-- Memory updated: `"tickets #A–#C filed and ready; next session: implement #A"`
-
-### Pure logic — `/tdd`
-
-For any new or changed pure function (scoring, pricing, detection logic). Run `/tdd` against `test-snipe-engine.js`. The session is not done until:
-- Tests pass
-- Function committed
-- Memory updated: `"<function> implemented and tested; next session: wire into IIFE / build UI"`
-
-### Implement — (direct)
-
-Standard implementation session. The session is not done until:
-- Commit made with version bump
-- GitHub issue closed
-- Memory updated: `"v1.X.Y done (#N); next session: /simplify or next ticket #M"`
-
-### Tidy — `/simplify`
-
-After a feature lands, run `/simplify` on the changed code. The session is not done until:
-- Any follow-up commit made (or explicitly confirmed nothing needed)
-- Memory updated: `"post-#N simplify done; clean"`
+End every session on `main`: `git checkout main && git pull`.
 
 ---
 
-## Agent skills
+## Agent Skills
 
-### Issue tracker
-
-Issues live in GitHub Issues (`EstradaRPM/Torn-scripts`). See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default label vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context repo — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+- Issues: GitHub Issues (`EstradaRPM/Torn-scripts`) — see `docs/agents/issue-tracker.md`
+- Labels: see `docs/agents/triage-labels.md`
+- Domain docs: `CONTEXT.md` + `docs/adr/` — see `docs/agents/domain.md`
 
 ---
 
 ## Adding a New Script
 
-1. Create the file following the naming convention above
-2. Add a row to the table in this file under **Current Scripts**
-3. If it's a userscript, open with the metadata block template above
-4. Wrap the body in an IIFE with `'use strict'`
-5. Use `###PDA-APIKEY###` for any API key placeholder
-6. Test on the specific `torn.com` page(s) before committing
+1. Create file following naming convention; add a row to the Current Scripts table above
+2. Open userscripts with the metadata block template; wrap body in IIFE with `'use strict'`
+3. Use `###PDA-APIKEY###` for any API key placeholder
+4. Test on the specific `torn.com` page(s) before committing
 
 ---
 
 ## What Not to Do
 
-- Don't hardcode player IDs, API keys, or faction-specific data as immutable constants — make them configurable via `localStorage` settings
-- Don't use `@grant GM_xmlhttpRequest` or other GM APIs unless `fetch` genuinely can't do the job
-- Don't add external script dependencies — no jQuery, no lodash, no frameworks
-- Don't write scripts that target pages outside `torn.com`
-- Don't commit API keys, even test keys
+- Don't hardcode player IDs, API keys, or faction-specific data — make them configurable via `localStorage`
+- Don't use `@grant GM_xmlhttpRequest` unless `fetch` genuinely can't do the job
+- Don't add external dependencies; don't target pages outside `torn.com`; don't commit API keys
 
 ---
 
 ## Torn Scripting Rules & API Compliance
 
-**These are hard constraints. Any script that violates them risks account ban, suspension, or permanent loss of API access. Every new script and every modification to an existing script must be verified against all rules below before commit.**
+**Hard constraints. Violations risk account ban, suspension, or loss of API access. Verify before every commit.**
 
-### Permitted data sources — hard gate
+### Permitted data sources (hard gate)
 
-A script may only consume data from these sources:
-
-1. **Torn's official API** (`https://api.torn.com/`) — using the player's own key
-2. **The DOM of the page currently loaded and actively viewed** by the user in their browser tab
-3. **TornW3B** (`https://weav3r.dev/api`) — community bazaar data API. Unconditional, no opt-in required. See the RW Auction Advisor section above.
-
-Any other data source is prohibited. This means:
-
-- **No background page scraping.** A script must not fetch or read any Torn page that the user has not manually navigated to and is currently viewing.
-- **No cross-tab or unfocused-window data extraction.** Reading DOM from a tab that is not in focus is prohibited.
-- **No non-API HTTP requests to Torn** (`torn.com` endpoints, internal APIs, etc.) except the official API — and only when triggered by the user loading a relevant page or explicitly interacting with the script UI.
-- **No CAPTCHA bypass attempts** of any kind.
-- **No sending data extracted from unfocused pages to external services, alerts, or notifications.**
+Only: (1) Torn official API (`https://api.torn.com/`) with the player's own key, (2) DOM of the page currently loaded and actively viewed, (3) TornW3B (`https://weav3r.dev/api`) — unconditional, no opt-in. No background scraping, no cross-tab or unfocused-window reads, no non-API Torn requests, no CAPTCHA bypass.
 
 ### Automation prohibition
 
-Scripts must not take autonomous actions on behalf of the player. Specifically:
+No automated clicking, form submission, or game actions. No non-API Torn polling on a timer. API polling is allowed but must be rate-limited and scoped to data the script genuinely needs.
 
-- **No automated clicking, form submission, or game action triggering** — the script may display information but must not act.
-- **No polling loops that make non-API requests to Torn** on a timer without the user actively viewing the relevant page.
-- **API polling is allowed** but must be rate-limited (see below) and scoped to data the script genuinely needs.
+### API key rules
 
-### API key handling — non-negotiable rules
+- `###PDA-APIKEY###` in all userscripts; never hardcode real keys, not even for testing
+- Never request passwords, player names, or player IDs
+- Never store keys outside `localStorage`; never transmit externally without explicit opt-in + disclosure table shown
+- On API error code 2 (bad key) or 13 (owner banned): immediately remove/disable the key and stop polling
 
-- **Never request passwords.** Scripts must never ask for, read, or transmit a Torn account password under any circumstance.
-- **Never request a player name or player ID** as a substitute for the API key — the key alone is sufficient to retrieve all user data.
-- **Never store keys in plaintext outside `localStorage`** (which is sandboxed to the browser/domain). Keys must not be sent to any external server unless the user has explicitly opted in and the ToS disclosure table (see below) is shown.
-- **Never share or expose another player's key.** If a script ever accepts keys from multiple users (e.g., a faction tool), each key must be treated as confidential and never surfaced to other users.
-- **Remove or disable invalid keys immediately on API error code 2 (incorrect key) or code 13 (key owner banned).** Do not continue polling with a broken key.
-- **Use `###PDA-APIKEY###` as the key placeholder** in all userscripts — never hardcode real keys, not even for testing.
+### Rate limiting
 
-### Rate limiting — enforced in code
+- Hard cap: **100 req/min** per player
+- Minimum polling interval: **5 minutes** for most data; longer where freshness isn't critical
+- Only request selections actually needed; never cache speculatively
+- Globally cached selections (bypass impossible): `market`→itemmarket/properties/rentals · `company`→companies · `user`→bazaar/bounties · `torn`→bounties
 
-- Hard cap: **100 API requests per minute** across all keys for a single player. Scripts must never exceed this.
-- For most data (battle stats, bars, etc.) a **5-minute polling interval is the minimum acceptable default**. Use longer intervals where freshness is not critical.
-- Use the `timestamp` query parameter to bust the 30-second service cache only when fresh data is genuinely required — not by default.
-- **Globally cached selections cannot be bypassed** and must not be polled more frequently than their cache TTL makes meaningful. Current globally cached selections:
-  - `market` → `itemmarket`, `properties`, `rentals`
-  - `company` → `companies`
-  - `user` → `bazaar`, `bounties`
-  - `torn` → `bounties`
-- Request **only the selections actually needed** for the feature. Never request broad selections to cache for hypothetical future use.
+### Disclosure requirements
 
-### Disclosure requirements — required for any script that stores or shares data/keys
-
-If a script stores API data or keys beyond the user's own `localStorage`, or shares any data with external services, the script's UI **must display** the following disclosure table at the point where the user provides their API key:
+Required when a script stores API data/keys outside `localStorage` OR shares data externally. Display this table in the UI at the key-entry point:
 
 | Data Storage | Data Sharing | Purpose of Use | Key Storage & Sharing | Key Access Level |
 |---|---|---|---|---|
-| *(one of: No / Only locally / Temporary <1 min / Temporary <1 day / Persistent until deletion / Persistent forever)* | *(one of: Nobody / Faction / Friends & faction / General public / Service owners / Service owners & customers)* | *(one of: Non-malicious statistical analysis / Public amusement / Public community tools / Competitive advantage [specify] / Personal gain [specify] / Other [specify])* | *(one of: Not stored/Not shared / Stored, used only for automation / Stored, shared with faction / Stored, shared with other services / Public)* | *(one of: Minimal / Limited / Full / Custom — specify selections)* |
+| *(No / Only locally / Temporary <1 min / <1 day / Persistent until deletion / forever)* | *(Nobody / Faction / Friends & faction / General public / Service owners / Service owners & customers)* | *(Non-malicious statistical analysis / Public amusement / Public community tools / Competitive advantage [specify] / Personal gain [specify] / Other [specify])* | *(Not stored/Not shared / Stored, used only for automation / Stored, shared with faction / Stored, shared with other services / Public)* | *(Minimal / Limited / Full / Custom — specify selections)* |
 
-**All current scripts in this repo are local-only** (data stays in the browser, key stays in `localStorage` or is injected by PDA and never transmitted). The correct disclosure for any such script is: `Only locally | Nobody | [purpose] | Not stored/Not shared | [selections used]`. If a future script changes this, the table must be updated and displayed in the UI.
+**All current scripts are local-only.** Correct disclosure: `Only locally | Nobody | [purpose] | Not stored/Not shared | [selections used]`.
 
 ### No malicious or undisclosed functionality
 
-- All script functionality must be visible and documented. No hidden behaviors, silent data collection, or obfuscated code.
-- Scripts must not be used to gain an advantage through means Torn's rules prohibit (botting, automated attacking, market manipulation bots, etc.).
-- Releasing a script with functionality not described to the user is a bannable offense.
+All functionality must be visible and documented. No hidden behaviors, silent data collection, or obfuscated code. No botting, automated attacking, or market manipulation.
 
 ### Summary checklist — verify before every commit
 
-- [ ] Script only reads from the official API, TornW3B, or the currently viewed page DOM
-- [ ] No background scraping, no unfocused-tab reads, no non-API Torn requests
+- [ ] Script only reads from official API, TornW3B, or currently-viewed DOM
+- [ ] No background scraping, unfocused-tab reads, or non-API Torn requests
 - [ ] No automated game actions (clicks, submissions, etc.)
-- [ ] API polling interval ≥ 5 minutes; total requests stay well under 100/min
-- [ ] Only the minimum required API selections are requested
-- [ ] Key handled via `###PDA-APIKEY###` or user-entered into `localStorage`; never transmitted externally
-- [ ] Invalid key errors (codes 2, 13) remove/disable the key immediately
+- [ ] API polling ≥ 5 minutes; total requests well under 100/min
+- [ ] Only minimum required API selections requested
+- [ ] Key via `###PDA-APIKEY###` or localStorage; never transmitted externally
+- [ ] Invalid key (codes 2, 13) immediately removed/disabled
 - [ ] No passwords or usernames requested
-- [ ] If data or keys leave `localStorage`, the disclosure table is shown in the UI
+- [ ] If data/keys leave localStorage, disclosure table shown in UI
 - [ ] No hidden, obfuscated, or undisclosed functionality
