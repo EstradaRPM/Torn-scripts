@@ -571,11 +571,17 @@ function LogParser(logText) {
 // ── SellTargetEngine ─────────────────────────────────────────────────────────
 
 function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
-  const baz    = bazaarAverage ?? marketValue;
-  const market = marketValue   ?? bazaarAverage;
-  if (aggressiveness === 'conservative') return baz;
-  if (aggressiveness === 'aggressive')   return market;
-  return Math.round((baz + market) / 2);
+  if (bazaarAverage == null && marketValue == null) return null;
+  if (bazaarAverage != null && marketValue != null) {
+    if (aggressiveness === 'conservative') return bazaarAverage;
+    if (aggressiveness === 'aggressive')   return marketValue;
+    return Math.round((bazaarAverage + marketValue) / 2);
+  }
+  const ref   = marketValue ?? bazaarAverage;
+  const scale = aggressiveness === 'conservative' ? 0.90
+              : aggressiveness === 'aggressive'   ? 1.00
+              : 0.95;
+  return Math.round(ref * scale);
 }
 
 console.log('\nSellTargetEngine — Behavior 1: conservative → bazaarAverage');
@@ -611,20 +617,20 @@ console.log('\nSellTargetEngine — Behavior 5: zero values → 0');
   assertEq('moderate zero',     SellTargetEngine(0, 0, 'moderate'),     0);
 }
 
-console.log('\nSellTargetEngine — Behavior 6: bazaarAverage null/undefined → falls back to marketValue');
+console.log('\nSellTargetEngine — Behavior 6: bazaarAverage null → percentage tiers on marketValue');
 {
-  assertEq('conservative null baz',   SellTargetEngine(null,      100_000, 'conservative'), 100_000);
-  assertEq('conservative undef baz',  SellTargetEngine(undefined, 100_000, 'conservative'), 100_000);
-  assertEq('aggressive null baz',     SellTargetEngine(null,      100_000, 'aggressive'),   100_000);
-  assertEq('moderate null baz',       SellTargetEngine(null,      100_000, 'moderate'),     100_000);
+  assertEq('conservative null baz',   SellTargetEngine(null,      100_000, 'conservative'),  90_000);
+  assertEq('conservative undef baz',  SellTargetEngine(undefined, 100_000, 'conservative'),  90_000);
+  assertEq('moderate null baz',       SellTargetEngine(null,      100_000, 'moderate'),       95_000);
+  assertEq('aggressive null baz',     SellTargetEngine(null,      100_000, 'aggressive'),    100_000);
 }
 
-console.log('\nSellTargetEngine — Behavior 7: marketValue null/undefined → falls back to bazaarAverage');
+console.log('\nSellTargetEngine — Behavior 7: marketValue null → percentage tiers on bazaarAverage');
 {
-  assertEq('conservative null mkt',  SellTargetEngine(80_000, null,      'conservative'), 80_000);
+  assertEq('conservative null mkt',  SellTargetEngine(80_000, null,      'conservative'), 72_000);
+  assertEq('moderate null mkt',      SellTargetEngine(80_000, null,      'moderate'),     76_000);
   assertEq('aggressive null mkt',    SellTargetEngine(80_000, null,      'aggressive'),   80_000);
   assertEq('aggressive undef mkt',   SellTargetEngine(80_000, undefined, 'aggressive'),   80_000);
-  assertEq('moderate null mkt',      SellTargetEngine(80_000, null,      'moderate'),     80_000);
 }
 
 // ── LogParser ────────────────────────────────────────────────────────────────

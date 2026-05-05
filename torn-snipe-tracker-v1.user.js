@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.64.0
+// @version      1.64.1
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -24,7 +24,7 @@
 
   if (PAGE_MODE === 'market' && document.getElementById('st-drawer')) return;
 
-  const SCRIPT_VERSION = '1.64.0';
+  const SCRIPT_VERSION = '1.64.1';
   const API_KEY        = '###PDA-APIKEY###';
 
   function getApiKey() {
@@ -425,11 +425,16 @@
 
   function SellTargetEngine(bazaarAverage, marketValue, aggressiveness) {
     if (bazaarAverage == null && marketValue == null) return null;
-    const baz    = bazaarAverage ?? marketValue;
-    const market = marketValue   ?? bazaarAverage;
-    if (aggressiveness === 'conservative') return baz;
-    if (aggressiveness === 'aggressive')   return market;
-    return Math.round((baz + market) / 2);
+    if (bazaarAverage != null && marketValue != null) {
+      if (aggressiveness === 'conservative') return bazaarAverage;
+      if (aggressiveness === 'aggressive')   return marketValue;
+      return Math.round((bazaarAverage + marketValue) / 2);
+    }
+    const ref   = marketValue ?? bazaarAverage;
+    const scale = aggressiveness === 'conservative' ? 0.90
+                : aggressiveness === 'aggressive'   ? 1.00
+                : 0.95;
+    return Math.round(ref * scale);
   }
 
   function LogParser(logText) {
@@ -1014,6 +1019,7 @@
     if (!confirm('Clear all Snipe Tracker data?')) return;
     Object.values(KEYS).forEach(k => localStorage.removeItem(k));
     torn_market_values = {};
+    MEM.data.trades    = [];
     MEM.data.settings  = { aggressiveness: 'moderate' };
     MEM.ui.collapsed   = false;
     updateAggrButtons(); openDrawer();
@@ -1091,7 +1097,6 @@
     observer.observe(document.body, {
       childList: true, subtree: true,
       characterData: true, characterDataOldValue: true,
-      attributes: true, attributeFilter: ['class'],
     });
     processElements();
   }, 1000);
