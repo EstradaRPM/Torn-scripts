@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Snipe Tracker
 // @namespace    estradarpm-snipe-tracker
-// @version      1.64.1
+// @version      1.65.0
 // @description  Bazaar snipe detector and trade ledger for Torn City
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -24,7 +24,7 @@
 
   if (PAGE_MODE === 'market' && document.getElementById('st-drawer')) return;
 
-  const SCRIPT_VERSION = '1.64.1';
+  const SCRIPT_VERSION = '1.65.0';
   const API_KEY        = '###PDA-APIKEY###';
 
   function getApiKey() {
@@ -61,6 +61,34 @@
       }
     },
   };
+
+  function writeTornTrade({ itemId, itemName, qty, buyPrice, openedAt }) {
+    try {
+      const raw    = localStorage.getItem('torn_trades');
+      const trades = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(trades)) return;
+      trades.push({
+        id:              `snipe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        schemaVersion:   1,
+        source:          'snipe-tracker',
+        itemId:          itemId ?? null,
+        itemName,
+        buyPrice,
+        qty,
+        remainingQty:    qty,
+        buyVenue:        'item-market',
+        sellTarget:      null,
+        fairValueAtOpen: null,
+        floodPlay:       false,
+        notes:           '',
+        openedAt:        openedAt ?? Date.now(),
+        status:          'open',
+        sells:           [],
+        alertFired:      false,
+      });
+      localStorage.setItem('torn_trades', JSON.stringify(trades));
+    } catch { /* silent — must not affect Snipe Tracker operation */ }
+  }
 
   (function migrateStaleKeys() {
     const staleKeys = ['st_watchlist', 'st_last_poll_time'];
@@ -497,7 +525,12 @@
     for (const e of entries) {
       const trade = { itemId: e.itemId, name: e.itemName, qty: e.quantity, buyPrice: e.purchasePrice, buyDate: e.timestamp ?? Date.now(), sellPrice: null, sellDate: null };
       const key = logEntryDedupeKey(trade.name, trade.buyDate);
-      if (!existing.has(key)) { MEM.data.trades.push(trade); existing.add(key); added++; }
+      if (!existing.has(key)) {
+        MEM.data.trades.push(trade);
+        existing.add(key);
+        added++;
+        writeTornTrade({ itemId: trade.itemId, itemName: trade.name, qty: trade.qty, buyPrice: trade.buyPrice, openedAt: trade.buyDate });
+      }
     }
     if (added > 0) { Store.set(KEYS.trades, MEM.data.trades); renderOpenTrades(); renderClosedTrades(); renderSummary(); }
     return added;
@@ -904,7 +937,9 @@
         if (!(qty > 0)) return;
         const item = MEM.ui.pendingQueue[qi];
         if (!item) return;
-        MEM.data.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
+        const openedAt = Date.now();
+        MEM.data.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: openedAt, sellPrice: null, sellDate: null });
+        writeTornTrade({ itemId: item.itemId, itemName: item.name, qty, buyPrice: item.price, openedAt });
         Store.set(KEYS.trades, MEM.data.trades);
         MEM.ui.pendingQueue.splice(qi, 1);
         renderQueueStrip(); renderOpenTrades(); renderSummary();
@@ -927,8 +962,10 @@
       .sort((a, b) => b.qi - a.qi);
     if (!toLog.length) return;
     toLog.forEach(({ qi, qty }) => {
-      const item = MEM.ui.pendingQueue[qi];
-      MEM.data.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: Date.now(), sellPrice: null, sellDate: null });
+      const item     = MEM.ui.pendingQueue[qi];
+      const openedAt = Date.now();
+      MEM.data.trades.push({ itemId: item.itemId, name: item.name, qty, buyPrice: item.price, buyDate: openedAt, sellPrice: null, sellDate: null });
+      writeTornTrade({ itemId: item.itemId, itemName: item.name, qty, buyPrice: item.price, openedAt });
       MEM.ui.pendingQueue.splice(qi, 1);
     });
     Store.set(KEYS.trades, MEM.data.trades);
