@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.3.0
+// @version      1.4.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.3.0';
+  const SCRIPT_VERSION = '1.4.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -174,6 +174,39 @@
     },
   };
 
+  // ─── W3BFetcher ─────────────────────────────────────────────────────────────
+
+  const W3BFetcher = {
+    fetch(itemNames) {
+      if (!itemNames.length) return Promise.resolve({});
+      return new Promise(resolve => {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: 'https://weav3r.dev/api/marketplace',
+          onload(resp) {
+            try {
+              const d = JSON.parse(resp.responseText);
+              const allItems = d.items ?? [];
+              const nameSet = new Set(itemNames.map(n => n.toLowerCase()));
+              const result = {};
+              for (const item of allItems) {
+                const name = item.item_name;
+                if (name && nameSet.has(name.toLowerCase())) {
+                  const p50 = item.bazaar_average ?? item.market_price ?? null;
+                  if (p50 != null) result[name] = { p50 };
+                }
+              }
+              resolve(result);
+            } catch {
+              resolve({});
+            }
+          },
+          onerror() { resolve({}); },
+        });
+      });
+    },
+  };
+
   // ─── MigrationRunner ────────────────────────────────────────────────────────
   (function runMigration() {
     if (Store.get('ldgr_migrated')) return;
@@ -309,6 +342,7 @@
       MEM.panelOpen = !MEM.panelOpen;
       Store.set('ldgr_collapsed', !MEM.panelOpen);
       render();
+      if (MEM.panelOpen) pollW3B();
     });
     mount.appendChild(li);
   }
@@ -452,6 +486,17 @@
     `;
   }
 
+  function buildMktValueCell(itemName, fairValueAtOpen) {
+    const live = MEM.fairValues[itemName];
+    if (live) {
+      return `<td style="padding:4px 6px;color:#4ade80;">${fmtMoney(live.p50)}</td>`;
+    }
+    if (fairValueAtOpen) {
+      return `<td style="padding:4px 6px;color:#64748b;" title="stale — TornW3B unavailable">${fmtMoney(fairValueAtOpen)}&thinsp;*</td>`;
+    }
+    return `<td style="padding:4px 6px;">—</td>`;
+  }
+
   function buildOpenRow(t) {
     const statusColor = t.status === 'partial' ? '#fb923c' : '#4ade80';
     const statusLabel = t.status === 'partial' ? 'partial' : 'open';
@@ -466,6 +511,7 @@
         <td style="padding:4px 6px;">${t.buyVenue}</td>
         <td style="padding:4px 6px;">${t.sellTarget ? fmtMoney(t.sellTarget) : '—'}</td>
         <td style="padding:4px 6px;">${t.fairValueAtOpen ? fmtMoney(t.fairValueAtOpen) : '—'}</td>
+        ${buildMktValueCell(t.itemName, t.fairValueAtOpen)}
         <td style="padding:4px 6px;text-align:center;">${t.floodPlay ? '✓' : ''}</td>
         <td style="padding:4px 6px;">${fmtDate(t.openedAt)}</td>
         <td style="padding:4px 6px;">—</td>
@@ -473,7 +519,7 @@
           <button class="ldgr-log-sell" data-id="${t.id}" style="${btnStyle('blue')}">Log sell</button>
         </td>
       </tr>
-      ${sellFormOpen ? `<tr><td colspan="11">${buildSellForm(t.id, t.remainingQty)}</td></tr>` : ''}
+      ${sellFormOpen ? `<tr><td colspan="12">${buildSellForm(t.id, t.remainingQty)}</td></tr>` : ''}
     `;
   }
 
@@ -489,6 +535,7 @@
         <td style="padding:4px 6px;">${fmtMoney(t.buyPrice)}</td>
         <td style="padding:4px 6px;">${totalQtySold}</td>
         <td style="padding:4px 6px;">${t.buyVenue}</td>
+        <td style="padding:4px 6px;">—</td>
         <td style="padding:4px 6px;">—</td>
         <td style="padding:4px 6px;">—</td>
         <td style="padding:4px 6px;text-align:center;">${t.floodPlay ? '✓' : ''}</td>
@@ -514,6 +561,7 @@
               <th style="padding:4px 6px;">Venue</th>
               <th style="padding:4px 6px;">Target</th>
               <th style="padding:4px 6px;">FV@Open</th>
+              <th style="padding:4px 6px;">Mkt Value</th>
               <th style="padding:4px 6px;">Flood</th>
               <th style="padding:4px 6px;">Date</th>
               <th style="padding:4px 6px;">P&amp;L</th>
@@ -675,6 +723,20 @@
     });
   }
 
+  // ─── W3B poll ────────────────────────────────────────────────────────────────
+
+  async function pollW3B() {
+    const active = TradeStore.getByStatus('open', 'partial');
+    const itemNames = [...new Set(active.map(t => t.itemName))];
+    if (!itemNames.length) return;
+    const result = await W3BFetcher.fetch(itemNames);
+    if (Object.keys(result).length) {
+      Object.assign(MEM.fairValues, result);
+      MEM.lastW3BPoll = Date.now();
+      render();
+    }
+  }
+
   // ─── render ──────────────────────────────────────────────────────────────────
 
   function render() {
@@ -757,5 +819,7 @@
 
   injectNavIcon();
   render();
+  pollW3B();
+  setInterval(pollW3B, 5 * 60 * 1000);
 
 })();

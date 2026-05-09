@@ -117,10 +117,10 @@ Total realized P&L per position: sum of net across all sell events minus `buyPri
 
 ## Active State
 
-- **Version:** 1.3.0
-- **Open issues:** #233, #234, #235, #236, #237
-- **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI)
-- **Next up:** #233
+- **Version:** 1.4.0
+- **Open issues:** #234, #235, #236, #237
+- **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI), #233 (W3BFetcher + live market value column)
+- **Next up:** #234
 - **PRD:** #228
 
 ---
@@ -135,7 +135,8 @@ None yet.
 
 - `torn_trades` is the shared contract. Source scripts (Snipe Tracker, etc.) push schemaVersion 1 records directly to this key. JS single-threaded event loop prevents race conditions within a tab.
 - itemId is always null in Torn log entries — matching is by item name + approximate timestamp + price (fuzzy). Ambiguous matches surface both candidates in the scan list; no auto-resolution.
-- TornW3B calls fail silently on Torn PDA (CSP blocks `GM_xmlhttpRequest` to weav3r.dev). Script falls back to `fairValueAtOpen`. This is expected and non-fixable — do not add a workaround.
+- TornW3B calls fail silently on Torn PDA (CSP blocks `GM_xmlhttpRequest` to weav3r.dev). Script falls back to `fairValueAtOpen` with a `*` stale indicator. This is expected and non-fixable — do not add a workaround.
+- W3BFetcher uses `GET https://weav3r.dev/api/marketplace` (bulk, no auth, 60s cache). Returns all items; we filter by name. `p50` = `bazaar_average ?? market_price`. One call per 5-min cycle regardless of how many open positions exist.
 - Auction house is a floor price reference (BB floor source), not a preferred sell venue. The UI should not suggest it as a sell default.
 - The 5-minute TornW3B poll is not rate-limited against the Torn API 100 req/min cap — TornW3B is a separate service.
 - After migration, the Snipe Tracker's own ledger panel becomes redundant. Cleanup is a separate follow-up, not in scope here.
