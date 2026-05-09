@@ -1,5 +1,5 @@
 // node test-trade-ledger.js
-// Tests for TradeStore (issue #229).
+// Tests for TradeStore (issue #229) and LogParser (issue #232).
 // Functions inlined here; keep in sync with the IIFE implementation.
 
 'use strict';
@@ -257,6 +257,159 @@ console.log('\nupdate — merges fields');
   assertEq('notes updated', t.notes, 'flood play');
   assertEq('sellTarget updated', t.sellTarget, 2000);
   assertEq('itemName unchanged', t.itemName, 'Medikit');
+}
+
+// ── LogParser (mirror IIFE) ───────────────────────────────────────────────────
+
+const LogParser = (() => {
+  function parseMoney(s) {
+    return parseInt(s.replace(/,/g, ''), 10);
+  }
+
+  const BUY_PATTERNS = [
+    { re: /^You bought (\d+)x (.+?) on \S+'s bazaar at \$([0-9,]+) each/, venue: 'bazaar' },
+    { re: /^You bought (\d+)x (.+?) on the item market(?: from \S+)? at \$([0-9,]+) each/, venue: 'item-market' },
+    { re: /^You bought (\d+)x (.+?) (?:from|at) the auction(?: house)? at \$([0-9,]+) each/, venue: 'auction' },
+  ];
+
+  const SELL_PATTERNS = [
+    { re: /^You sold (\d+)x (.+?) on your bazaar(?: to \S+)? at \$([0-9,]+) each/, venue: 'bazaar' },
+    { re: /^You sold (\d+)x (.+?) on the item market(?: to \S+)? at \$([0-9,]+) each/, venue: 'item-market' },
+    { re: /^You sold (\d+)x (.+?) (?:from|at) the auction(?: house)? at \$([0-9,]+) each/, venue: 'auction' },
+  ];
+
+  function parse(entries, patterns, timeKey) {
+    if (!Array.isArray(entries)) return [];
+    const results = [];
+    for (const entry of entries) {
+      try {
+        const action = entry?.action;
+        if (typeof action !== 'string') continue;
+        for (const { re, venue } of patterns) {
+          const m = action.match(re);
+          if (m) {
+            results.push({
+              itemName: m[2],
+              [timeKey === 'openedAt' ? 'buyPrice' : 'price']: parseMoney(m[3]),
+              qty: parseInt(m[1], 10),
+              [timeKey === 'openedAt' ? 'buyVenue' : 'venue']: venue,
+              [timeKey]: (entry.timestamp ?? 0) * 1000,
+            });
+            break;
+          }
+        }
+      } catch {
+        // silently skip
+      }
+    }
+    return results;
+  }
+
+  return {
+    parseBuyCandidates(entries) { return parse(entries, BUY_PATTERNS, 'openedAt'); },
+    parseSellEvents(entries)    { return parse(entries, SELL_PATTERNS, 'closedAt'); },
+  };
+})();
+
+// ── LogParser — parseBuyCandidates ────────────────────────────────────────────
+
+console.log('\nparseBuyCandidates — bazaar');
+{
+  const entries = [{ action: "You bought 26x Tribulus Omanense on PittH's bazaar at $69,000 each for a total of $1,794,000", timestamp: 1746100000 }];
+  const result = LogParser.parseBuyCandidates(entries);
+  assertEq('one result', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Tribulus Omanense');
+  assertEq('buyPrice', result[0].buyPrice, 69000);
+  assertEq('qty', result[0].qty, 26);
+  assertEq('buyVenue', result[0].buyVenue, 'bazaar');
+  assertEq('openedAt epoch ms', result[0].openedAt, 1746100000000);
+}
+
+console.log('\nparseBuyCandidates — item market');
+{
+  const entries = [{ action: 'You bought 31x Tribulus Omanense on the item market from Dismas_Hart at $69,357 each for a total of $2,150,067', timestamp: 1746200000 }];
+  const result = LogParser.parseBuyCandidates(entries);
+  assertEq('one result', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Tribulus Omanense');
+  assertEq('buyPrice', result[0].buyPrice, 69357);
+  assertEq('qty', result[0].qty, 31);
+  assertEq('buyVenue', result[0].buyVenue, 'item-market');
+}
+
+console.log('\nparseBuyCandidates — auction');
+{
+  const entries = [{ action: 'You bought 5x Xanax from the auction house at $50,000 each for a total of $250,000', timestamp: 1746300000 }];
+  const result = LogParser.parseBuyCandidates(entries);
+  assertEq('one result', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Xanax');
+  assertEq('buyPrice', result[0].buyPrice, 50000);
+  assertEq('buyVenue', result[0].buyVenue, 'auction');
+}
+
+console.log('\nparseBuyCandidates — malformed entry skipped');
+{
+  const entries = [
+    { action: 'Some unrecognized log line', timestamp: 1746000000 },
+    { action: null, timestamp: 1746000000 },
+    { action: "You bought 10x Xanax on Bob's bazaar at $40,000 each for a total of $400,000", timestamp: 1746000001 },
+  ];
+  const result = LogParser.parseBuyCandidates(entries);
+  assertEq('only valid entry returned', result.length, 1);
+  assertEq('correct item', result[0].itemName, 'Xanax');
+}
+
+console.log('\nparseBuyCandidates — empty array returns empty');
+{
+  assertEq('empty in, empty out', LogParser.parseBuyCandidates([]).length, 0);
+}
+
+// ── LogParser — parseSellEvents ───────────────────────────────────────────────
+
+console.log('\nparseSellEvents — bazaar');
+{
+  const entries = [{ action: 'You sold 38x Tribulus Omanense on your bazaar to Fairfax1991 at $70,428 each for a total of $2,676,264', timestamp: 1746400000 }];
+  const result = LogParser.parseSellEvents(entries);
+  assertEq('one result', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Tribulus Omanense');
+  assertEq('price', result[0].price, 70428);
+  assertEq('qty', result[0].qty, 38);
+  assertEq('venue', result[0].venue, 'bazaar');
+  assertEq('closedAt epoch ms', result[0].closedAt, 1746400000000);
+}
+
+console.log('\nparseSellEvents — item market');
+{
+  const entries = [{ action: 'You sold 10x Xanax on the item market at $55,000 each for a total of $550,000', timestamp: 1746500000 }];
+  const result = LogParser.parseSellEvents(entries);
+  assertEq('one result', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Xanax');
+  assertEq('price', result[0].price, 55000);
+  assertEq('venue', result[0].venue, 'item-market');
+}
+
+console.log('\nparseSellEvents — auction');
+{
+  const entries = [{ action: 'You sold 2x Blood Bag: A- at the auction house at $1,200,000 each for a total of $2,400,000', timestamp: 1746600000 }];
+  const result = LogParser.parseSellEvents(entries);
+  assertEq('one result', result.length, 1);
+  assertEq('itemName', result[0].itemName, 'Blood Bag: A-');
+  assertEq('price', result[0].price, 1200000);
+  assertEq('venue', result[0].venue, 'auction');
+}
+
+console.log('\nparseSellEvents — malformed entry skipped');
+{
+  const entries = [
+    { action: 'Random noise', timestamp: 1746000000 },
+    { action: 'You sold 5x Xanax on your bazaar to Player at $60,000 each for a total of $300,000', timestamp: 1746000001 },
+  ];
+  const result = LogParser.parseSellEvents(entries);
+  assertEq('only valid entry returned', result.length, 1);
+}
+
+console.log('\nparseSellEvents — empty array returns empty');
+{
+  assertEq('empty in, empty out', LogParser.parseSellEvents([]).length, 0);
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

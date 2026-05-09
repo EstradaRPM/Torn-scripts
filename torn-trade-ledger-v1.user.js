@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.2.0
+// @version      1.3.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.2.0';
+  const SCRIPT_VERSION = '1.3.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -80,6 +80,97 @@
 
     getByStatus(...statuses) {
       return this.list().filter(t => statuses.includes(t.status));
+    },
+  };
+
+  // ─── LogParser ──────────────────────────────────────────────────────────────
+
+  const LogParser = (() => {
+    function parseMoney(s) {
+      return parseInt(s.replace(/,/g, ''), 10);
+    }
+
+    const BUY_PATTERNS = [
+      { re: /^You bought (\d+)x (.+?) on \S+'s bazaar at \$([0-9,]+) each/, venue: 'bazaar' },
+      { re: /^You bought (\d+)x (.+?) on the item market(?: from \S+)? at \$([0-9,]+) each/, venue: 'item-market' },
+      { re: /^You bought (\d+)x (.+?) (?:from|at) the auction(?: house)? at \$([0-9,]+) each/, venue: 'auction' },
+    ];
+
+    const SELL_PATTERNS = [
+      { re: /^You sold (\d+)x (.+?) on your bazaar(?: to \S+)? at \$([0-9,]+) each/, venue: 'bazaar' },
+      { re: /^You sold (\d+)x (.+?) on the item market(?: to \S+)? at \$([0-9,]+) each/, venue: 'item-market' },
+      { re: /^You sold (\d+)x (.+?) (?:from|at) the auction(?: house)? at \$([0-9,]+) each/, venue: 'auction' },
+    ];
+
+    function parse(entries, patterns, timeKey) {
+      if (!Array.isArray(entries)) return [];
+      const results = [];
+      for (const entry of entries) {
+        try {
+          const action = entry?.action;
+          if (typeof action !== 'string') continue;
+          for (const { re, venue } of patterns) {
+            const m = action.match(re);
+            if (m) {
+              results.push({
+                itemName: m[2],
+                [timeKey === 'openedAt' ? 'buyPrice' : 'price']: parseMoney(m[3]),
+                qty: parseInt(m[1], 10),
+                [timeKey === 'openedAt' ? 'buyVenue' : 'venue']: venue,
+                [timeKey]: (entry.timestamp ?? 0) * 1000,
+              });
+              break;
+            }
+          }
+        } catch {
+          // silently skip malformed entries
+        }
+      }
+      return results;
+    }
+
+    return {
+      parseBuyCandidates(entries) {
+        return parse(entries, BUY_PATTERNS, 'openedAt');
+      },
+      parseSellEvents(entries) {
+        return parse(entries, SELL_PATTERNS, 'closedAt');
+      },
+    };
+  })();
+
+  // ─── LogFetcher ──────────────────────────────────────────────────────────────
+
+  const LogFetcher = {
+    fetch() {
+      const key = API_KEY !== '###PDA-APIKEY###' ? API_KEY : (Store.get('ldgr_apikey') ?? '');
+      if (!key) return Promise.resolve({ entries: [], error: 'No API key configured' });
+
+      return new Promise(resolve => {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: `https://api.torn.com/user/?selections=log&key=${key}`,
+          onload(resp) {
+            let d;
+            try { d = JSON.parse(resp.responseText); } catch { return resolve({ entries: [], error: 'Invalid API response' }); }
+            if (d.error) {
+              if (d.error.code === 2 || d.error.code === 13) {
+                Store.set('ldgr_apikey', null);
+              }
+              return resolve({ entries: [], error: `API error ${d.error.code}: ${d.error.error}` });
+            }
+            const raw = d.log ?? {};
+            const entries = Object.values(raw).map(e => ({
+              action: e.title ?? '',
+              timestamp: e.timestamp ?? 0,
+            }));
+            resolve({ entries, error: null });
+          },
+          onerror() {
+            resolve({ entries: [], error: 'Network error' });
+          },
+        });
+      });
     },
   };
 
@@ -223,6 +314,50 @@
   }
 
   // ─── Panel HTML builders ─────────────────────────────────────────────────────
+
+  function buildKeySection() {
+    if (API_KEY !== '###PDA-APIKEY###') return '';
+    const storedKey = Store.get('ldgr_apikey');
+    if (storedKey) {
+      const masked = '●'.repeat(6) + storedKey.slice(-4);
+      return `
+        <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:8px 12px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:11px;color:#94a3b8;">API key: <span style="font-family:monospace;">${masked}</span></span>
+          <button id="ldgr-clear-key" style="${btnStyle('gray')}">Clear key</button>
+        </div>
+      `;
+    }
+    return `
+      <div id="ldgr-key-section" style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:12px;margin-bottom:12px;">
+        <p style="color:#94a3b8;font-size:11px;margin:0 0 8px;">A Torn API key is required to scan your transaction log.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:10px;">
+          <thead>
+            <tr style="color:#64748b;border-bottom:1px solid #1e3a5f;">
+              <th style="padding:3px 6px;text-align:left;">Data Storage</th>
+              <th style="padding:3px 6px;text-align:left;">Data Sharing</th>
+              <th style="padding:3px 6px;text-align:left;">Purpose of Use</th>
+              <th style="padding:3px 6px;text-align:left;">Key Storage &amp; Sharing</th>
+              <th style="padding:3px 6px;text-align:left;">Key Access Level</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="color:#e0e0e0;">
+              <td style="padding:3px 6px;">Local only</td>
+              <td style="padding:3px 6px;">Nobody</td>
+              <td style="padding:3px 6px;">Read transaction log</td>
+              <td style="padding:3px 6px;">Not shared</td>
+              <td style="padding:3px 6px;">Standard/Full</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="ldgr-key-input" type="password" placeholder="Enter API key" style="${inputStyle(false)};max-width:220px;">
+          <button id="ldgr-save-key" style="${btnStyle('blue')}">Save key</button>
+        </div>
+        <div id="ldgr-key-error" style="color:#ef4444;font-size:10px;margin-top:4px;min-height:14px;"></div>
+      </div>
+    `;
+  }
 
   function buildAddForm() {
     const e = MEM.addFormErrors;
@@ -393,6 +528,24 @@
 
   // ─── Event wiring ─────────────────────────────────────────────────────────────
 
+  function wireKeySection() {
+    document.getElementById('ldgr-clear-key')?.addEventListener('click', () => {
+      Store.set('ldgr_apikey', null);
+      render();
+    });
+
+    document.getElementById('ldgr-save-key')?.addEventListener('click', () => {
+      const val = document.getElementById('ldgr-key-input')?.value?.trim() ?? '';
+      const errEl = document.getElementById('ldgr-key-error');
+      if (!val) {
+        if (errEl) errEl.textContent = 'Key cannot be empty';
+        return;
+      }
+      Store.set('ldgr_apikey', val);
+      render();
+    });
+  }
+
   function wireAddForm() {
     document.getElementById('af-cancel')?.addEventListener('click', () => {
       MEM.addFormOpen = false;
@@ -562,6 +715,8 @@
 
       ${MEM.fetchError ? `<div style="color:#f87171;margin-bottom:8px;font-size:11px;">⚠ ${MEM.fetchError}</div>` : ''}
 
+      ${buildKeySection()}
+
       ${MEM.addFormOpen ? buildAddForm() : ''}
 
       ${isEmpty && !MEM.addFormOpen
@@ -593,6 +748,7 @@
       render();
     });
 
+    wireKeySection();
     if (MEM.addFormOpen) wireAddForm();
     wireSellButtons();
   }
