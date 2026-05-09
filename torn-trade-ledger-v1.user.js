@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.7.3
+// @version      1.7.4
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.7.3';
+  const SCRIPT_VERSION = '1.7.4';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@
       const results = [];
       for (const entry of entries) {
         try {
-          const action = entry?.action;
+          const action = entry?._raw?.title ?? '';
           if (typeof action !== 'string') continue;
           for (const { re, venue } of patterns) {
             const m = action.match(re);
@@ -139,6 +139,10 @@
     };
   })();
 
+  // ─── Log type IDs ────────────────────────────────────────────────────────────
+  const LOG_BUY_IDS  = new Set([1112, 1225, 4201, 4320]);  // item market, bazaar, abroad, auction win
+  const LOG_SELL_IDS = new Set([1113, 1226, 4322]);         // item market, bazaar, auction sold
+
   // ─── LogFetcher ──────────────────────────────────────────────────────────────
 
   const LogFetcher = {
@@ -159,16 +163,15 @@
               }
               return resolve({ entries: [], error: `API error ${d.error.code}: ${d.error.error}` });
             }
-            const apiKeys = Object.keys(d).join(', ');
-            const raw = d.log ?? {};
-            const allEntries = Object.values(raw);
-            const buySellRaw = allEntries.filter(e => /buy|sell/i.test(e.title ?? '')).slice(0, 2);
-            const entries = allEntries.map(e => ({
-              action: (e.title ?? '').replace(/<[^>]+>/g, ''),
-              timestamp: e.timestamp ?? 0,
-            }));
-            const sampleTitles = entries.slice(0, 3).map(e => e.action);
-            resolve({ entries, error: null, diag: { apiKeys, logType: typeof d.log, entryCount: entries.length, sampleTitles, buySellRaw } });
+            const allRaw = Object.values(d.log ?? {});
+            const matched = allRaw.filter(e => LOG_BUY_IDS.has(e.log) || LOG_SELL_IDS.has(e.log));
+            const entries = matched.map(e => ({ _raw: e, timestamp: e.timestamp ?? 0 }));
+            const diag = {
+              total: allRaw.length,
+              matched: matched.length,
+              samples: matched.slice(0, 2),
+            };
+            resolve({ entries, error: null, diag });
           },
           onerror() {
             resolve({ entries: [], error: 'Network error', diag: null });
@@ -639,15 +642,15 @@
 
     if (!hasContent) {
       const diagHtml = diag ? `
-        <div style="color:#64748b;font-size:10px;margin-top:6px;font-family:monospace;">
-          API keys: ${diag.apiKeys}<br>
-          d.log type: ${diag.logType} | entries: ${diag.entryCount}<br>
-          ${diag.sampleTitles.length ? 'Samples:<br>' + diag.sampleTitles.map(t => `&nbsp;&nbsp;${t}`).join('<br>') : '(no entries returned)'}<br>
-          ${diag.buySellRaw?.length ? 'Buy/sell raw:<br>' + diag.buySellRaw.map(e => `&nbsp;&nbsp;${JSON.stringify(e)}`).join('<br>') : '(no buy/sell entries in log)'}
+        <div style="color:#64748b;font-size:10px;margin-top:6px;font-family:monospace;word-break:break-all;">
+          ${diag.total} total entries, ${diag.matched} matched buy/sell IDs<br>
+          ${diag.samples?.length
+            ? diag.samples.map(e => `<br>logID ${e.log}: ${JSON.stringify(e)}`).join('')
+            : '(no matching entries — make a recent buy/sell first)'}
         </div>` : '';
       return `
         <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
-          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log (${entryCount} entries checked).${diagHtml}</div>
+          <div style="color:#94a3b8;font-size:11px;">No new transactions found (${diag?.total ?? entryCount} log entries, ${diag?.matched ?? 0} buy/sell).${diagHtml}</div>
           <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
         </div>
       `;
