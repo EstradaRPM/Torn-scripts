@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn API Monitor
 // @namespace    EstradaRPM-ApiMonitor
-// @version      1.1.0
+// @version      1.2.0
 // @description  Floating widget showing req/min heat bars for loaded API keys
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.1.0';
+  const SCRIPT_VERSION = '1.2.0';
 
   // ---------------------------------------------------------------------------
   // Store — localStorage wrapper; never throws
@@ -332,6 +332,51 @@
             metaHtml = `<span style="font-size:10px;color:#888;margin-left:4px;">[disabled]</span>`;
           }
 
+          const isExpanded = !!MEM.expanded[key.id];
+          const chevron = isExpanded ? '▼' : '▶';
+
+          let expandedHtml = '';
+          if (isExpanded) {
+            if (hasData) {
+              const breakdown = LogAnalyzer.calcEndpointBreakdown(log.entries);
+              const recent = LogAnalyzer.getRecentEntries(log.entries, 10);
+
+              const breakdownRows = breakdown.length
+                ? breakdown.map(b => `
+                  <div style="display:flex;justify-content:space-between;font-size:10px;padding:1px 4px;font-family:monospace;">
+                    <span style="color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${escHtml(b.type)}${b.selections ? ' / ' + escHtml(b.selections) : ''}</span>
+                    <span style="color:#aaa;flex-shrink:0;margin-left:8px;">${b.count}</span>
+                  </div>`).join('')
+                : `<div style="font-size:10px;color:#666;padding:1px 4px;">No entries</div>`;
+
+              const recentRows = recent.length
+                ? recent.map(e => {
+                  const t = new Date(e.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                  const comment = e.comment ? escHtml(e.comment) : '—';
+                  return `<div style="display:flex;gap:4px;font-size:10px;padding:1px 4px;font-family:monospace;overflow:hidden;">
+                    <span style="color:#666;flex-shrink:0;width:52px;">${t}</span>
+                    <span style="color:#ccc;flex-shrink:0;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(e.type || '')}</span>
+                    <span style="color:#aaa;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(e.selections || '—')}</span>
+                    <span style="color:#666;flex-shrink:0;max-width:56px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${comment}</span>
+                  </div>`;
+                }).join('')
+                : `<div style="font-size:10px;color:#666;padding:1px 4px;">No entries</div>`;
+
+              expandedHtml = `
+                <div style="margin-top:8px;border-top:1px solid #3a3a3a;padding-top:6px;">
+                  <div style="font-size:10px;color:#aaa;font-weight:600;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.5px;">Endpoint Breakdown</div>
+                  ${breakdownRows}
+                  <div style="font-size:10px;color:#aaa;font-weight:600;margin:6px 0 3px;text-transform:uppercase;letter-spacing:0.5px;">Last 10 Entries</div>
+                  ${recentRows}
+                </div>`;
+            } else {
+              expandedHtml = `
+                <div style="margin-top:8px;border-top:1px solid #3a3a3a;padding-top:6px;font-size:11px;color:#666;">
+                  No data — refresh first
+                </div>`;
+            }
+          }
+
           html += `
             <div style="
               padding:6px 8px;
@@ -339,26 +384,29 @@
               background:#2a2a2a;
               border-radius:6px;
             ">
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div data-expand-id="${escHtml(key.id)}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;">
                 <div style="min-width:0;overflow:hidden;flex:1;">
                   <div style="font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                     ${escHtml(key.label)}${metaHtml}
                   </div>
                   <div style="font-size:11px;color:#888;font-family:monospace;">${escHtml(key.maskedKey)}</div>
                 </div>
-                <button data-remove-id="${escHtml(key.id)}" style="
-                  background:#5a1a1a;
-                  border:none;
-                  border-radius:4px;
-                  color:#e07070;
-                  padding:3px 8px;
-                  cursor:pointer;
-                  font-size:11px;
-                  white-space:nowrap;
-                  flex-shrink:0;
-                ">Remove</button>
+                <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+                  <button data-remove-id="${escHtml(key.id)}" style="
+                    background:#5a1a1a;
+                    border:none;
+                    border-radius:4px;
+                    color:#e07070;
+                    padding:3px 8px;
+                    cursor:pointer;
+                    font-size:11px;
+                    white-space:nowrap;
+                  ">Remove</button>
+                  <span style="color:#888;font-size:12px;">${chevron}</span>
+                </div>
               </div>
               ${heatBarHtml}
+              ${expandedHtml}
             </div>
           `;
         }
@@ -411,6 +459,17 @@
         const id = btn.getAttribute('data-remove-id');
         KeyStore.remove(id);
         delete MEM.logs[id];
+        render();
+      });
+    });
+
+    // Bind expand toggles
+    el.querySelectorAll('[data-expand-id]').forEach(row => {
+      row.addEventListener('click', e => {
+        if (e.target.closest('[data-remove-id]')) return;
+        const id = row.getAttribute('data-expand-id');
+        MEM.expanded[id] = !MEM.expanded[id];
+        Store.set('mon_expanded', MEM.expanded);
         render();
       });
     });
