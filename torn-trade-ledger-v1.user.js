@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.7.4
+// @version      1.8.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.7.4';
+  const SCRIPT_VERSION = '1.8.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -85,99 +85,108 @@
 
   // ─── LogParser ──────────────────────────────────────────────────────────────
 
-  const LogParser = (() => {
-    function parseMoney(s) {
-      return parseInt(s.replace(/,/g, ''), 10);
-    }
-
-    const BUY_PATTERNS = [
-      { re: /^You bought (\d+)x (.+?) on \S+'s bazaar at \$([0-9,]+) each/, venue: 'bazaar' },
-      { re: /^You bought (\d+)x (.+?) on the item market(?: from \S+)? at \$([0-9,]+) each/, venue: 'item-market' },
-      { re: /^You bought (\d+)x (.+?) (?:from|at) the auction(?: house)? at \$([0-9,]+) each/, venue: 'auction' },
-    ];
-
-    const SELL_PATTERNS = [
-      { re: /^You sold (\d+)x (.+?) on your bazaar(?: to \S+)? at \$([0-9,]+) each/, venue: 'bazaar' },
-      { re: /^You sold (\d+)x (.+?) on the item market(?: to \S+)? at \$([0-9,]+) each/, venue: 'item-market' },
-      { re: /^You sold (\d+)x (.+?) (?:from|at) the auction(?: house)? at \$([0-9,]+) each/, venue: 'auction' },
-    ];
-
-    function parse(entries, patterns, timeKey) {
-      if (!Array.isArray(entries)) return [];
-      const results = [];
-      for (const entry of entries) {
-        try {
-          const action = entry?._raw?.title ?? '';
-          if (typeof action !== 'string') continue;
-          for (const { re, venue } of patterns) {
-            const m = action.match(re);
-            if (m) {
-              results.push({
-                itemName: m[2],
-                [timeKey === 'openedAt' ? 'buyPrice' : 'price']: parseMoney(m[3]),
-                qty: parseInt(m[1], 10),
-                [timeKey === 'openedAt' ? 'buyVenue' : 'venue']: venue,
-                [timeKey]: (entry.timestamp ?? 0) * 1000,
-              });
-              break;
-            }
-          }
-        } catch {
-          // silently skip malformed entries
-        }
-      }
-      return results;
-    }
-
-    return {
-      parseBuyCandidates(entries) {
-        return parse(entries, BUY_PATTERNS, 'openedAt');
-      },
-      parseSellEvents(entries) {
-        return parse(entries, SELL_PATTERNS, 'closedAt');
-      },
-    };
-  })();
-
   // ─── Log type IDs ────────────────────────────────────────────────────────────
   const LOG_BUY_IDS  = new Set([1112, 1225, 4201, 4320]);  // item market, bazaar, abroad, auction win
   const LOG_SELL_IDS = new Set([1113, 1226, 4322]);         // item market, bazaar, auction sold
 
-  // ─── LogFetcher ──────────────────────────────────────────────────────────────
+  const LOG_VENUE = {
+    1112: 'item-market', 1113: 'item-market',
+    1225: 'bazaar',      1226: 'bazaar',
+    4201: 'bazaar',
+    4320: 'auction',     4322: 'auction',
+  };
 
-  const LogFetcher = {
-    fetch() {
-      const key = API_KEY !== '###PDA-APIKEY###' ? API_KEY : (Store.get('ldgr_apikey') ?? '');
-      if (!key) return Promise.resolve({ entries: [], error: 'No API key configured' });
+  // ─── ItemCache ───────────────────────────────────────────────────────────────
+  const ItemCache = (() => {
+    const KEY = 'ldgr_items';
+    const TTL = 24 * 60 * 60 * 1000;
 
-      return new Promise(resolve => {
-        GM_xmlhttpRequest({
-          method: 'GET',
-          url: `https://api.torn.com/user/?selections=log&key=${key}`,
-          onload(resp) {
-            let d;
-            try { d = JSON.parse(resp.responseText); } catch { return resolve({ entries: [], error: 'Invalid API response' }); }
-            if (d.error) {
-              if (d.error.code === 2 || d.error.code === 13) {
-                Store.set('ldgr_apikey', null);
-              }
-              return resolve({ entries: [], error: `API error ${d.error.code}: ${d.error.error}` });
-            }
-            const allRaw = Object.values(d.log ?? {});
-            const matched = allRaw.filter(e => LOG_BUY_IDS.has(e.log) || LOG_SELL_IDS.has(e.log));
-            const entries = matched.map(e => ({ _raw: e, timestamp: e.timestamp ?? 0 }));
-            const diag = {
-              total: allRaw.length,
-              matched: matched.length,
-              samples: matched.slice(0, 2),
-            };
-            resolve({ entries, error: null, diag });
-          },
-          onerror() {
-            resolve({ entries: [], error: 'Network error', diag: null });
-          },
+    function load() {
+      const c = Store.get(KEY);
+      return (c && Date.now() - c.ts < TTL) ? c.data : null;
+    }
+
+    return {
+      getName(id) {
+        return load()?.[id] ?? `#${id}`;
+      },
+      ensure(key) {
+        if (load()) return Promise.resolve();
+        return new Promise(resolve => {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url: `https://api.torn.com/torn/?selections=items&key=${key}`,
+            onload(resp) {
+              try {
+                const d = JSON.parse(resp.responseText);
+                if (!d.error && d.items) {
+                  const map = {};
+                  for (const [id, item] of Object.entries(d.items)) map[id] = item.name;
+                  Store.set(KEY, { ts: Date.now(), data: map });
+                }
+              } catch {}
+              resolve();
+            },
+            onerror() { resolve(); },
+          });
         });
+      },
+    };
+  })();
+
+  // ─── LogParser ───────────────────────────────────────────────────────────────
+  const LogParser = (() => {
+    function fromEntry(entry, timeKey) {
+      const raw = entry._raw;
+      const data = raw?.data;
+      const item = data?.items?.[0];
+      if (!item?.id || !item?.qty || !data?.cost_each) return null;
+      return {
+        itemName: ItemCache.getName(String(item.id)),
+        [timeKey === 'openedAt' ? 'buyPrice' : 'price']: data.cost_each,
+        qty: item.qty,
+        [timeKey === 'openedAt' ? 'buyVenue' : 'venue']: LOG_VENUE[raw.log] ?? 'manual',
+        [timeKey]: (entry.timestamp ?? 0) * 1000,
+      };
+    }
+
+    return {
+      parseBuyCandidates(entries) {
+        return entries.filter(e => LOG_BUY_IDS.has(e._raw?.log)).map(e => fromEntry(e, 'openedAt')).filter(Boolean);
+      },
+      parseSellEvents(entries) {
+        return entries.filter(e => LOG_SELL_IDS.has(e._raw?.log)).map(e => fromEntry(e, 'closedAt')).filter(Boolean);
+      },
+    };
+  })();
+
+  // ─── LogFetcher ──────────────────────────────────────────────────────────────
+  const LogFetcher = {
+    _key() {
+      return API_KEY !== '###PDA-APIKEY###' ? API_KEY : (Store.get('ldgr_apikey') ?? '');
+    },
+    _xhr(url) {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({ method: 'GET', url, onload: r => resolve(r), onerror: () => reject() });
       });
+    },
+    async fetch() {
+      const key = this._key();
+      if (!key) return { entries: [], error: 'No API key configured' };
+      let resp;
+      try { resp = await this._xhr(`https://api.torn.com/user/?selections=log&key=${key}`); }
+      catch { return { entries: [], error: 'Network error' }; }
+      let d;
+      try { d = JSON.parse(resp.responseText); } catch { return { entries: [], error: 'Invalid API response' }; }
+      if (d.error) {
+        if (d.error.code === 2 || d.error.code === 13) Store.set('ldgr_apikey', null);
+        return { entries: [], error: `API error ${d.error.code}: ${d.error.error}` };
+      }
+      await ItemCache.ensure(key);
+      const entries = Object.values(d.log ?? {})
+        .filter(e => LOG_BUY_IDS.has(e.log) || LOG_SELL_IDS.has(e.log))
+        .map(e => ({ _raw: e, timestamp: e.timestamp ?? 0 }));
+      return { entries, error: null };
     },
   };
 
@@ -637,20 +646,13 @@
       return `<div style="color:#94a3b8;font-size:11px;margin-bottom:12px;">⟳ Scanning transaction log…</div>`;
     }
     if (!MEM.scanResults) return '';
-    const { candidates, autoClosedCount = 0, ambiguousSells = [], entryCount = 0, diag = null } = MEM.scanResults;
+    const { candidates, autoClosedCount = 0, ambiguousSells = [], entryCount = 0 } = MEM.scanResults;
     const hasContent = candidates.length || autoClosedCount || ambiguousSells.length;
 
     if (!hasContent) {
-      const diagHtml = diag ? `
-        <div style="color:#64748b;font-size:10px;margin-top:6px;font-family:monospace;word-break:break-all;">
-          ${diag.total} total entries, ${diag.matched} matched buy/sell IDs<br>
-          ${diag.samples?.length
-            ? diag.samples.map(e => `<br>logID ${e.log}: ${JSON.stringify(e)}`).join('')
-            : '(no matching entries — make a recent buy/sell first)'}
-        </div>` : '';
       return `
         <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
-          <div style="color:#94a3b8;font-size:11px;">No new transactions found (${diag?.total ?? entryCount} log entries, ${diag?.matched ?? 0} buy/sell).${diagHtml}</div>
+          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log (${entryCount} buy/sell entries checked).</div>
           <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
         </div>
       `;
@@ -950,7 +952,7 @@
       MEM.scanLoading = true;
       MEM.fetchError = null;
       render();
-      const { entries, error, diag } = await LogFetcher.fetch();
+      const { entries, error } = await LogFetcher.fetch();
       MEM.scanLoading = false;
       if (error) {
         MEM.fetchError = error;
@@ -961,7 +963,7 @@
       const sellEvents = LogParser.parseSellEvents(entries);
       const openPositions = TradeStore.getByStatus('open', 'partial');
       const { autoClosedCount, ambiguousSells } = matchAndApplySells(sellEvents, openPositions);
-      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells, entryCount: entries.length, diag };
+      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells, entryCount: entries.length };
       render();
     });
 
