@@ -41,6 +41,7 @@ Personal collection of userscripts for the browser game **Torn City** (torn.com)
 | `torn-gym-optomizer-v5.js` | Active | `docs/scripts/gym-optimizer.md` |
 | `torn-rw-auction-advisor-v1.user.js` | **Parked v1.33.1** | `docs/scripts/rw-advisor.md` |
 | `torn-api-monitor.user.js` | In Development | `docs/scripts/api-monitor.md` |
+| `torn-trade-ledger-v1.user.js` | In Development | `docs/scripts/trade-ledger.md` |
 
 **Before touching any script: read its script doc.**
 **Parked scripts:** run `/grill-me` before any changes.
