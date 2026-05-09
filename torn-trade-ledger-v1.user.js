@@ -159,17 +159,17 @@
               }
               return resolve({ entries: [], error: `API error ${d.error.code}: ${d.error.error}` });
             }
-            console.log('[TradeLedger] API response keys:', Object.keys(d));
-            console.log('[TradeLedger] d.log type:', typeof d.log, '| value:', d.log);
+            const apiKeys = Object.keys(d).join(', ');
             const raw = d.log ?? {};
             const entries = Object.values(raw).map(e => ({
               action: (e.title ?? '').replace(/<[^>]+>/g, ''),
               timestamp: e.timestamp ?? 0,
             }));
-            resolve({ entries, error: null });
+            const sampleTitles = entries.slice(0, 3).map(e => e.action);
+            resolve({ entries, error: null, diag: { apiKeys, logType: typeof d.log, entryCount: entries.length, sampleTitles } });
           },
           onerror() {
-            resolve({ entries: [], error: 'Network error' });
+            resolve({ entries: [], error: 'Network error', diag: null });
           },
         });
       });
@@ -632,13 +632,19 @@
       return `<div style="color:#94a3b8;font-size:11px;margin-bottom:12px;">⟳ Scanning transaction log…</div>`;
     }
     if (!MEM.scanResults) return '';
-    const { candidates, autoClosedCount = 0, ambiguousSells = [], entryCount = 0 } = MEM.scanResults;
+    const { candidates, autoClosedCount = 0, ambiguousSells = [], entryCount = 0, diag = null } = MEM.scanResults;
     const hasContent = candidates.length || autoClosedCount || ambiguousSells.length;
 
     if (!hasContent) {
+      const diagHtml = diag ? `
+        <div style="color:#64748b;font-size:10px;margin-top:6px;font-family:monospace;">
+          API keys: ${diag.apiKeys}<br>
+          d.log type: ${diag.logType} | entries: ${diag.entryCount}<br>
+          ${diag.sampleTitles.length ? 'Samples:<br>' + diag.sampleTitles.map(t => `&nbsp;&nbsp;${t}`).join('<br>') : '(no entries returned)'}
+        </div>` : '';
       return `
         <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
-          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log (${entryCount} entries checked). Check browser console for details.</div>
+          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log (${entryCount} entries checked).${diagHtml}</div>
           <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
         </div>
       `;
@@ -938,21 +944,18 @@
       MEM.scanLoading = true;
       MEM.fetchError = null;
       render();
-      const { entries, error } = await LogFetcher.fetch();
+      const { entries, error, diag } = await LogFetcher.fetch();
       MEM.scanLoading = false;
       if (error) {
         MEM.fetchError = error;
         render();
         return;
       }
-      console.log(`[TradeLedger] Scan: ${entries.length} log entries fetched`);
-      if (entries.length) console.log('[TradeLedger] Sample titles:', entries.slice(0, 5).map(e => e.action));
       const candidates = LogParser.parseBuyCandidates(entries);
       const sellEvents = LogParser.parseSellEvents(entries);
-      console.log(`[TradeLedger] Parsed: ${candidates.length} buy candidates, ${sellEvents.length} sell events`);
       const openPositions = TradeStore.getByStatus('open', 'partial');
       const { autoClosedCount, ambiguousSells } = matchAndApplySells(sellEvents, openPositions);
-      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells, entryCount: entries.length };
+      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells, entryCount: entries.length, diag };
       render();
     });
 
