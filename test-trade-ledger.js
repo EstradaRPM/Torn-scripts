@@ -412,6 +412,45 @@ console.log('\nparseSellEvents — empty array returns empty');
   assertEq('empty in, empty out', LogParser.parseSellEvents([]).length, 0);
 }
 
+// ── SellAlertEngine (mirror IIFE) ─────────────────────────────────────────────
+
+const SellAlertEngine = {
+  checkAlerts(positions, fairValues) {
+    return positions.filter(p => {
+      if (!p.sellTarget) return false;
+      const fv = fairValues[p.itemName];
+      if (!fv) return false;
+      return fv.p50 >= p.sellTarget && !p.alertFired;
+    });
+  },
+};
+
+console.log('\nSellAlertEngine — checkAlerts');
+{
+  const pos = [makeRecord({ itemName: 'Xanax', sellTarget: 1500, alertFired: false })];
+  const fv = { Xanax: { p50: 1500 } };
+  assert('triggers when P50 >= sellTarget and alertFired false', SellAlertEngine.checkAlerts(pos, fv).length === 1);
+}
+{
+  const pos = [makeRecord({ itemName: 'Xanax', sellTarget: 1500, alertFired: true })];
+  const fv = { Xanax: { p50: 1500 } };
+  assert('does not trigger when alertFired true', SellAlertEngine.checkAlerts(pos, fv).length === 0);
+}
+{
+  const pos = [makeRecord({ itemName: 'Xanax', sellTarget: 1500, alertFired: false })];
+  const fv = { Xanax: { p50: 1499 } };
+  assert('does not trigger when P50 < sellTarget', SellAlertEngine.checkAlerts(pos, fv).length === 0);
+}
+{
+  const pos = [
+    makeRecord({ id: 'a', itemName: 'Xanax',   sellTarget: 1000, alertFired: false }),
+    makeRecord({ id: 'b', itemName: 'Medikit',  sellTarget: 500,  alertFired: false }),
+    makeRecord({ id: 'c', itemName: 'Armor',    sellTarget: 2000, alertFired: true  }),
+  ];
+  const fv = { Xanax: { p50: 1200 }, Medikit: { p50: 600 }, Armor: { p50: 3000 } };
+  assert('returns multiple triggered positions', SellAlertEngine.checkAlerts(pos, fv).length === 2);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.5.0
+// @version      1.6.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.5.0';
+  const SCRIPT_VERSION = '1.6.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -207,6 +207,19 @@
     },
   };
 
+  // ─── SellAlertEngine ────────────────────────────────────────────────────────
+
+  const SellAlertEngine = {
+    checkAlerts(positions, fairValues) {
+      return positions.filter(p => {
+        if (!p.sellTarget) return false;
+        const fv = fairValues[p.itemName];
+        if (!fv) return false;
+        return fv.p50 >= p.sellTarget && !p.alertFired;
+      });
+    },
+  };
+
   // ─── MigrationRunner ────────────────────────────────────────────────────────
   (function runMigration() {
     if (Store.get('ldgr_migrated')) return;
@@ -295,6 +308,39 @@
 
   function genId() {
     return `manual_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function playChime() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.5);
+    } catch { /* AudioContext unavailable */ }
+  }
+
+  function updateNavBadge(hasAlert) {
+    const icon = document.getElementById('ldgr-nav-icon');
+    if (!icon) return;
+    let badge = icon.querySelector('.ldgr-badge');
+    if (hasAlert) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'ldgr-badge';
+        badge.style.cssText = 'position:absolute;top:2px;right:2px;width:8px;height:8px;background:#ef4444;border-radius:50%;pointer-events:none;';
+        icon.style.position = 'relative';
+        icon.appendChild(badge);
+      }
+    } else {
+      badge?.remove();
+    }
   }
 
   function btnStyle(color) {
@@ -851,17 +897,34 @@
     const itemNames = [...new Set(active.map(t => t.itemName))];
     if (!itemNames.length) return;
     const result = await W3BFetcher.fetch(itemNames);
-    if (Object.keys(result).length) {
-      Object.assign(MEM.fairValues, result);
-      MEM.lastW3BPoll = Date.now();
-      render();
+    if (!Object.keys(result).length) return;
+
+    Object.assign(MEM.fairValues, result);
+    MEM.lastW3BPoll = Date.now();
+
+    const triggered = SellAlertEngine.checkAlerts(active, MEM.fairValues);
+    if (triggered.length) {
+      for (const pos of triggered) TradeStore.update(pos.id, { alertFired: true });
+      playChime();
     }
+
+    for (const pos of TradeStore.getByStatus('open', 'partial')) {
+      if (pos.alertFired && pos.sellTarget) {
+        const fv = MEM.fairValues[pos.itemName];
+        if (fv && fv.p50 < pos.sellTarget) TradeStore.update(pos.id, { alertFired: false });
+      }
+    }
+
+    const anyAlert = TradeStore.getByStatus('open', 'partial').some(p => p.alertFired);
+    updateNavBadge(anyAlert);
+    render();
   }
 
   // ─── render ──────────────────────────────────────────────────────────────────
 
   function render() {
     MEM.trades = TradeStore.list();
+    updateNavBadge(MEM.trades.some(t => (t.status === 'open' || t.status === 'partial') && t.alertFired));
 
     let panel = document.getElementById('ldgr-panel');
     if (!panel) {
