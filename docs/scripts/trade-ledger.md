@@ -117,10 +117,10 @@ Total realized P&L per position: sum of net across all sell events minus `buyPri
 
 ## Active State
 
-- **Version:** 1.4.0
-- **Open issues:** #234, #235, #236, #237
-- **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI), #233 (W3BFetcher + live market value column)
-- **Next up:** #234
+- **Version:** 1.5.0
+- **Open issues:** #235, #236, #237
+- **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI), #233 (W3BFetcher + live market value column), #234 (Scan Now + deduplication + confirm flow)
+- **Next up:** #235
 - **PRD:** #228
 
 ---

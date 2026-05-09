@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.4.0
+// @version      1.5.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.4.0';
+  const SCRIPT_VERSION = '1.5.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -247,6 +247,7 @@
   const MEM = {
     trades:         [],
     scanResults:    null,
+    scanLoading:    false,
     fairValues:     {},
     fetchError:     null,
     lastW3BPoll:    0,
@@ -483,6 +484,71 @@
           <button type="button" class="ldgr-cancel-sell" data-id="${tradeId}" style="${btnStyle('gray')}">Cancel</button>
         </div>
       </form>
+    `;
+  }
+
+  function isDuplicate(candidate) {
+    return MEM.trades.some(t =>
+      t.itemName === candidate.itemName &&
+      t.buyPrice === candidate.buyPrice &&
+      Math.abs(t.openedAt - candidate.openedAt) < 60000
+    );
+  }
+
+  function buildScanSection() {
+    if (MEM.scanLoading) {
+      return `<div style="color:#94a3b8;font-size:11px;margin-bottom:12px;">⟳ Scanning transaction log…</div>`;
+    }
+    if (!MEM.scanResults) return '';
+    const { candidates } = MEM.scanResults;
+    if (!candidates.length) {
+      return `
+        <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
+          <div style="color:#94a3b8;font-size:11px;">No new buy transactions found in recent log.</div>
+          <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
+        </div>
+      `;
+    }
+    const rows = candidates.map((c, i) => {
+      const dup = isDuplicate(c);
+      const nameStyle = dup ? 'color:#64748b;font-size:11px;' : 'color:#e0e0e0;font-size:11px;';
+      const dupTag = dup ? ' <span style="color:#64748b;font-size:9px;">(already tracked)</span>' : '';
+      return `
+        <tr style="border-bottom:1px solid #1e293b;">
+          <td style="padding:3px 6px;">
+            <input type="checkbox" class="ldgr-scan-cb" data-idx="${i}" ${dup ? 'disabled' : ''}>
+          </td>
+          <td style="padding:3px 6px;${nameStyle}">${c.itemName}${dupTag}</td>
+          <td style="padding:3px 6px;font-size:11px;">${fmtMoney(c.buyPrice)}</td>
+          <td style="padding:3px 6px;font-size:11px;">${c.qty}</td>
+          <td style="padding:3px 6px;font-size:11px;">${c.buyVenue}</td>
+          <td style="padding:3px 6px;font-size:11px;color:#94a3b8;">${fmtDate(c.openedAt)}</td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:8px;">Scan results — select trades to add:</div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="color:#64748b;border-bottom:1px solid #1e3a5f;">
+                <th style="padding:3px 6px;"></th>
+                <th style="padding:3px 6px;text-align:left;">Item</th>
+                <th style="padding:3px 6px;text-align:left;">Price</th>
+                <th style="padding:3px 6px;text-align:left;">Qty</th>
+                <th style="padding:3px 6px;text-align:left;">Venue</th>
+                <th style="padding:3px 6px;text-align:left;">Time</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button id="ldgr-scan-add" style="${btnStyle('green')}">Add selected</button>
+          <button id="ldgr-scan-dismiss" style="${btnStyle('gray')}">Dismiss</button>
+        </div>
+      </div>
     `;
   }
 
@@ -723,6 +789,61 @@
     });
   }
 
+  // ─── Scan wiring ─────────────────────────────────────────────────────────────
+
+  function wireScanSection() {
+    document.getElementById('ldgr-scan-btn')?.addEventListener('click', async () => {
+      if (MEM.scanLoading) return;
+      MEM.scanLoading = true;
+      MEM.fetchError = null;
+      render();
+      const { entries, error } = await LogFetcher.fetch();
+      MEM.scanLoading = false;
+      if (error) {
+        MEM.fetchError = error;
+        render();
+        return;
+      }
+      MEM.scanResults = { candidates: LogParser.parseBuyCandidates(entries) };
+      render();
+    });
+
+    document.getElementById('ldgr-scan-dismiss')?.addEventListener('click', () => {
+      MEM.scanResults = null;
+      render();
+    });
+
+    document.getElementById('ldgr-scan-add')?.addEventListener('click', () => {
+      if (!MEM.scanResults) return;
+      const { candidates } = MEM.scanResults;
+      document.querySelectorAll('.ldgr-scan-cb:checked').forEach(cb => {
+        const c = candidates[parseInt(cb.dataset.idx, 10)];
+        if (!c || isDuplicate(c)) return;
+        TradeStore.add({
+          id: `scan_${c.itemName}_${c.openedAt}`,
+          schemaVersion: 1,
+          source: 'scan',
+          itemId: null,
+          itemName: c.itemName,
+          buyPrice: c.buyPrice,
+          qty: c.qty,
+          remainingQty: c.qty,
+          buyVenue: c.buyVenue,
+          sellTarget: null,
+          fairValueAtOpen: MEM.fairValues[c.itemName]?.p50 ?? null,
+          floodPlay: false,
+          notes: '',
+          openedAt: c.openedAt,
+          status: 'open',
+          sells: [],
+          alertFired: false,
+        });
+      });
+      MEM.scanResults = null;
+      render();
+    });
+  }
+
   // ─── W3B poll ────────────────────────────────────────────────────────────────
 
   async function pollW3B() {
@@ -770,6 +891,7 @@
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <strong style="font-size:14px;">📒 Trade Ledger <span style="color:#64748b;font-size:11px;">v${SCRIPT_VERSION}</span></strong>
         <div style="display:flex;gap:8px;align-items:center;">
+          <button id="ldgr-scan-btn" style="${btnStyle('blue')}" ${MEM.scanLoading ? 'disabled' : ''}>${MEM.scanLoading ? '⟳ Scanning…' : 'Scan Now'}</button>
           <button id="ldgr-add-btn" style="${btnStyle('green')}">${MEM.addFormOpen ? '✕ Cancel' : '+ Add trade'}</button>
           <button id="ldgr-close-panel" style="${btnStyle('gray')}">✕</button>
         </div>
@@ -780,6 +902,8 @@
       ${buildKeySection()}
 
       ${MEM.addFormOpen ? buildAddForm() : ''}
+
+      ${buildScanSection()}
 
       ${isEmpty && !MEM.addFormOpen
         ? `<div style="color:#64748b;text-align:center;padding:32px 0;">No trades recorded. Click "+ Add trade" to get started.</div>`
@@ -812,6 +936,7 @@
 
     wireKeySection();
     if (MEM.addFormOpen) wireAddForm();
+    wireScanSection();
     wireSellButtons();
   }
 
