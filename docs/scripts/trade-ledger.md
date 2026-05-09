@@ -28,7 +28,7 @@ See `docs/torn-domain.md` for API rules, rate limits, and compliance checklist.
 ```js
 const MEM = {
   trades:        [],      // current torn_trades snapshot; refreshed on every Store op
-  scanResults:   null,    // { candidates: [], sellEvents: [] } | null after Scan Now
+  scanResults:   null,    // { candidates: [], autoClosedCount: 0, ambiguousSells: [] } | null after Scan Now
   fairValues:    {},      // { [itemName]: { p50 } } from TornW3B
   fetchError:    null,    // string | null; shown in panel
   lastW3BPoll:   0,       // epoch ms of last TornW3B fetch
@@ -117,9 +117,9 @@ Total realized P&L per position: sum of net across all sell events minus `buyPri
 
 ## Active State
 
-- **Version:** 1.5.0
-- **Open issues:** #235, #236, #237
-- **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI), #233 (W3BFetcher + live market value column), #234 (Scan Now + deduplication + confirm flow)
+- **Version:** 1.7.0
+- **Open issues:** #235, #237
+- **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI), #233 (W3BFetcher + live market value column), #234 (Scan Now + deduplication + confirm flow), #236 (sell event auto-close + bazaar detection)
 - **Next up:** #235
 - **PRD:** #228
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.6.0
+// @version      1.7.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.6.0';
+  const SCRIPT_VERSION = '1.7.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -541,20 +541,7 @@
     );
   }
 
-  function buildScanSection() {
-    if (MEM.scanLoading) {
-      return `<div style="color:#94a3b8;font-size:11px;margin-bottom:12px;">⟳ Scanning transaction log…</div>`;
-    }
-    if (!MEM.scanResults) return '';
-    const { candidates } = MEM.scanResults;
-    if (!candidates.length) {
-      return `
-        <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
-          <div style="color:#94a3b8;font-size:11px;">No new buy transactions found in recent log.</div>
-          <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
-        </div>
-      `;
-    }
+  function buildBuyCandidatesTable(candidates) {
     const rows = candidates.map((c, i) => {
       const dup = isDuplicate(c);
       const nameStyle = dup ? 'color:#64748b;font-size:11px;' : 'color:#e0e0e0;font-size:11px;';
@@ -573,25 +560,100 @@
       `;
     }).join('');
     return `
-      <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:8px;">Scan results — select trades to add:</div>
-        <div style="overflow-x:auto;">
-          <table style="width:100%;border-collapse:collapse;font-size:11px;">
-            <thead>
-              <tr style="color:#64748b;border-bottom:1px solid #1e3a5f;">
-                <th style="padding:3px 6px;"></th>
-                <th style="padding:3px 6px;text-align:left;">Item</th>
-                <th style="padding:3px 6px;text-align:left;">Price</th>
-                <th style="padding:3px 6px;text-align:left;">Qty</th>
-                <th style="padding:3px 6px;text-align:left;">Venue</th>
-                <th style="padding:3px 6px;text-align:left;">Time</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">Buy transactions — select to add:</div>
+      <div style="overflow-x:auto;margin-bottom:8px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="color:#64748b;border-bottom:1px solid #1e3a5f;">
+              <th style="padding:3px 6px;"></th>
+              <th style="padding:3px 6px;text-align:left;">Item</th>
+              <th style="padding:3px 6px;text-align:left;">Price</th>
+              <th style="padding:3px 6px;text-align:left;">Qty</th>
+              <th style="padding:3px 6px;text-align:left;">Venue</th>
+              <th style="padding:3px 6px;text-align:left;">Time</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function buildAmbiguousSellsTable(ambiguousSells) {
+    const rows = ambiguousSells.map((a, i) => {
+      const { ev, candidates } = a;
+      const opts = candidates.map(c =>
+        `<option value="${c.id}">${c.itemName} — bought ${fmtDate(c.openedAt)} @ ${fmtMoney(c.buyPrice)} (${c.remainingQty} rem)</option>`
+      ).join('');
+      return `
+        <tr style="border-bottom:1px solid #1e293b;">
+          <td style="padding:3px 6px;font-size:11px;color:#e0e0e0;">${ev.itemName}</td>
+          <td style="padding:3px 6px;font-size:11px;">${ev.qty}</td>
+          <td style="padding:3px 6px;font-size:11px;">${fmtMoney(ev.price)}</td>
+          <td style="padding:3px 6px;font-size:11px;">${ev.venue}</td>
+          <td style="padding:3px 6px;font-size:11px;color:#94a3b8;">${fmtDate(ev.closedAt)}</td>
+          <td style="padding:3px 6px;">
+            <select id="ldgr-ambi-sel-${i}" style="${inputStyle(false)};width:auto;min-width:180px;">
+              <option value="">Pick position…</option>
+              ${opts}
+            </select>
+          </td>
+          <td style="padding:3px 6px;">
+            <button class="ldgr-ambi-apply" data-ambi-idx="${i}" style="${btnStyle('blue')}">Apply</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <div style="font-size:11px;color:#fb923c;margin-bottom:6px;">Ambiguous sell events — select which position each applies to:</div>
+      <div style="overflow-x:auto;margin-bottom:10px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="color:#64748b;border-bottom:1px solid #1e3a5f;">
+              <th style="padding:3px 6px;text-align:left;">Item</th>
+              <th style="padding:3px 6px;text-align:left;">Qty</th>
+              <th style="padding:3px 6px;text-align:left;">Sell $</th>
+              <th style="padding:3px 6px;text-align:left;">Venue</th>
+              <th style="padding:3px 6px;text-align:left;">Date</th>
+              <th style="padding:3px 6px;text-align:left;">Position</th>
+              <th style="padding:3px 6px;"></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function buildScanSection() {
+    if (MEM.scanLoading) {
+      return `<div style="color:#94a3b8;font-size:11px;margin-bottom:12px;">⟳ Scanning transaction log…</div>`;
+    }
+    if (!MEM.scanResults) return '';
+    const { candidates, autoClosedCount = 0, ambiguousSells = [] } = MEM.scanResults;
+    const hasContent = candidates.length || autoClosedCount || ambiguousSells.length;
+
+    if (!hasContent) {
+      return `
+        <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
+          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log.</div>
+          <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
         </div>
+      `;
+    }
+
+    let inner = '';
+    if (autoClosedCount > 0) {
+      inner += `<div style="color:#4ade80;font-size:11px;margin-bottom:8px;">✓ ${autoClosedCount} sell event${autoClosedCount !== 1 ? 's' : ''} auto-applied to matching positions.</div>`;
+    }
+    if (ambiguousSells.length) inner += buildAmbiguousSellsTable(ambiguousSells);
+    if (candidates.length) inner += buildBuyCandidatesTable(candidates);
+
+    return `
+      <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
+        ${inner}
         <div style="display:flex;gap:8px;margin-top:8px;">
-          <button id="ldgr-scan-add" style="${btnStyle('green')}">Add selected</button>
+          ${candidates.length ? `<button id="ldgr-scan-add" style="${btnStyle('green')}">Add selected</button>` : ''}
           <button id="ldgr-scan-dismiss" style="${btnStyle('gray')}">Dismiss</button>
         </div>
       </div>
@@ -835,6 +897,37 @@
     });
   }
 
+  // ─── Sell matching ───────────────────────────────────────────────────────────
+
+  function matchAndApplySells(sellEvents, openPositions) {
+    let autoClosedCount = 0;
+    const ambiguousSells = [];
+    const fullClosedIds = new Set();
+
+    for (const ev of sellEvents) {
+      const matches = openPositions.filter(t =>
+        !fullClosedIds.has(t.id) &&
+        t.itemName === ev.itemName &&
+        t.openedAt <= ev.closedAt
+      );
+      if (!matches.length) continue;
+      if (matches.length === 1) {
+        const t = matches[0];
+        const sellEvent = { qty: ev.qty, price: ev.price, venue: ev.venue, closedAt: ev.closedAt };
+        if (ev.qty >= t.remainingQty) {
+          TradeStore.fullClose(t.id, sellEvent);
+          fullClosedIds.add(t.id);
+        } else {
+          TradeStore.partialClose(t.id, sellEvent);
+        }
+        autoClosedCount++;
+      } else {
+        ambiguousSells.push({ ev, candidates: matches });
+      }
+    }
+    return { autoClosedCount, ambiguousSells };
+  }
+
   // ─── Scan wiring ─────────────────────────────────────────────────────────────
 
   function wireScanSection() {
@@ -850,13 +943,37 @@
         render();
         return;
       }
-      MEM.scanResults = { candidates: LogParser.parseBuyCandidates(entries) };
+      const candidates = LogParser.parseBuyCandidates(entries);
+      const sellEvents = LogParser.parseSellEvents(entries);
+      const openPositions = TradeStore.getByStatus('open', 'partial');
+      const { autoClosedCount, ambiguousSells } = matchAndApplySells(sellEvents, openPositions);
+      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells };
       render();
     });
 
     document.getElementById('ldgr-scan-dismiss')?.addEventListener('click', () => {
       MEM.scanResults = null;
       render();
+    });
+
+    document.querySelectorAll('.ldgr-ambi-apply').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!MEM.scanResults) return;
+        const idx = parseInt(btn.dataset.ambiIdx, 10);
+        const sel = document.getElementById(`ldgr-ambi-sel-${idx}`);
+        if (!sel?.value) return;
+        const { ev, candidates } = MEM.scanResults.ambiguousSells[idx];
+        const trade = candidates.find(t => t.id === sel.value);
+        if (!trade) return;
+        const sellEvent = { qty: ev.qty, price: ev.price, venue: ev.venue, closedAt: ev.closedAt };
+        if (ev.qty >= trade.remainingQty) {
+          TradeStore.fullClose(trade.id, sellEvent);
+        } else {
+          TradeStore.partialClose(trade.id, sellEvent);
+        }
+        MEM.scanResults.ambiguousSells.splice(idx, 1);
+        render();
+      });
     });
 
     document.getElementById('ldgr-scan-add')?.addEventListener('click', () => {
