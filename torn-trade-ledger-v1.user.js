@@ -159,6 +159,8 @@
               }
               return resolve({ entries: [], error: `API error ${d.error.code}: ${d.error.error}` });
             }
+            console.log('[TradeLedger] API response keys:', Object.keys(d));
+            console.log('[TradeLedger] d.log type:', typeof d.log, '| value:', d.log);
             const raw = d.log ?? {};
             const entries = Object.values(raw).map(e => ({
               action: (e.title ?? '').replace(/<[^>]+>/g, ''),
