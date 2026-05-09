@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.7.0
+// @version      1.7.1
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.7.0';
+  const SCRIPT_VERSION = '1.7.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@
             }
             const raw = d.log ?? {};
             const entries = Object.values(raw).map(e => ({
-              action: e.title ?? '',
+              action: (e.title ?? '').replace(/<[^>]+>/g, ''),
               timestamp: e.timestamp ?? 0,
             }));
             resolve({ entries, error: null });
@@ -630,13 +630,13 @@
       return `<div style="color:#94a3b8;font-size:11px;margin-bottom:12px;">⟳ Scanning transaction log…</div>`;
     }
     if (!MEM.scanResults) return '';
-    const { candidates, autoClosedCount = 0, ambiguousSells = [] } = MEM.scanResults;
+    const { candidates, autoClosedCount = 0, ambiguousSells = [], entryCount = 0 } = MEM.scanResults;
     const hasContent = candidates.length || autoClosedCount || ambiguousSells.length;
 
     if (!hasContent) {
       return `
         <div style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:10px 12px;margin-bottom:12px;">
-          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log.</div>
+          <div style="color:#94a3b8;font-size:11px;">No new transactions found in recent log (${entryCount} entries checked). Check browser console for details.</div>
           <button id="ldgr-scan-dismiss" style="${btnStyle('gray')};margin-top:8px;">Dismiss</button>
         </div>
       `;
@@ -943,11 +943,14 @@
         render();
         return;
       }
+      console.log(`[TradeLedger] Scan: ${entries.length} log entries fetched`);
+      if (entries.length) console.log('[TradeLedger] Sample titles:', entries.slice(0, 5).map(e => e.action));
       const candidates = LogParser.parseBuyCandidates(entries);
       const sellEvents = LogParser.parseSellEvents(entries);
+      console.log(`[TradeLedger] Parsed: ${candidates.length} buy candidates, ${sellEvents.length} sell events`);
       const openPositions = TradeStore.getByStatus('open', 'partial');
       const { autoClosedCount, ambiguousSells } = matchAndApplySells(sellEvents, openPositions);
-      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells };
+      MEM.scanResults = { candidates, autoClosedCount, ambiguousSells, entryCount: entries.length };
       render();
     });
 
