@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.8.0
+// @version      1.8.1
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.8.0';
+  const SCRIPT_VERSION = '1.8.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -459,7 +459,7 @@
   function buildAddForm() {
     const e = MEM.addFormErrors;
     return `
-      <form id="ldgr-add-form" style="background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:12px;margin-bottom:12px;">
+      <form id="ldgr-add-form" style="background:#0f172a;color:#e0e0e0;border:1px solid #1e3a5f;border-radius:6px;padding:12px;margin-bottom:12px;">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
           <div>
             <label style="display:block;margin-bottom:3px;color:#94a3b8;font-size:11px;">Item name *</label>
@@ -499,7 +499,7 @@
           </div>
         </div>
         <div style="margin-bottom:8px;">
-          <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:11px;">
+          <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#e0e0e0;">
             <input type="checkbox" id="af-flood"> Flood play
           </label>
         </div>
@@ -518,7 +518,7 @@
   function buildSellForm(tradeId, remainingQty) {
     const se = MEM.sellFormErrors;
     return `
-      <form id="ldgr-sell-form-${tradeId}" style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;padding:8px 6px;background:#0f172a;">
+      <form id="ldgr-sell-form-${tradeId}" style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;padding:8px 6px;background:#0f172a;color:#e0e0e0;">
         <div style="min-width:90px;">
           <label style="display:block;color:#94a3b8;font-size:10px;margin-bottom:2px;">Qty sold * (max ${remainingQty})</label>
           <input id="sf-qty-${tradeId}" type="number" min="1" max="${remainingQty}" step="1"
@@ -1065,7 +1065,7 @@
       panel.id = 'ldgr-panel';
       panel.style.cssText = [
         'position:fixed;top:50px;right:12px;width:min(700px,calc(100vw - 24px));max-height:85vh;overflow-y:auto',
-        'background:#16213e;color:#e0e0e0;border:1px solid #0f3460;border-radius:8px',
+        'background:#16213e;color:#e0e0e0;color-scheme:dark;border:1px solid #0f3460;border-radius:8px',
         'padding:16px;z-index:99999;font-family:monospace;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.6)',
       ].join(';');
       document.body.appendChild(panel);
