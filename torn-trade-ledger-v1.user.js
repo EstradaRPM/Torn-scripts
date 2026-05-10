@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.9.1
+// @version      1.9.2
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.1';
+  const SCRIPT_VERSION = '1.9.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -344,13 +344,14 @@
 
   function updateNavBadge(hasAlert) {
     const link = document.getElementById('ldgr-cash-link');
-    if (!link) return;
-    if (hasAlert) {
-      link.textContent = '[trades!]';
-      link.style.color = '#ef4444';
-    } else {
-      link.textContent = '[trades]';
-      link.style.color = '#60a5fa';
+    if (link) {
+      link.textContent = hasAlert ? '[trades!]' : '[trades]';
+      link.style.color = hasAlert ? '#ef4444' : '#60a5fa';
+    }
+    // Mobile: tint the cash amount since [trades] is hidden
+    const amountEl = document.querySelector('#user-money');
+    if (amountEl && window.innerWidth <= 784) {
+      amountEl.style.color = hasAlert ? '#ef4444' : '';
     }
   }
 
@@ -376,50 +377,48 @@
 
   function injectCashLink() {
     if (document.getElementById('ldgr-cash-link')) return;
-    // Prefer inserting after the cash amount span; fall back to appending to the li
-    const amountSelectors = [
-      '#user-money',
-      'li[aria-label^="Cash"] .desc',
-      'li[aria-label^="Cash"] span',
-      '#top-money',
-    ];
-    const containerSelectors = [
-      'li[aria-label^="Cash"]',
-      '#player-money',
-      'li.money',
-    ];
-    let target = null;
-    let insertAfter = false;
-    for (const sel of amountSelectors) {
-      target = document.querySelector(sel);
-      if (target) { insertAfter = true; break; }
-    }
-    if (!target) {
-      for (const sel of containerSelectors) {
-        target = document.querySelector(sel);
-        if (target) break;
-      }
-    }
-    if (!target) {
-      console.warn('[TradeLedger] No cash mount point found');
-      return;
-    }
-    const link = document.createElement('a');
-    link.id = 'ldgr-cash-link';
-    link.textContent = '[trades]';
-    link.title = 'Trade Ledger';
-    link.style.cssText = 'cursor:pointer;font-size:11px;color:#60a5fa;margin-left:4px;text-decoration:none;';
-    link.addEventListener('click', (e) => {
+
+    const toggle = (e) => {
       e.preventDefault();
+      e.stopPropagation();
       MEM.panelOpen = !MEM.panelOpen;
       Store.set('ldgr_collapsed', !MEM.panelOpen);
       render();
       if (MEM.panelOpen) pollW3B();
-    });
-    if (insertAfter) {
-      target.insertAdjacentElement('afterend', link);
-    } else {
-      target.appendChild(link);
+    };
+
+    const amountEl = document.querySelector('#user-money')
+      ?? document.querySelector('li[aria-label^="Cash"] .desc')
+      ?? document.querySelector('#top-money');
+
+    const cashLi = amountEl?.closest('li')
+      ?? document.querySelector('li[aria-label^="Cash"]')
+      ?? document.querySelector('#player-money')
+      ?? document.querySelector('li.money');
+
+    if (!cashLi) {
+      console.warn('[TradeLedger] No cash mount point found');
+      return;
+    }
+
+    // Desktop: [trades] link right-aligned inside the li
+    const link = document.createElement('a');
+    link.id = 'ldgr-cash-link';
+    link.textContent = '[trades]';
+    link.title = 'Trade Ledger';
+    link.style.cssText = 'cursor:pointer;font-size:11px;color:#60a5fa;text-decoration:none;margin-left:auto;padding-left:6px;';
+    link.addEventListener('click', toggle);
+    cashLi.appendChild(link);
+
+    // Mobile: hide [trades], make cash amount itself the toggle
+    const style = document.createElement('style');
+    style.textContent = '@media (max-width: 784px) { #ldgr-cash-link { display:none !important; } }';
+    document.head.appendChild(style);
+
+    if (amountEl) {
+      amountEl.addEventListener('click', (e) => {
+        if (window.innerWidth <= 784) toggle(e);
+      });
     }
   }
 
