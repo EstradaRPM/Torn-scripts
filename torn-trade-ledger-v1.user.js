@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.8.1
+// @version      1.8.2
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.8.1';
+  const SCRIPT_VERSION = '1.8.2';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -460,7 +460,7 @@
     const e = MEM.addFormErrors;
     return `
       <form id="ldgr-add-form" style="background:#0f172a;color:#e0e0e0;border:1px solid #1e3a5f;border-radius:6px;padding:12px;margin-bottom:12px;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-bottom:8px;">
           <div>
             <label style="display:block;margin-bottom:3px;color:#94a3b8;font-size:11px;">Item name *</label>
             <input id="af-name" type="text" style="${inputStyle(e.name)}" placeholder="e.g. Xanax">
@@ -1066,7 +1066,7 @@
       panel.style.cssText = [
         'position:fixed;top:50px;right:12px;width:min(700px,calc(100vw - 24px));max-height:85vh;overflow-y:auto',
         'background:#16213e;color:#e0e0e0;color-scheme:dark;border:1px solid #0f3460;border-radius:8px',
-        'padding:16px;z-index:99999;font-family:monospace;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.6)',
+        'padding:16px;z-index:99999;font-family:monospace;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.6);box-sizing:border-box',
       ].join(';');
       document.body.appendChild(panel);
     }
