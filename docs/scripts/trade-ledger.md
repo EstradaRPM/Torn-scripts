@@ -117,7 +117,7 @@ Total realized P&L per position: sum of net across all sell events minus `buyPri
 
 ## Active State
 
-- **Version:** 1.8.1
+- **Version:** 1.10.0
 - **Open issues:** none
 - **Closed:** #229 (scaffold), #230 (NavIcon + panel shell), #231 (manual add form + partial sell UI + P&L), #232 (LogParser + LogFetcher + API key UI), #233 (W3BFetcher + live market value column), #234 (Scan Now + deduplication + confirm flow), #235 (SellAlertEngine + nav badge + chime), #236 (sell event auto-close + bazaar detection), #237 (snipe-tracker torn_trades write)
 - **Next up:** —

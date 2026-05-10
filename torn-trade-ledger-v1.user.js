@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.9.2
+// @version      1.10.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.2';
+  const SCRIPT_VERSION = '1.10.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -342,17 +342,9 @@
     } catch { /* AudioContext unavailable */ }
   }
 
-  function updateNavBadge(hasAlert) {
-    const link = document.getElementById('ldgr-cash-link');
-    if (link) {
-      link.textContent = hasAlert ? '[trades!]' : '[trades]';
-      link.style.color = hasAlert ? '#ef4444' : '#60a5fa';
-    }
-    // Mobile: tint the cash amount since [trades] is hidden
-    const amountEl = document.querySelector('#user-money');
-    if (amountEl && window.innerWidth <= 784) {
-      amountEl.style.color = hasAlert ? '#ef4444' : '';
-    }
+  function updateFAB(hasAlert) {
+    const dot = document.getElementById('ldgr-fab-dot');
+    if (dot) dot.style.display = hasAlert ? 'block' : 'none';
   }
 
   function btnStyle(color) {
@@ -373,53 +365,48 @@
     return msg ? `<span style="color:#ef4444;font-size:10px;">${msg}</span>` : '';
   }
 
-  // ─── CashLink ────────────────────────────────────────────────────────────────
+  // ─── FAB ─────────────────────────────────────────────────────────────────────
 
-  function injectCashLink() {
-    if (document.getElementById('ldgr-cash-link')) return;
+  function injectFAB() {
+    if (document.getElementById('ldgr-fab')) return;
 
-    const toggle = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    const fab = document.createElement('button');
+    fab.id = 'ldgr-fab';
+    fab.title = 'Trade Ledger';
+    fab.innerHTML = `
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <line x1="5"  y1="7"  x2="5"  y2="10" stroke="#4ade80" stroke-width="1.5" stroke-linecap="round"/>
+        <rect x="3"  y="10" width="4" height="8"  rx="0.5" fill="#4ade80"/>
+        <line x1="5"  y1="18" x2="5"  y2="21" stroke="#4ade80" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="12" y1="3"  x2="12" y2="6"  stroke="#f87171" stroke-width="1.5" stroke-linecap="round"/>
+        <rect x="10" y="6"  width="4" height="8"  rx="0.5" fill="#f87171"/>
+        <line x1="12" y1="14" x2="12" y2="17" stroke="#f87171" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="19" y1="5"  x2="19" y2="8"  stroke="#4ade80" stroke-width="1.5" stroke-linecap="round"/>
+        <rect x="17" y="8"  width="4" height="10" rx="0.5" fill="#4ade80"/>
+        <line x1="19" y1="18" x2="19" y2="21" stroke="#4ade80" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span id="ldgr-fab-dot" style="display:none;position:absolute;top:4px;right:4px;width:8px;height:8px;background:#ef4444;border-radius:50%;border:1.5px solid #16213e;"></span>
+    `;
+    fab.style.cssText = [
+      'position:fixed;bottom:72px;left:12px',
+      'width:44px;height:44px;border-radius:50%',
+      'background:#1e3a5f;border:1.5px solid #0f3460',
+      'cursor:pointer;display:flex;align-items:center;justify-content:center',
+      'box-shadow:0 2px 12px rgba(0,0,0,.5)',
+      'z-index:99998;transition:background .15s',
+      'padding:0;',
+    ].join(';');
+
+    fab.addEventListener('mouseenter', () => { fab.style.background = '#1d4ed8'; });
+    fab.addEventListener('mouseleave', () => { fab.style.background = '#1e3a5f'; });
+    fab.addEventListener('click', () => {
       MEM.panelOpen = !MEM.panelOpen;
       Store.set('ldgr_collapsed', !MEM.panelOpen);
       render();
       if (MEM.panelOpen) pollW3B();
-    };
+    });
 
-    const amountEl = document.querySelector('#user-money')
-      ?? document.querySelector('li[aria-label^="Cash"] .desc')
-      ?? document.querySelector('#top-money');
-
-    const cashLi = amountEl?.closest('li')
-      ?? document.querySelector('li[aria-label^="Cash"]')
-      ?? document.querySelector('#player-money')
-      ?? document.querySelector('li.money');
-
-    if (!cashLi) {
-      console.warn('[TradeLedger] No cash mount point found');
-      return;
-    }
-
-    // Desktop: [trades] link right-aligned inside the li
-    const link = document.createElement('a');
-    link.id = 'ldgr-cash-link';
-    link.textContent = '[trades]';
-    link.title = 'Trade Ledger';
-    link.style.cssText = 'cursor:pointer;font-size:11px;color:#60a5fa;text-decoration:none;margin-left:auto;padding-left:6px;';
-    link.addEventListener('click', toggle);
-    cashLi.appendChild(link);
-
-    // Mobile: hide [trades], make cash amount itself the toggle
-    const style = document.createElement('style');
-    style.textContent = '@media (max-width: 784px) { #ldgr-cash-link { display:none !important; } }';
-    document.head.appendChild(style);
-
-    if (amountEl) {
-      amountEl.addEventListener('click', (e) => {
-        if (window.innerWidth <= 784) toggle(e);
-      });
-    }
+    document.body.appendChild(fab);
   }
 
   // ─── Panel HTML builders ─────────────────────────────────────────────────────
@@ -1061,7 +1048,7 @@
     }
 
     const anyAlert = TradeStore.getByStatus('open', 'partial').some(p => p.alertFired);
-    updateNavBadge(anyAlert);
+    updateFAB(anyAlert);
     render();
   }
 
@@ -1069,7 +1056,7 @@
 
   function render() {
     MEM.trades = TradeStore.list();
-    updateNavBadge(MEM.trades.some(t => (t.status === 'open' || t.status === 'partial') && t.alertFired));
+    updateFAB(MEM.trades.some(t => (t.status === 'open' || t.status === 'partial') && t.alertFired));
 
     let panel = document.getElementById('ldgr-panel');
     if (!panel) {
@@ -1150,7 +1137,7 @@
 
   // ─── Init ────────────────────────────────────────────────────────────────────
 
-  injectCashLink();
+  injectFAB();
   render();
   pollW3B();
   setInterval(pollW3B, 5 * 60 * 1000);
