@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.8.2
+// @version      1.9.0
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.8.2';
+  const SCRIPT_VERSION = '1.9.0';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -343,19 +343,14 @@
   }
 
   function updateNavBadge(hasAlert) {
-    const icon = document.getElementById('ldgr-nav-icon');
-    if (!icon) return;
-    let badge = icon.querySelector('.ldgr-badge');
+    const link = document.getElementById('ldgr-cash-link');
+    if (!link) return;
     if (hasAlert) {
-      if (!badge) {
-        badge = document.createElement('span');
-        badge.className = 'ldgr-badge';
-        badge.style.cssText = 'position:absolute;top:2px;right:2px;width:8px;height:8px;background:#ef4444;border-radius:50%;pointer-events:none;';
-        icon.style.position = 'relative';
-        icon.appendChild(badge);
-      }
+      link.textContent = '[trades!]';
+      link.style.color = '#ef4444';
     } else {
-      badge?.remove();
+      link.textContent = '[trades]';
+      link.style.color = '#60a5fa';
     }
   }
 
@@ -377,37 +372,54 @@
     return msg ? `<span style="color:#ef4444;font-size:10px;">${msg}</span>` : '';
   }
 
-  // ─── NavIcon ─────────────────────────────────────────────────────────────────
+  // ─── CashLink ────────────────────────────────────────────────────────────────
 
-  function injectNavIcon() {
-    if (document.getElementById('ldgr-nav-icon')) return;
-    const selectors = [
-      '.torn-nav--icon-list',
-      '#top-page-links-list',
-      '.nav-tabs',
-      'ul[class*="nav"]',
+  function injectCashLink() {
+    if (document.getElementById('ldgr-cash-link')) return;
+    // Prefer inserting after the cash amount span; fall back to appending to the li
+    const amountSelectors = [
+      'li[aria-label^="Cash"] .desc',
+      'li[aria-label^="Cash"] span',
+      '#top-money',
     ];
-    let mount = null;
-    for (const sel of selectors) {
-      mount = document.querySelector(sel);
-      if (mount) break;
+    const containerSelectors = [
+      'li[aria-label^="Cash"]',
+      '#player-money',
+      'li.money',
+    ];
+    let target = null;
+    let insertAfter = false;
+    for (const sel of amountSelectors) {
+      target = document.querySelector(sel);
+      if (target) { insertAfter = true; break; }
     }
-    if (!mount) {
-      console.warn('[TradeLedger] No nav mount point found');
+    if (!target) {
+      for (const sel of containerSelectors) {
+        target = document.querySelector(sel);
+        if (target) break;
+      }
+    }
+    if (!target) {
+      console.warn('[TradeLedger] No cash mount point found');
       return;
     }
-    const li = document.createElement('li');
-    li.id = 'ldgr-nav-icon';
-    li.title = 'Trade Ledger';
-    li.style.cssText = 'cursor:pointer;list-style:none;display:inline-flex;align-items:center;padding:4px 8px;font-size:16px;';
-    li.textContent = '📒';
-    li.addEventListener('click', () => {
+    const link = document.createElement('a');
+    link.id = 'ldgr-cash-link';
+    link.textContent = '[trades]';
+    link.title = 'Trade Ledger';
+    link.style.cssText = 'cursor:pointer;font-size:11px;color:#60a5fa;margin-left:4px;text-decoration:none;';
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
       MEM.panelOpen = !MEM.panelOpen;
       Store.set('ldgr_collapsed', !MEM.panelOpen);
       render();
       if (MEM.panelOpen) pollW3B();
     });
-    mount.appendChild(li);
+    if (insertAfter) {
+      target.insertAdjacentElement('afterend', link);
+    } else {
+      target.appendChild(link);
+    }
   }
 
   // ─── Panel HTML builders ─────────────────────────────────────────────────────
@@ -1138,7 +1150,7 @@
 
   // ─── Init ────────────────────────────────────────────────────────────────────
 
-  injectNavIcon();
+  injectCashLink();
   render();
   pollW3B();
   setInterval(pollW3B, 5 * 60 * 1000);
