@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Trade Ledger
 // @namespace    estradarpm-trade-ledger
-// @version      1.9.0
+// @version      1.9.1
 // @description  Unified trade ledger with fee-adjusted P&L, sell alerts, and TornW3B fair value
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '1.9.0';
+  const SCRIPT_VERSION = '1.9.1';
   const API_KEY = '###PDA-APIKEY###';
 
   // ─── Store ──────────────────────────────────────────────────────────────────
@@ -378,6 +378,7 @@
     if (document.getElementById('ldgr-cash-link')) return;
     // Prefer inserting after the cash amount span; fall back to appending to the li
     const amountSelectors = [
+      '#user-money',
       'li[aria-label^="Cash"] .desc',
       'li[aria-label^="Cash"] span',
       '#top-money',
