@@ -6,6 +6,7 @@ Shared knowledge for all scripts in this repo. Read this file when touching API 
 
 ## Torn API
 
+- **Authoritative endpoint reference:** https://github.com/Torn-Playground/tornapi-documentation — check here for available selections, field names, and response shapes before writing any new API call. The live docs site is at https://tornapi.tornplayground.eu/.
 - **Base URL:** `https://api.torn.com/`
 - **Auth:** `?key=###PDA-APIKEY###` (PDA injects at install; localStorage for manual installs)
 - **Rate limit:** hard cap 100 req/min per player key
