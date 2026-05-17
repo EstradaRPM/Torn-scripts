@@ -6,7 +6,18 @@ Shared knowledge for all scripts in this repo. Read this file when touching API 
 
 ## Torn API
 
-- **Authoritative endpoint reference:** https://github.com/Torn-Playground/tornapi-documentation — check here for available selections, field names, and response shapes before writing any new API call. The live docs site is at https://tornapi.tornplayground.eu/.
+### API References
+
+| Resource | Covers | Use for |
+|----------|--------|---------|
+| [tornapi-documentation](https://github.com/Torn-Playground/tornapi-documentation) ([live](https://tornapi.tornplayground.eu/)) | v1 API | Selection names, field shapes, access levels |
+| [torn-client](https://github.com/neon0404/torn-client) | v2 API | v2 endpoint/model reference; browse `src/generated/endpoints/` and `src/generated/models/` |
+| [Official v2 OpenAPI spec](https://www.torn.com/swagger/openapi.json) | v2 API | Raw JSON spec powering the playground and torn-client generator |
+
+Check the relevant reference before writing any new API call.
+
+### v1 (current scripts)
+
 - **Base URL:** `https://api.torn.com/`
 - **Auth:** `?key=###PDA-APIKEY###` (PDA injects at install; localStorage for manual installs)
 - **Rate limit:** hard cap 100 req/min per player key
