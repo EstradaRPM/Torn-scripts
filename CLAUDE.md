@@ -105,6 +105,7 @@ These apply to every script. Per-script specifics (MEM shape, Store keys, module
 - **State:** Single `const MEM = {}`. Assign fields; never rebind `MEM`.
 - **Persistence:** `Store.get(k)` / `Store.set(k, v)` wrap localStorage in try/catch. Namespace keys with a script-specific prefix.
 - **Render cycle:** Single `render()` rebuilds entire UI from `MEM`. No partial DOM patching. Call on every state change.
+- **setState (optional):** Scripts with a persistent, mutable UI panel (multiple forms/tabs/interaction surfaces touching the same `MEM`) should route mutations through `setState(patch)` that applies the patch and calls `render()`. Page enhancers, observer/loggers, and one-shot computations don't need it — there's no render loop to discipline.
 - **API fetch:** Always check `d.error` before using data. Store error in `MEM.fetchError` for UI surfacing. 5-min poll minimum.
 - **DOM reading:** Prefer reading from page DOM before API calls. Multiple CSS selector fallbacks + text regex fallback.
 
