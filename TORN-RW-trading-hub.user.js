@@ -668,9 +668,11 @@
   }
 
   // ─── Item categorisation — Advertise dividers ────────────────────────────────
-  // RW weapons split into Primary/Secondary/Melee for the advertise outputs;
-  // armour-type ledger rows group under "Armor". Anything unrecognised lands in
-  // "Other" so a divider is always shown rather than an item silently dropped.
+  // Items split into Primary/Secondary/Melee/Armor for the advertise outputs.
+  // The split is driven by Torn's own item `type` field — cached by ItemDict
+  // from /v2/torn/items — so every weapon Torn knows is mapped automatically.
+  // WEAPON_CATEGORY is only an offline fallback for common RW items used before
+  // the dictionary has been fetched (first run, pre-scan).
   const WEAPON_CATEGORY = {
     'Enfield SA-80': 'Primary',
     'Sub-Machine Gun': 'Primary',
@@ -682,17 +684,36 @@
   };
   const CATEGORY_ORDER = ['Primary', 'Secondary', 'Melee', 'Armor', 'Other'];
 
-  function itemCategory(item) {
+  // Normalise a Torn item `type` to an advertise category. Weapon classes pass
+  // through; "Defensive" (armour) collapses to "Armor"; anything else → null.
+  function normCategory(type) {
+    switch (String(type || '').toLowerCase()) {
+      case 'primary':   return 'Primary';
+      case 'secondary': return 'Secondary';
+      case 'melee':     return 'Melee';
+      case 'defensive': return 'Armor';
+      default:          return null;
+    }
+  }
+
+  // Resolve one item's advertise category. `cats` is the optional name→category
+  // index from ItemDict; it wins when present, then the item's own weapon/armor
+  // type, then the offline fallback map, then "Other".
+  function itemCategory(item, cats) {
+    const name = (item && item.itemName) || '';
+    const fromDict = cats && cats[name.toLowerCase()];
+    if (fromDict) return fromDict;
     if (item && item.type === 'armor') return 'Armor';
-    return WEAPON_CATEGORY[(item && item.itemName) || ''] || 'Other';
+    return WEAPON_CATEGORY[name] || 'Other';
   }
 
   // Selected items → ordered category buckets, alphabetical within each. Empty
   // categories are dropped so dividers only appear where there is live stock.
+  // A pre-stamped `item.category` (set by buildAdvertiseTab) is trusted as-is.
   function groupByCategory(items) {
     const buckets = {};
     for (const it of (items || [])) {
-      const c = itemCategory(it);
+      const c = it.category || itemCategory(it);
       (buckets[c] || (buckets[c] = [])).push(it);
     }
     return CATEGORY_ORDER
@@ -1053,7 +1074,11 @@
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
     const isChecked = (it) => (sel == null ? true : sel.includes(it.id));
-    const selectedItems = listed.filter(isChecked);
+    // Stamp each selected item with its resolved category so the output
+    // generators can group without re-querying the item dictionary.
+    const cats = ItemDict.categories();
+    const selectedItems = listed.filter(isChecked)
+      .map(it => ({ ...it, category: itemCategory(it, cats) }));
     const transactions = A.transactions || [];
 
     const itemRows = listed.length
@@ -1357,23 +1382,39 @@
     async ensure(key) {
       const WEEK = 7 * 24 * 3600 * 1000;
       const cached = Store.get('rwth_items');
-      if (cached && cached.map && cached.ts && Date.now() - cached.ts < WEEK) {
+      // `cats` must be present too — caches from before the category index was
+      // added are treated as stale so the dictionary is re-fetched once.
+      if (cached && cached.map && cached.cats && cached.ts
+          && Date.now() - cached.ts < WEEK) {
         return cached.map;
       }
       const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
       const d = await res.json();
       if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
       const map = {};
+      const cats = {};
+      const record = (id, name, type) => {
+        if (id == null || !name) return;
+        map[id] = name;
+        const c = normCategory(type);
+        if (c) cats[String(name).toLowerCase()] = c;
+      };
       const items = d && d.items;
       if (Array.isArray(items)) {
-        for (const it of items) if (it && it.id != null) map[it.id] = it.name;
+        for (const it of items) if (it) record(it.id, it.name, it.type);
       } else if (items && typeof items === 'object') {
         for (const id of Object.keys(items)) {
-          if (items[id] && items[id].name) map[id] = items[id].name;
+          const it = items[id];
+          if (it) record(id, it.name, it.type);
         }
       }
-      Store.set('rwth_items', { ts: Date.now(), map });
+      Store.set('rwth_items', { ts: Date.now(), map, cats });
       return map;
+    },
+    // Sync name→category index from the cached dictionary; {} until first scan.
+    categories() {
+      const c = Store.get('rwth_items');
+      return (c && c.cats) || {};
     },
   };
 
