@@ -261,10 +261,11 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.0 (draft — no code yet)
+- **Version:** 0.1.0 (slice 1 built — scaffold + launcher + panel shell)
 - **Design:** locked (grill complete 2026-05-21)
-- **Open issues:** none filed yet
-- **Next up:** `/to-prd` → `/to-issues`
+- **Open issues:** #243–#248 (slice 1 / #242 done)
+- **Next up:** slice 2 — #243 Settings tab and #244 Ledger manual add
+- **Tests:** `node test-rwth.js` — Node shim requires the shipped `.user.js`, asserts the `__RwthPure` seam
 - **Build-time TODO:** seed `ITEM_ABBREV` from common Torn trade-chat abbreviations; user to finalise the footer-line wording.
 
 ---
