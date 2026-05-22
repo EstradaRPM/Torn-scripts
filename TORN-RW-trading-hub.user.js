@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.15
+// @version      0.1.16
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.15';
+  const SCRIPT_VERSION = '0.1.16';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -21,7 +21,7 @@
   // ─── Brand (static, in-file; not exposed in Settings) ────────────────────────
   const BRAND = {
     mark: 'NC17',
-    forumThreadTitle: '[S] NC17 Rated ▸ RW Weapons & Armor',
+    forumThreadTitle: '[S] NC17 Rated // RW Weapons & Armor',
     // Footer line, bottom-left of the forum/bazaar HTML — an NC-17 movie-rating
     // gag (the brand is a film rating). Finalised with the user for slice 7.
     footerTagline: 'Contains explicit deals, weapons, and depictions of violence',
@@ -667,72 +667,150 @@
          + `${price ? ` — <b>${price}</b>` : ''}`;
   }
 
-  // ─── Forum HTML — section-1 markup, polished with sections 2-4 ───────────────
-  // Each helper returns one <tr> (or a wrapper) of the forum post. Inline styles
-  // are byte-verbatim from rwth-assets.md so the rendered post matches the
-  // user's approved template exactly.
+  // ─── Item categorisation — Advertise dividers ────────────────────────────────
+  // Items split into Primary/Secondary/Melee/Armor for the advertise outputs.
+  // The split is driven by Torn's own item `type` field — cached by ItemDict
+  // from /v2/torn/items — so every weapon Torn knows is mapped automatically.
+  // WEAPON_CATEGORY is only an offline fallback for common RW items used before
+  // the dictionary has been fetched (first run, pre-scan).
+  const WEAPON_CATEGORY = {
+    'Enfield SA-80': 'Primary',
+    'Sub-Machine Gun': 'Primary',
+    'Heavy Machine Gun': 'Primary',
+    'Light Anti-Tank Weapon': 'Primary',
+    'Rocket-Propelled Grenade Launcher': 'Primary',
+    'Cobra Derringer': 'Secondary',
+    'Diamond Bladed Knife': 'Melee',
+  };
+  const CATEGORY_ORDER = ['Primary', 'Secondary', 'Melee', 'Armor', 'Other'];
 
-  // Brand header (section 4 hairline). The forum header image, when set,
-  // replaces the NC17 text block entirely (user's slice-7 decision).
+  // Normalise a Torn item `type` to an advertise category. Weapon classes pass
+  // through; "Defensive" (armour) collapses to "Armor"; anything else → null.
+  function normCategory(type) {
+    switch (String(type || '').toLowerCase()) {
+      case 'primary':   return 'Primary';
+      case 'secondary': return 'Secondary';
+      case 'melee':     return 'Melee';
+      case 'defensive': return 'Armor';
+      default:          return null;
+    }
+  }
+
+  // Resolve one item's advertise category. `cats` is the optional name→category
+  // index from ItemDict; it wins when present, then the item's own weapon/armor
+  // type, then the offline fallback map, then "Other".
+  function itemCategory(item, cats) {
+    const name = (item && item.itemName) || '';
+    const fromDict = cats && cats[name.toLowerCase()];
+    if (fromDict) return fromDict;
+    if (item && item.type === 'armor') return 'Armor';
+    return WEAPON_CATEGORY[name] || 'Other';
+  }
+
+  // Selected items → ordered category buckets, alphabetical within each. Empty
+  // categories are dropped so dividers only appear where there is live stock.
+  // A pre-stamped `item.category` (set by buildAdvertiseTab) is trusted as-is.
+  function groupByCategory(items) {
+    const buckets = {};
+    for (const it of (items || [])) {
+      const c = it.category || itemCategory(it);
+      (buckets[c] || (buckets[c] = [])).push(it);
+    }
+    return CATEGORY_ORDER
+      .filter(c => buckets[c])
+      .map(c => ({
+        category: c,
+        items: buckets[c].slice().sort((a, b) =>
+          String(a.itemName || '').localeCompare(String(b.itemName || ''))),
+      }));
+  }
+
+  // ─── Forum HTML — section markup ─────────────────────────────────────────────
+  // Each helper returns one <tr> (or a wrapper) of the forum post.
+  //
+  // Theme-proofing: Torn's forum/bazaar renderer recolours real CSS borders
+  // (white in dark mode) and forces a dark `color` onto bare <td> text in light
+  // mode. So these builders use NO `border` properties — every visible line is a
+  // background-filled element — and EVERY text run is wrapped in a <span>/<div>
+  // carrying its own inline `color`, which the theme leaves alone.
+
+  // A theme-proof hairline — a 1px background-filled <div>, never a CSS border.
+  function forumRule() {
+    return `<tr><td style="background: #080e18; padding: 0 22px; line-height: 0;">`
+      + `<div style="height: 1px; background: #15301f; font-size: 0; line-height: 0;">&nbsp;</div></td></tr>`;
+  }
+
+  // Brand header. The forum header image, when set, replaces the NC17 text
+  // block entirely (user's slice-7 decision).
   function forumHeader(s) {
     const img = (s.forumHeaderImageUrl || '').trim();
     if (img) {
-      return `<tr><td style="background: #080e18; padding: 0; line-height: 0; `
-        + `border-top: 1px solid rgba(0,255,136,0.15); border-bottom: 1px solid rgba(0,255,136,0.08);">`
+      return `<tr><td style="background: #080e18; padding: 0; line-height: 0;">`
         + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener">`
         + `<img style="display: block; height: auto;" src="${escapeAttr(img)}" alt="" width="100%"/></a></td></tr>`;
     }
-    return `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center; `
-      + `border-top: 1px solid rgba(0,255,136,0.15); border-bottom: 1px solid rgba(0,255,136,0.08);">`
+    return `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center;">`
       + `<div style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
       + `${escapeAttr(BRAND.mark)}</div>`
       + `<div style="color: #8aa898; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
       + `//&nbsp; Trading Post &nbsp;//</div></td></tr>`;
   }
 
-  // Centered pill flanked by hairlines (section 3). Same markup for both headers.
+  // Centered pill flanked by background-filled hairlines.
   function forumSectionHeader(label) {
-    const hair = `<td style="width: 35%; border-top: 1px solid rgba(109,196,136,0.18); height: 1px; line-height: 0;">&nbsp;</td>`;
+    const hair = `<td style="width: 35%; vertical-align: middle; padding: 0;">`
+      + `<div style="height: 1px; background: #1d3a26; font-size: 0; line-height: 0;">&nbsp;</div></td>`;
     return `<tr><td style="background: #080e18; padding: 18px 22px 10px;">`
       + `<table width="100%" style="border-collapse: collapse;"><tbody><tr>${hair}`
       + `<td style="text-align: center; vertical-align: middle; padding: 0 14px; white-space: nowrap;">`
-      + `<span style="display: inline-block; background: rgba(109,196,136,0.08); border: 1px solid rgba(109,196,136,0.35); `
+      + `<span style="display: inline-block; background: #11251a; `
       + `color: #7ed098; font-size: 11px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase; `
-      + `padding: 5px 14px; border-radius: 2px;">● ${escapeAttr(label)}</span></td>`
+      + `padding: 6px 15px; border-radius: 2px;">&#9679; ${escapeAttr(label)}</span></td>`
       + `${hair}</tr></tbody></table></td></tr>`;
   }
 
-  // One bonus chip (section 2). Value-less bonuses show the name alone.
-  function forumChip(b) {
-    const txt = b.value != null ? `${escapeAttr(b.name)} &nbsp;${b.value}%` : escapeAttr(b.name);
-    return `<span style="display: inline-block; background: rgba(109,196,136,0.10); `
-      + `border: 1px solid rgba(109,196,136,0.30); color: #7ed098; font-size: 10px; font-weight: bold; `
-      + `letter-spacing: 0.16em; text-transform: uppercase; padding: 3px 9px; border-radius: 2px;">${txt}</span>`;
+  // Smaller, left-aligned category divider — Primary/Secondary/Melee/Armor.
+  // Cyan so it reads as a sub-level beneath the green section header.
+  function forumCategoryDivider(label) {
+    return `<tr><td style="background: #080e18; padding: 13px 22px 3px;">`
+      + `<span style="display: inline-block; background: #102232; color: #5dc6f0; `
+      + `font-size: 10px; font-weight: bold; letter-spacing: 0.22em; text-transform: uppercase; `
+      + `padding: 4px 11px; border-radius: 2px;">${escapeAttr(label)}</span></td></tr>`;
   }
 
-  // One "Currently Available" card (section 2): optional screenshot on top,
-  // then a green-accented info cell — name + stacked chips left, price right.
+  // One bonus chip. Value-less bonuses show the name alone.
+  function forumChip(b) {
+    const txt = b.value != null ? `${escapeAttr(b.name)} &nbsp;${b.value}%` : escapeAttr(b.name);
+    return `<span style="display: inline-block; background: #16301f; color: #7ed098; `
+      + `font-size: 10px; font-weight: bold; letter-spacing: 0.16em; text-transform: uppercase; `
+      + `padding: 4px 9px; border-radius: 2px;">${txt}</span>`;
+  }
+
+  // One "Currently Available" card: optional screenshot on top, then a card
+  // body with a background-filled green accent bar — name + chips left, price
+  // right. No CSS borders; the card background alone sets it off the page.
   function forumItemCard(item) {
     const bonuses = (item.bonuses || []).filter(b => b && b.name);
     const chips = bonuses.map((b, i) =>
       `<div style="margin-top: ${i === 0 ? 7 : 4}px;">${forumChip(b)}</div>`).join('');
     const img = (item.gyazoUrl || '').trim();
     const imgRow = img
-      ? `<tr><td style="background: #060a12; padding: 0; line-height: 0; width: 100%;">`
+      ? `<tr><td colspan="2" style="background: #060a12; padding: 0; line-height: 0;">`
         + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener">`
         + `<img style="display: block; height: auto;" src="${escapeAttr(img)}" alt="" width="100%"/></a></td></tr>`
       : '';
-    return `<tr><td style="background: #080e18; padding: 10px 22px;">`
-      + `<table style="background: #0c1422; border: 1px solid rgba(0,255,136,0.08); border-collapse: collapse; table-layout: fixed;" width="100%"><tbody>`
+    return `<tr><td style="background: #080e18; padding: 8px 22px;">`
+      + `<table style="background: #0c1422; border-collapse: collapse; table-layout: fixed;" width="100%"><tbody>`
       + imgRow
-      + `<tr><td style="background: #0c1422; padding: 16px 18px 16px 14px; border-left: 2px solid rgba(109,196,136,0.45);">`
+      + `<tr><td style="background: #6dc488; width: 3px; padding: 0; line-height: 0; font-size: 0;">&nbsp;</td>`
+      + `<td style="background: #0c1422; padding: 16px 18px;">`
       + `<table width="100%" style="border-collapse: collapse;"><tbody><tr>`
-      + `<td style="text-align: left; vertical-align: middle; width: 60%; padding-left: 6px;">`
-      + `<div style="color: #5dc6f0; font-size: 17px; font-weight: bold; letter-spacing: 0.04em; line-height: 1.15;">`
+      + `<td style="text-align: left; vertical-align: middle; width: 62%;">`
+      + `<div style="color: #5dc6f0; font-size: 17px; font-weight: bold; letter-spacing: 0.04em; line-height: 1.2;">`
       + `${escapeAttr(item.itemName)}</div>${chips}</td>`
-      + `<td style="text-align: right; vertical-align: middle; white-space: nowrap; padding-right: 4px;">`
+      + `<td style="text-align: right; vertical-align: middle; white-space: nowrap;">`
       + `<span style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.02em; `
-      + `font-family: Consolas, 'Courier New', monospace;">${fmtMoney(item.listPrice)}</span></td>`
+      + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtMoney(item.listPrice))}</span></td>`
       + `</tr></tbody></table></td></tr></tbody></table></td></tr>`;
   }
 
@@ -741,11 +819,11 @@
   function forumTxRow(tx) {
     const bonus = tx.bonusName ? ` (${escapeAttr(tx.bonusName)})` : '';
     const buyer = tx.buyer ? ` to&nbsp;${escapeAttr(tx.buyer)}` : '';
-    const price = tx.price != null ? ` at ${fmtMoney(tx.price)}` : '';
-    return `<tr><td style="padding: 9px 14px; color: rgb(138, 168, 152); font-size: 12px; `
-      + `font-family: Consolas, 'Courier New', monospace; border-bottom: 1px solid rgba(0,255,136,0.05);">`
-      + `<span style="font-size: 10px; color: var(--te-text-color-gray4);">`
-      + `<em>You sold a&nbsp;${escapeAttr(tx.itemName)}${bonus}${buyer}${price}</em></span></td></tr>`;
+    const price = tx.price != null ? ` at ${escapeAttr(fmtMoney(tx.price))}` : '';
+    return `<tr><td style="background: #0c1422; padding: 9px 14px;">`
+      + `<span style="color: #8aa898; font-size: 11px; font-style: italic; `
+      + `font-family: Consolas, 'Courier New', monospace;">`
+      + `You sold a&nbsp;${escapeAttr(tx.itemName)}${bonus}${buyer}${price}</span></td></tr>`;
   }
 
   const AdvertiseGenerator = {
@@ -753,128 +831,144 @@
     toForumTitle() { return BRAND.forumThreadTitle; },
 
     // Output — full forum post HTML. Item-driven from the selected `listed`
-    // rows + Recent Transactions; markup matches rwth-assets.md sections 1-4.
+    // rows + Recent Transactions; cards grouped under category dividers.
     toForumHtml(items, transactions, settings) {
       const s = settings || {};
-      const its = items || [];
       const txs = transactions || [];
       const rows = [];
       rows.push(forumHeader(s));
-      // Sub-banner (section 1, row 2).
-      rows.push(`<tr><td style="background: #080e18; padding: 11px 22px 9px; text-align: center;">`
-        + `<strong><span style="font-size: 13px; letter-spacing: 0.16em; color: #6dc488; text-transform: uppercase;">`
-        + `Open shop &nbsp;//&nbsp; Competitively priced</span></strong></td></tr>`);
-      // Intro (section 1, row 3).
-      rows.push(`<tr><td style="background: #080e18; padding: 14px 22px 16px; `
-        + `border-top: 1px solid rgba(0,30,15,0.6); text-align: center; color: #c5dccc; font-size: 13px; line-height: 1.7;">`
-        + `Rotating collection of RW weapons/gear and other useful items.<br/><br/>`
-        + `<span style="color: #9ab5a5;">If something below isn't currently listed, message me.</span></td></tr>`);
+      rows.push(forumRule());
+      // Sub-banner.
+      rows.push(`<tr><td style="background: #080e18; padding: 12px 22px 8px; text-align: center;">`
+        + `<span style="font-size: 13px; font-weight: bold; letter-spacing: 0.16em; color: #6dc488; text-transform: uppercase;">`
+        + `Open shop &nbsp;//&nbsp; Competitively priced</span></td></tr>`);
+      // Intro — every text run wrapped so the light-mode theme can't darken it.
+      rows.push(`<tr><td style="background: #080e18; padding: 6px 22px 16px; text-align: center; line-height: 1.7;">`
+        + `<span style="color: #c5dccc; font-size: 13px;">`
+        + `Rotating collection of RW weapons/gear and other useful items.</span><br/><br/>`
+        + `<span style="color: #9ab5a5; font-size: 13px;">`
+        + `If something below isn't currently listed, message me.</span></td></tr>`);
       rows.push(forumSectionHeader('Currently Available'));
-      for (const it of its) rows.push(forumItemCard(it));
+      for (const group of groupByCategory(items)) {
+        rows.push(forumCategoryDivider(group.category));
+        for (const it of group.items) rows.push(forumItemCard(it));
+      }
       // Rotating-note line.
-      rows.push(`<tr><td style="background: #080e18; padding: 4px 22px 14px; color: #8aa898; `
-        + `font-size: 12px; font-style: italic;">`
-        + `Also rotating: drugs, plushies, flowers. Check bazaar for live stock.</td></tr>`);
+      rows.push(`<tr><td style="background: #080e18; padding: 8px 22px 14px;">`
+        + `<span style="color: #8aa898; font-size: 12px; font-style: italic;">`
+        + `Also rotating: drugs, plushies, flowers. Check bazaar for live stock.</span></td></tr>`);
       if (txs.length) {
         rows.push(forumSectionHeader('Recent Transactions'));
         rows.push(`<tr><td style="background: #080e18; padding: 6px 22px 16px;">`
-          + `<table style="background: rgb(12,20,34); border: 1px solid rgba(0,255,136,0.08); border-collapse: collapse;" width="100%">`
+          + `<table style="background: #0c1422; border-collapse: collapse;" width="100%">`
           + `<tbody>${txs.map(forumTxRow).join('')}</tbody></table></td></tr>`);
       }
-      // Footer — tagline left, bazaar link right (section 1, last row).
+      rows.push(forumRule());
+      // Footer — tagline left, bazaar link right.
       const pid = (s.playerId || '').trim();
       const link = pid
-        ? `<strong><a style="color: #5dc6f0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; `
-          + `text-decoration: none; border-bottom: 1px solid rgba(93,198,240,0.4); padding-bottom: 2px;" `
-          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar ↗</a></strong>`
+        ? `<a style="color: #5dc6f0; font-size: 12px; font-weight: bold; letter-spacing: 0.14em; `
+          + `text-transform: uppercase; text-decoration: none;" `
+          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar &#8599;</a>`
         : '';
-      rows.push(`<tr><td style="background: #080e18; border-top: 1px solid rgba(0,30,15,0.6); padding: 0;">`
+      rows.push(`<tr><td style="background: #080e18; padding: 0;">`
         + `<table width="100%"><tbody><tr>`
-        + `<td style="background: #080e18; padding: 11px 22px 13px; text-align: left; vertical-align: middle;">`
-        + `<span style="font-size: 12px; letter-spacing: 0.14em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
+        + `<td style="background: #080e18; padding: 12px 22px 13px; text-align: left; vertical-align: middle;">`
+        + `<span style="font-size: 12px; letter-spacing: 0.12em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
         + `${escapeAttr(BRAND.footerTagline)}</span></td>`
-        + `<td style="background: #080e18; padding: 11px 22px 13px; text-align: right; vertical-align: middle;">`
+        + `<td style="background: #080e18; padding: 12px 22px 13px; text-align: right; vertical-align: middle;">`
         + `${link}</td></tr></tbody></table></td></tr>`);
       return `<div><div class="table-wrap"><table style="background: #080e18; border-collapse: collapse; `
         + `font-family: Verdana, Geneva, sans-serif;" width="100%"><tbody>${rows.join('')}</tbody></table></div></div>`;
     },
 
-    // Output — bazaar description HTML. Static brand copy, optional bazaar
-    // banner; Verdana body / Consolas accents (not all-Courier).
+    // Output — bazaar description HTML. The bazaar page lists stock natively, so
+    // this is brand/about copy only. When a banner is set it carries the brand;
+    // a redundant NC17 wordmark is deliberately omitted in that case.
     toBazaarHtml(settings) {
       const s = settings || {};
       const banner = (s.bannerImageUrl || '').trim();
-      const bannerRow = banner
-        ? `<tr><td style="background: #060a12; padding: 0; line-height: 0;">`
-          + `<img style="display: block; height: auto;" src="${escapeAttr(banner)}" alt="" width="100%"/></td></tr>`
-        : '';
+      const rows = [];
+      if (banner) {
+        rows.push(`<tr><td style="background: #060a12; padding: 0; line-height: 0;">`
+          + `<img style="display: block; height: auto;" src="${escapeAttr(banner)}" alt="" width="100%"/></td></tr>`);
+      } else {
+        // No banner — a compact wordmark stands in so the panel still has a crown.
+        rows.push(`<tr><td style="background: #080e18; padding: 20px 24px 8px; text-align: center;">`
+          + `<span style="color: #7ed098; font-size: 20px; font-weight: bold; `
+          + `letter-spacing: 0.3em; text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`);
+      }
+      rows.push(forumRule());
+      // About panel — a small kicker (not a second wordmark) + one tight line.
+      rows.push(`<tr><td style="background: #080e18; padding: 18px 24px 6px; text-align: center;">`
+        + `<span style="color: #5dc6f0; font-size: 10px; font-weight: bold; letter-spacing: 0.3em; `
+        + `text-transform: uppercase;">//&nbsp; The Trading Post &nbsp;//</span></td></tr>`);
+      rows.push(`<tr><td style="background: #080e18; padding: 4px 24px 16px; text-align: center; line-height: 1.7;">`
+        + `<span style="color: #c5dccc; font-size: 13px;">`
+        + `Ranked-war weapons and armour &mdash; diamond-grade gear, priced fair and rotating constantly.</span></td></tr>`);
+      rows.push(forumRule());
+      rows.push(`<tr><td style="background: #080e18; padding: 13px 24px 14px; text-align: center;">`
+        + `<span style="color: #9ab5a5; font-size: 12px; font-style: italic;">`
+        + `Looking for something that isn't stocked right now? Send me a message &mdash; inventory turns over fast.`
+        + `</span></td></tr>`);
+      // Footer tagline on a slightly lifted fill so it reads as a strip.
+      rows.push(`<tr><td style="background: #0b1320; padding: 11px 24px 12px; text-align: center;">`
+        + `<span style="font-size: 11px; letter-spacing: 0.12em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
+        + `${escapeAttr(BRAND.footerTagline)}</span></td></tr>`);
       return `<div><div class="table-wrap"><table style="background: #080e18; border-collapse: collapse; `
-        + `font-family: Verdana, Geneva, sans-serif;" width="100%"><tbody>`
-        + bannerRow
-        + `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center; `
-        + `border-top: 1px solid rgba(0,255,136,0.15); border-bottom: 1px solid rgba(0,255,136,0.08);">`
-        + `<div style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
-        + `${escapeAttr(BRAND.mark)}</div>`
-        + `<div style="color: #8aa898; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
-        + `//&nbsp; Trading Post &nbsp;//</div></td></tr>`
-        + `<tr><td style="background: #080e18; padding: 11px 22px 9px; text-align: center;">`
-        + `<strong><span style="font-size: 13px; letter-spacing: 0.16em; color: #6dc488; text-transform: uppercase;">`
-        + `Open shop &nbsp;//&nbsp; Competitively priced</span></strong></td></tr>`
-        + `<tr><td style="background: #080e18; padding: 14px 22px 16px; border-top: 1px solid rgba(0,30,15,0.6); `
-        + `text-align: center; color: #c5dccc; font-size: 13px; line-height: 1.7;">`
-        + `RW weapons, armor and other useful gear — fairly priced, always rotating.<br/><br/>`
-        + `<span style="color: #9ab5a5;">Message me for anything not currently stocked.</span></td></tr>`
-        + `<tr><td style="background: #080e18; border-top: 1px solid rgba(0,255,136,0.08); `
-        + `padding: 11px 22px 13px; text-align: center;">`
-        + `<span style="font-size: 12px; letter-spacing: 0.14em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
-        + `${escapeAttr(BRAND.footerTagline)}</span></td></tr>`
-        + `</tbody></table></div></div>`;
+        + `font-family: Verdana, Geneva, sans-serif;" width="100%"><tbody>${rows.join('')}</tbody></table></div></div>`;
     },
 
-    // Output — profile signature HTML. Condensed, item-driven; reuses the
-    // forum header image when one is set.
+    // Output — profile signature HTML. Condensed, item-driven with category
+    // dividers; reuses the forum header image when one is set.
     toSignatureHtml(items, settings) {
       const s = settings || {};
-      const its = items || [];
       const img = (s.forumHeaderImageUrl || '').trim();
       const headerRow = img
-        ? `<tr><td colspan="2" style="background: #080e18; padding: 0; line-height: 0; `
-          + `border-bottom: 1px solid rgba(0,255,136,0.08);">`
+        ? `<tr><td colspan="2" style="background: #080e18; padding: 0; line-height: 0;">`
           + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener">`
           + `<img style="display: block; height: auto;" src="${escapeAttr(img)}" alt="" width="100%"/></a></td></tr>`
-        : `<tr><td colspan="2" style="background: #080e18; padding: 10px 14px; text-align: center; `
-          + `border-bottom: 1px solid rgba(0,255,136,0.08);">`
+        : `<tr><td colspan="2" style="background: #080e18; padding: 10px 14px; text-align: center;">`
           + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase;">`
           + `${escapeAttr(BRAND.mark)}</span></td></tr>`;
-      const itemRows = its.map((it) => {
-        const b = (it.bonuses || []).filter(x => x && x.name)[0];
-        const tag = b
-          ? ` <span style="color: #8aa898;">(${escapeAttr(b.name)}${b.value != null ? ' ' + b.value + '%' : ''})</span>`
-          : '';
-        return `<tr><td style="padding: 5px 14px; color: #5dc6f0; font-size: 12px; `
-          + `font-family: Verdana, Geneva, sans-serif;">${escapeAttr(it.itemName)}${tag}</td>`
-          + `<td style="padding: 5px 14px; text-align: right; color: #7ed098; font-size: 12px; font-weight: bold; `
-          + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(it.listPrice))}</td></tr>`;
-      }).join('');
+      const bodyRows = [];
+      for (const group of groupByCategory(items)) {
+        bodyRows.push(`<tr><td colspan="2" style="background: #0b1320; padding: 6px 14px 5px;">`
+          + `<span style="color: #5dc6f0; font-size: 9px; font-weight: bold; letter-spacing: 0.2em; `
+          + `text-transform: uppercase;">${escapeAttr(group.category)}</span></td></tr>`);
+        for (const it of group.items) {
+          const b = (it.bonuses || []).filter(x => x && x.name)[0];
+          const tag = b
+            ? ` <span style="color: #8aa898;">(${escapeAttr(b.name)}${b.value != null ? ' ' + b.value + '%' : ''})</span>`
+            : '';
+          bodyRows.push(`<tr><td style="background: #080e18; padding: 5px 14px;">`
+            + `<span style="color: #5dc6f0; font-size: 12px; font-family: Verdana, Geneva, sans-serif;">`
+            + `${escapeAttr(it.itemName)}</span>${tag}</td>`
+            + `<td style="background: #080e18; padding: 5px 14px; text-align: right;">`
+            + `<span style="color: #7ed098; font-size: 12px; font-weight: bold; `
+            + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(it.listPrice))}</span></td></tr>`);
+        }
+      }
       const pid = (s.playerId || '').trim();
       const linkRow = pid
-        ? `<tr><td colspan="2" style="background: #080e18; padding: 7px 14px; text-align: center; `
-          + `border-top: 1px solid rgba(0,255,136,0.08);">`
+        ? `<tr><td colspan="2" style="background: #0b1320; padding: 7px 14px; text-align: center;">`
           + `<a style="color: #5dc6f0; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; text-decoration: none;" `
-          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar ↗</a></td></tr>`
+          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar &#8599;</a></td></tr>`
         : '';
-      return `<div><div class="table-wrap"><table style="background: #080e18; `
-        + `border: 1px solid rgba(0,255,136,0.08); border-collapse: collapse;" width="100%">`
-        + `<tbody>${headerRow}${itemRows}${linkRow}</tbody></table></div></div>`;
+      return `<div><div class="table-wrap"><table style="background: #080e18; border-collapse: collapse;" width="100%">`
+        + `<tbody>${headerRow}${bodyRows.join('')}${linkRow}</tbody></table></div></div>`;
     },
-    // Output 3 — trade-chat blurb; item-driven, matches rwth-assets.md section 6.
+    // Output 3 — trade-chat blurb. Sorted by list price descending so the
+    // highest-value items lead the blurb rather than alphabetised filler.
     toChat(items, settings) {
       const s = settings || {};
       const lines = [
         `🔹🔷 <u>${BRAND.mark}</u> 🔷🔹`,
         `🟢 <u>Floor Prices</u> 🟢`,
       ];
-      for (const it of (items || [])) lines.push(chatItemLine(it));
+      const sorted = (items || []).slice().sort((a, b) =>
+        (Number(b.listPrice) || 0) - (Number(a.listPrice) || 0));
+      for (const it of sorted) lines.push(chatItemLine(it));
       const pid = (s.playerId || '').trim();
       if (pid) lines.push(`<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>`);
       const forum = (s.forumThreadUrl || '').trim();
@@ -980,7 +1074,11 @@
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
     const isChecked = (it) => (sel == null ? true : sel.includes(it.id));
-    const selectedItems = listed.filter(isChecked);
+    // Stamp each selected item with its resolved category so the output
+    // generators can group without re-querying the item dictionary.
+    const cats = ItemDict.categories();
+    const selectedItems = listed.filter(isChecked)
+      .map(it => ({ ...it, category: itemCategory(it, cats) }));
     const transactions = A.transactions || [];
 
     const itemRows = listed.length
@@ -1284,23 +1382,39 @@
     async ensure(key) {
       const WEEK = 7 * 24 * 3600 * 1000;
       const cached = Store.get('rwth_items');
-      if (cached && cached.map && cached.ts && Date.now() - cached.ts < WEEK) {
+      // `cats` must be present too — caches from before the category index was
+      // added are treated as stale so the dictionary is re-fetched once.
+      if (cached && cached.map && cached.cats && cached.ts
+          && Date.now() - cached.ts < WEEK) {
         return cached.map;
       }
       const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
       const d = await res.json();
       if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
       const map = {};
+      const cats = {};
+      const record = (id, name, type) => {
+        if (id == null || !name) return;
+        map[id] = name;
+        const c = normCategory(type);
+        if (c) cats[String(name).toLowerCase()] = c;
+      };
       const items = d && d.items;
       if (Array.isArray(items)) {
-        for (const it of items) if (it && it.id != null) map[it.id] = it.name;
+        for (const it of items) if (it) record(it.id, it.name, it.type);
       } else if (items && typeof items === 'object') {
         for (const id of Object.keys(items)) {
-          if (items[id] && items[id].name) map[id] = items[id].name;
+          const it = items[id];
+          if (it) record(id, it.name, it.type);
         }
       }
-      Store.set('rwth_items', { ts: Date.now(), map });
+      Store.set('rwth_items', { ts: Date.now(), map, cats });
       return map;
+    },
+    // Sync name→category index from the cached dictionary; {} until first scan.
+    categories() {
+      const c = Store.get('rwth_items');
+      return (c && c.cats) || {};
     },
   };
 
