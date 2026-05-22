@@ -1,14 +1,1 @@
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "[ -f .claude/memory.md ] && echo '=== SESSION MEMORY ===' && cat .claude/memory.md && echo '=== END SESSION MEMORY ===' || echo '[No session memory yet — first session in this repo]'"
-          }
-        ]
-      }
-    ]
-  }
-}
+{}
