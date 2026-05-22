@@ -73,3 +73,14 @@ test('buildSettingsTab tolerates a missing settings object', () => {
   assert.strictEqual(typeof buildSettingsTab({}), 'string');
   assert.strictEqual(typeof buildSettingsTab(), 'string');
 });
+
+test('buildSettingsTab renders a Save button', () => {
+  const { buildSettingsTab } = globalThis.__RwthPure;
+  assert.match(buildSettingsTab({ settings: {} }), /data-action="save-settings"/);
+});
+
+test('buildSettingsTab masks the API key as a password field', () => {
+  const { buildSettingsTab } = globalThis.__RwthPure;
+  const html = buildSettingsTab({ settings: {} });
+  assert.match(html, /type="password" data-setting="apiKey"/);
+});

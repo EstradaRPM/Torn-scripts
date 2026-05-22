@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.5
+// @version      0.1.6
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.5';
+  const SCRIPT_VERSION = '0.1.6';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -94,7 +94,7 @@
     { key: 'weav3rPricelistUrl',  label: 'Weav3r pricelist URL', type: 'url',  placeholder: 'https://...' },
     { key: 'bannerImageUrl',      label: 'Bazaar banner image URL',  type: 'url', placeholder: 'https://...' },
     { key: 'forumHeaderImageUrl', label: 'Forum header image URL',   type: 'url', placeholder: 'https://...' },
-    { key: 'apiKey',              label: 'Torn API key',         type: 'text', placeholder: '###PDA-APIKEY###' },
+    { key: 'apiKey',              label: 'Torn API key',         type: 'password', placeholder: '###PDA-APIKEY###' },
   ];
 
   function escapeAttr(s) {
@@ -111,7 +111,13 @@
                value="${escapeAttr(s[f.key])}" placeholder="${escapeAttr(f.placeholder)}"
                autocomplete="off" spellcheck="false">
       </label>`).join('');
-    return `<div class="rwth-settings">${rows}</div>`;
+    return `<div class="rwth-settings">
+      ${rows}
+      <div class="rwth-settings-actions">
+        <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
+        <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
+      </div>
+    </div>`;
   }
 
   function buildContent(mem) {
@@ -167,17 +173,33 @@
       }
       if (e.target.closest('[data-action="maximize"]')) {
         setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } });
+        return;
+      }
+      if (e.target.closest('[data-action="save-settings"]')) {
+        saveSettings();
       }
     });
+  }
 
-    // Settings edits — `change` fires on blur, so render() never runs mid-typing.
-    root.addEventListener('change', (e) => {
-      const input = e.target.closest('[data-setting]');
-      if (!input) return;
-      const next = { ...MEM.settings, [input.dataset.setting]: input.value };
-      Store.set('rwth_settings', next);
-      setState({ settings: next });
+  // Collect every settings input from the DOM, persist, re-render, then flash
+  // a confirmation. Reading on click (not on each keystroke) means render()
+  // never fires mid-typing.
+  function saveSettings() {
+    const next = { ...MEM.settings };
+    document.querySelectorAll('#rwth-content [data-setting]').forEach((input) => {
+      next[input.dataset.setting] = input.value;
     });
+    Store.set('rwth_settings', next);
+    setState({ settings: next });
+
+    const status = document.getElementById('rwth-settings-status');
+    if (!status) return;
+    status.textContent = '✓ Saved';
+    status.classList.add('rwth-saved-show');
+    setTimeout(() => {
+      const el = document.getElementById('rwth-settings-status');
+      if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
+    }, 2200);
   }
 
   function render() {
@@ -385,6 +407,19 @@
       }
       .rwth-field-input:focus { border-color: #39ff14; }
       .rwth-field-input::placeholder { color: #557; }
+
+      .rwth-settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+      .rwth-btn {
+        background: #39ff14; color: #0a0a0a; border: none; border-radius: 4px;
+        padding: 7px 16px; cursor: pointer;
+        font: 700 12px Verdana, sans-serif; letter-spacing: .3px;
+      }
+      .rwth-btn:hover { box-shadow: 0 0 6px #39ff14; }
+      .rwth-settings-status {
+        font: 700 11px Consolas, monospace; color: #39ff14;
+        opacity: 0; transition: opacity .15s ease-out;
+      }
+      .rwth-settings-status.rwth-saved-show { opacity: 1; }
 
       @media (max-width: 480px) {
         #rwth-panel { width: calc(100vw - 24px); right: 12px; }

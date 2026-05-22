@@ -261,7 +261,7 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.5 (slice 2 in progress — Settings tab built: six fields, edits persisted to `rwth_settings` via `setState`)
+- **Version:** 0.1.6 (slice 2 in progress — Settings tab: six fields, explicit Save button w/ "✓ Saved" flash, API key masked as a password field; persisted to `rwth_settings`)
 - **Design:** locked (grill complete 2026-05-21)
 - **Open issues:** #244–#248 (#242, #243 done)
 - **Next up:** slice 2 — #244 Ledger manual add
