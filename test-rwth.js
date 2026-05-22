@@ -233,3 +233,148 @@ test('buildLedgerTab renders a Scan button and surfaces fetchError', () => {
   assert.match(err, /rwth-banner/);
   assert.match(err, /API error: x/);
 });
+
+// ── Sell logging (slice 5) ───────────────────────────────────────────────────
+test('SellParser.parse reads a bazaar sell line (no fees)', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const [s] = SellParser.parse(
+    'You sold a Riot Body (Impregnable) on your bazaar to Apocolypse_ ' +
+    'at $84,150,000 each for a total of $84,150,000');
+  assert.strictEqual(s.itemName, 'Riot Body');
+  assert.strictEqual(s.bonusName, 'Impregnable');
+  assert.strictEqual(s.venue, 'bazaar');
+  assert.strictEqual(s.buyer, 'Apocolypse_');
+  assert.strictEqual(s.saleGross, 84150000);
+  assert.strictEqual(s.saleNet, 84150000);
+  assert.strictEqual(s.saleFees, 0);
+  assert.strictEqual(s.anonymous, false);
+});
+
+test('SellParser.parse reads an item-market sell line with fees', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const [s] = SellParser.parse(
+    'You sold a pair of Combat Boots (Pinpoint) on the item market to Buyer123 ' +
+    'at $5,000,000 each for a total of $9,500,000 after $500,000 in fees');
+  assert.strictEqual(s.itemName, 'Combat Boots');
+  assert.strictEqual(s.bonusName, 'Pinpoint');
+  assert.strictEqual(s.venue, 'market');
+  assert.strictEqual(s.buyer, 'Buyer123');
+  assert.strictEqual(s.saleGross, 5000000);
+  assert.strictEqual(s.saleNet, 9500000);
+  assert.strictEqual(s.saleFees, 500000);
+});
+
+test('SellParser.parse handles the optional "anonymously" word', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const [s] = SellParser.parse(
+    'You sold a Diamond Bladed Knife (Fury) anonymously on the item market ' +
+    'at $3,000,000 each for a total of $2,850,000 after $150,000 in fees');
+  assert.strictEqual(s.anonymous, true);
+  assert.strictEqual(s.itemName, 'Diamond Bladed Knife');
+  assert.strictEqual(s.bonusName, 'Fury');
+  assert.strictEqual(s.buyer, null);
+  assert.strictEqual(s.saleNet, 2850000);
+});
+
+test('SellParser.parse handles a sell line with no bonus in parentheses', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const [s] = SellParser.parse(
+    'You sold a Pocket Knife on your bazaar to Tester at $100 each for a total of $100');
+  assert.strictEqual(s.itemName, 'Pocket Knife');
+  assert.strictEqual(s.bonusName, null);
+});
+
+test('SellParser.parse handles a multi-line block', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const sells = SellParser.parse(
+    'You sold a Riot Body (Impregnable) on your bazaar to A_ at $1 each for a total of $1\n' +
+    'You sold a pair of Combat Boots (Pinpoint) on the item market to B_ at $2 each for a total of $2');
+  assert.strictEqual(sells.length, 2);
+  assert.strictEqual(sells[0].itemName, 'Riot Body');
+  assert.strictEqual(sells[1].itemName, 'Combat Boots');
+});
+
+test('SellParser.parse associates an interleaved timestamp with the next sale', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const ts = Date.UTC(2026, 4, 20, 12, 0, 0);
+  const sells = SellParser.parse(
+    '2026-05-20T12:00:00Z\n' +
+    'You sold a Riot Body (Impregnable) on your bazaar to A_ at $1 each for a total of $1');
+  assert.strictEqual(sells[0].timestamp, ts);
+});
+
+test('SellParser.parse leaves timestamp null when none precedes the sale', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  const [s] = SellParser.parse(
+    'You sold a Riot Body (Impregnable) on your bazaar to A_ at $1 each for a total of $1');
+  assert.strictEqual(s.timestamp, null);
+});
+
+test('SellParser.parse ignores lines that are not sell lines', () => {
+  const { SellParser } = globalThis.__RwthPure;
+  assert.deepStrictEqual(SellParser.parse('just some random text\nnot a sale'), []);
+  assert.deepStrictEqual(SellParser.parse(''), []);
+});
+
+const openHeld = {
+  id: 'h1', itemName: 'Riot Body', status: 'held',
+  bonuses: [{ name: 'Impregnable', value: 10 }], buyPrice: 80000000,
+};
+const openListed = {
+  id: 'l1', itemName: 'Riot Body', status: 'listed',
+  bonuses: [{ name: 'Impenetrable', value: 8 }], buyPrice: 70000000,
+};
+
+test('matchSell matches an open row by item name', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  const sell = { itemName: 'Riot Body', bonusName: null };
+  assert.strictEqual(matchSell(sell, [openHeld]).id, 'h1');
+});
+
+test('matchSell uses bonus name as a tiebreaker', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  const sell = { itemName: 'Riot Body', bonusName: 'Impenetrable' };
+  assert.strictEqual(matchSell(sell, [openHeld, openListed]).id, 'l1');
+});
+
+test('matchSell returns null when nothing matches', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  assert.strictEqual(matchSell({ itemName: 'Unknown Item' }, [openHeld]), null);
+  assert.strictEqual(matchSell({ itemName: 'Riot Body' }, []), null);
+});
+
+test('matchSell ignores already-sold rows', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  const sold = { id: 's1', itemName: 'Riot Body', status: 'sold', bonuses: [] };
+  assert.strictEqual(matchSell({ itemName: 'Riot Body' }, [sold]), null);
+});
+
+test('summarizeSells counts parsed / matched / recent', () => {
+  const { summarizeSells } = globalThis.__RwthPure;
+  const s = summarizeSells([{ matchedId: 'a' }, { matchedId: null }, { matchedId: 'c' }]);
+  assert.deepStrictEqual(s, { parsed: 3, matched: 2, recent: 1 });
+  assert.deepStrictEqual(summarizeSells([]), { parsed: 0, matched: 0, recent: 0 });
+});
+
+test('buildSellBox renders the paste box by default', () => {
+  const { buildSellBox } = globalThis.__RwthPure;
+  const html = buildSellBox({ ledger: {} });
+  assert.match(html, /data-sell-input/);
+  assert.match(html, /data-action="parse-sells"/);
+});
+
+test('buildSellBox renders the confirmation summary when a preview is staged', () => {
+  const { buildSellBox } = globalThis.__RwthPure;
+  const html = buildSellBox({ ledger: { sellPreview: {
+    rows: [{ sell: { itemName: 'Riot Body', saleNet: 1 }, matchedId: 'h1' }],
+    summaryText: '1 sale parsed, 1 matched, 0 → Recent Transactions',
+  } } });
+  assert.match(html, /1 sale parsed, 1 matched/);
+  assert.match(html, /data-action="commit-sells"/);
+  assert.match(html, /data-action="cancel-sells"/);
+});
+
+test('buildLedgerTab includes the Log-a-sale box', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  assert.match(buildLedgerTab({ ledger: { items: [] } }), /data-sell-input/);
+});

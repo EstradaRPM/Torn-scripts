@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.12
+// @version      0.1.13
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.12';
+  const SCRIPT_VERSION = '0.1.13';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -44,6 +44,8 @@
       scanMessage: '',        // transient scan feedback (e.g. "No new auction wins found.")
       scanning: false,        // a scan request is in flight
       lastScan: 0,            // epoch ms of the last completed scan
+      sellPreview: null,      // null | { rows, summary, summaryText } — parsed sells awaiting commit
+      sellMessage: '',        // transient feedback for the Log-a-sale box
     },
     advertise: {
       selectedIds: [],
@@ -105,6 +107,122 @@
       return item.saleNet - (item.buyPrice || 0);
     },
   };
+
+  // ─── SellParser — parse pasted Torn sell-log lines (pure) ────────────────────
+  // The Torn item log states sale fees and net exactly, so the parsed numbers
+  // are authoritative — no venue fee table. parse() handles a multi-line block;
+  // timestamp lines interleaved between sales are associated best-effort with
+  // the next sale line (null if none precedes it).
+
+  function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+  function parseMoney(s) {
+    if (s == null) return null;
+    const n = Number(String(s).replace(/[,$\s]/g, ''));
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // A line that carries only a timestamp → epoch ms, else null. Sale lines are
+  // excluded first so a sale's own embedded numbers can't be misread as a date.
+  function parseTimestampLine(line) {
+    const text = String(line || '');
+    if (/\bsold a\b/i.test(text)) return null;
+    if (/^\d{9,13}$/.test(text)) {
+      const n = Number(text);
+      return n < 1e12 ? n * 1000 : n;
+    }
+    const t = Date.parse(text);
+    return Number.isFinite(t) ? t : null;
+  }
+
+  // Pure: one Torn sell-log line → ParsedSell, or null if it is not a sell line.
+  // Grammar: optional "anonymously"; "sold a" / "sold a pair of"; venue
+  // "on your bazaar" | "on the item market"; "at $X each for a total of $Y"
+  // ($Y = net proceeds); optional "after $Z in fees" (absent = 0, e.g. bazaar).
+  function parseSellLine(line) {
+    const raw = String(line || '');
+    if (!/\bsold a\b/i.test(raw)) return null;
+    const anonymous = /\banonymously\b/i.test(raw);
+    // Strip "anonymously" so it can't leak into the item-name capture.
+    const text = raw.replace(/\s*\banonymously\b/i, '');
+
+    let venue = null;
+    if (/on your bazaar/i.test(text)) venue = 'bazaar';
+    else if (/on the item market/i.test(text)) venue = 'market';
+
+    let itemName = '', bonusName = null;
+    const m = text.match(/sold a (?:pair of )?(.+?)\s+on (?:your bazaar|the item market)/i);
+    if (m) {
+      const nm = m[1].trim();
+      const bm = nm.match(/^(.*\S)\s*\(([^)]+)\)$/);
+      if (bm) { itemName = bm[1].trim(); bonusName = bm[2].trim(); }
+      else itemName = nm;
+    }
+
+    const buyM = text.match(/\bto\s+(\S+?)\s+(?:at\s+\$|for a total)/i);
+    const buyer = buyM ? buyM[1] : null;
+
+    const eachM  = text.match(/\$([\d,]+)\s+each/i);
+    const totalM = text.match(/for a total of \$([\d,]+)/i);
+    const feesM  = text.match(/after \$([\d,]+) in fees/i);
+
+    const saleGross = eachM  ? parseMoney(eachM[1])  : null;
+    const saleNet   = totalM ? parseMoney(totalM[1]) : saleGross;
+    const saleFees  = feesM  ? parseMoney(feesM[1])  : 0;
+
+    return { raw, itemName, bonusName, venue, buyer, anonymous,
+             saleGross, saleFees, saleNet, timestamp: null };
+  }
+
+  const SellParser = {
+    parse(text) {
+      const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      const out = [];
+      let pendingTs = null;
+      for (const line of lines) {
+        const sell = parseSellLine(line);
+        if (sell) {
+          sell.timestamp = pendingTs;
+          pendingTs = null;
+          out.push(sell);
+        } else {
+          const ts = parseTimestampLine(line);
+          if (ts != null) pendingTs = ts;
+        }
+      }
+      return out;
+    },
+  };
+
+  // Pure: tie a parsed sell to one open held/listed ledger row. Matches by item
+  // name; when several rows share the name, the sell's bonus name disambiguates.
+  // Returns null when nothing matches — the caller treats that as a historical
+  // sale destined for Recent Transactions.
+  function matchSell(sell, openPositions) {
+    if (!sell || !Array.isArray(openPositions)) return null;
+    const want = norm(sell.itemName);
+    if (!want) return null;
+    const candidates = openPositions.filter(p =>
+      p && (p.status === 'held' || p.status === 'listed') &&
+      norm(p.itemName) === want);
+    if (!candidates.length) return null;
+    if (candidates.length === 1) return candidates[0];
+    if (sell.bonusName) {
+      const wb = norm(sell.bonusName);
+      const tie = candidates.find(p =>
+        (p.bonuses || []).some(b => b && norm(b.name) === wb));
+      if (tie) return tie;
+    }
+    return candidates[0];
+  }
+
+  // Pure: counts for the pre-commit confirmation summary. rows = [{ matchedId }].
+  function summarizeSells(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const parsed = list.length;
+    const matched = list.filter(r => r && r.matchedId).length;
+    return { parsed, matched, recent: parsed - matched };
+  }
 
   // First finite, present number among the candidates; 0 if none.
   function firstNum(...vals) {
@@ -395,6 +513,48 @@
     </div>`;
   }
 
+  // The "Log a sale" box: a paste textarea, or — once Parse has run — a
+  // confirmation summary listing every parsed sell and whether it matched an
+  // open ledger row or is bound for Recent Transactions. Nothing commits until
+  // the user confirms.
+  function buildSellBox(mem) {
+    const L = (mem && mem.ledger) || {};
+    const preview = L.sellPreview;
+    if (preview) {
+      const rows = (preview.rows || []).map(r => {
+        const s = r.sell || {};
+        const bonus = s.bonusName ? ` <span class="rwth-row-bonus">${escapeAttr(s.bonusName)}</span>` : '';
+        const dest = r.matchedId
+          ? `<span class="rwth-sell-matched">matched</span>`
+          : `<span class="rwth-sell-recent">→ Recent</span>`;
+        return `<div class="rwth-sell-line">
+          <span class="rwth-row-name">${escapeAttr(s.itemName) || 'Unparsed line'}${bonus}</span>
+          <span class="rwth-row-price">${fmtMoney(s.saleNet)}</span>
+          ${dest}
+        </div>`;
+      }).join('');
+      return `<div class="rwth-sellbox">
+        <div class="rwth-form-title">Confirm sales</div>
+        <div class="rwth-sell-summary">${escapeAttr(preview.summaryText)}</div>
+        ${rows}
+        <div class="rwth-form-actions">
+          <button class="rwth-btn" type="button" data-action="commit-sells">Commit</button>
+          <button class="rwth-btn rwth-btn-ghost" type="button" data-action="cancel-sells">Cancel</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="rwth-sellbox">
+      <div class="rwth-form-title">Log a sale</div>
+      <textarea class="rwth-field-input rwth-sell-input" data-sell-input rows="4"
+                placeholder="Paste one or more Torn sell-log lines…"
+                autocomplete="off" spellcheck="false"></textarea>
+      ${L.sellMessage ? `<div class="rwth-form-error">${escapeAttr(L.sellMessage)}</div>` : ''}
+      <div class="rwth-form-actions">
+        <button class="rwth-btn" type="button" data-action="parse-sells">Parse</button>
+      </div>
+    </div>`;
+  }
+
   function buildLedgerTab(mem) {
     const L = (mem && mem.ledger) || { items: [], statusFilter: 'all' };
     const items = L.items || [];
@@ -424,6 +584,7 @@
       ${L.scanMessage && !err ? `<div class="rwth-placeholder">${escapeAttr(L.scanMessage)}</div>` : ''}
       ${buildScanChecklist(mem)}
       ${L.editingId ? buildLedgerForm(mem) : ''}
+      ${buildSellBox(mem)}
       <div class="rwth-rows">${list}</div>
     </div>`;
   }
@@ -534,6 +695,9 @@
         case 'confirm-scan':  confirmScan(); break;
         case 'cancel-scan':   Store.set('rwth_scan', []);
                               setState({ ledger: { ...MEM.ledger, scanResults: [], scanMessage: '' } }); break;
+        case 'parse-sells':   parseSells(); break;
+        case 'commit-sells':  commitSells(); break;
+        case 'cancel-sells':  setState({ ledger: { ...MEM.ledger, sellPreview: null, sellMessage: '' } }); break;
         case 'mark-listed':   Ledger.markListed(id); break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
       }
@@ -828,6 +992,66 @@
     Store.set('rwth_scan', []);
 
     setState({ ledger: { ...MEM.ledger, items, scanResults: [], scanMessage: '' } });
+  }
+
+  // Parse the Log-a-sale textarea, match each sell to an open ledger row, and
+  // stage a confirmation preview. Reading on click (not per keystroke) keeps
+  // render() from firing mid-typing. Nothing mutates the ledger here.
+  function parseSells() {
+    const ta = document.querySelector('#rwth-content [data-sell-input]');
+    const text = ta ? ta.value : '';
+    const sells = SellParser.parse(text);
+    if (!sells.length) {
+      setState({ ledger: { ...MEM.ledger, sellMessage: 'No sell lines found in the pasted text.' } });
+      return;
+    }
+    const open = MEM.ledger.items.filter(i => i.status === 'held' || i.status === 'listed');
+    const rows = sells.map((sell) => {
+      const match = matchSell(sell, open);
+      return { sell, matchedId: match ? match.id : null };
+    });
+    const s = summarizeSells(rows);
+    const summaryText = `${s.parsed} sale${s.parsed === 1 ? '' : 's'} parsed, `
+                      + `${s.matched} matched, ${s.recent} → Recent Transactions`;
+    setState({ ledger: { ...MEM.ledger, sellPreview: { rows, summary: s, summaryText }, sellMessage: '' } });
+  }
+
+  // Commit the staged sells: matched sells close their ledger row to `sold`;
+  // unmatched (historical) sells go straight into Recent Transactions and never
+  // touch the ledger. One setState — the whole batch lands atomically.
+  function commitSells() {
+    const preview = MEM.ledger.sellPreview;
+    if (!preview) return;
+    let items = MEM.ledger.items;
+    const newTx = [];
+    for (const row of preview.rows) {
+      const sell = row.sell;
+      if (row.matchedId) {
+        items = items.map(i => (i.id === row.matchedId ? {
+          ...i, status: 'sold',
+          saleGross: sell.saleGross, saleFees: sell.saleFees, saleNet: sell.saleNet,
+          soldTimestamp: sell.timestamp || Date.now(),
+          soldVenue: sell.venue, buyer: sell.buyer,
+        } : i));
+      } else {
+        newTx.push({
+          id: makeId(),
+          itemName: sell.itemName,
+          bonusName: sell.bonusName,
+          buyer: sell.buyer,
+          price: sell.saleNet,
+          timestamp: sell.timestamp,
+          origin: 'paste',
+        });
+      }
+    }
+    Store.set('rwth_ledger', items);
+    const transactions = [...newTx, ...MEM.advertise.transactions];
+    if (newTx.length) Store.set('rwth_transactions', transactions);
+    setState({
+      ledger: { ...MEM.ledger, items, sellPreview: null, sellMessage: '' },
+      advertise: { ...MEM.advertise, transactions },
+    });
   }
 
   function render() {
@@ -1146,6 +1370,19 @@
       .rwth-btn-danger { color: #ff5d5d; border-color: #ff5d5d44; }
       .rwth-btn-danger:hover { color: #ff5d5d; border-color: #ff5d5d; }
 
+      .rwth-sellbox {
+        display: flex; flex-direction: column; gap: 8px;
+        border: 1px solid #00e5ff33; border-radius: 6px; padding: 10px;
+      }
+      .rwth-sell-input { resize: vertical; min-height: 60px; }
+      .rwth-sell-summary { font: 600 11px Consolas, monospace; color: #00e5ff; }
+      .rwth-sell-line {
+        display: flex; align-items: center; gap: 8px;
+        border: 1px solid #00e5ff22; border-radius: 4px; padding: 6px 8px;
+      }
+      .rwth-sell-matched { font: 700 10px Consolas, monospace; color: #39ff14; }
+      .rwth-sell-recent  { font: 700 10px Consolas, monospace; color: #00e5ff; }
+
       @media (max-width: 480px) {
         #rwth-panel { width: calc(100vw - 24px); right: 12px; }
       }
@@ -1160,11 +1397,15 @@
     buildAdvertiseTab,
     buildSettingsTab,
     buildScanChecklist,
+    buildSellBox,
     buildContent,
     ROI,
     parseAuctionWin,
     toScanHits,
     applyItemDetails,
+    SellParser,
+    matchSell,
+    summarizeSells,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
