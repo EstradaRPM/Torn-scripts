@@ -156,42 +156,55 @@ test('buildLedgerTab renders the add form when editingId is set', () => {
 });
 
 // ── Auction-win scan (slice 4) ───────────────────────────────────────────────
-test('parseAuctionWin extracts name, parenthetical bonus and price', () => {
+// A real auction-win log entry as returned by user/?selections=log&log=4320.
+const logEntry = {
+  id: 'YqMfrL3c7OjpBSkPo8cO',
+  timestamp: 1779372185,
+  details: { id: 4320, title: 'Auction house item win', category: 'Auctions' },
+  data: {
+    owner: 3727993,
+    item: [{ id: 614, uid: 19121539308, qty: 1 }],
+    final_price: 200000001,
+    listing_id: 521625,
+  },
+};
+
+test('parseAuctionWin reads item id and final price from a log entry', () => {
   const { parseAuctionWin } = globalThis.__RwthPure;
-  const p = parseAuctionWin({ data: { item: 'Diamond Bladed Knife (Fury)', cost: 1500000 } });
+  const p = parseAuctionWin(logEntry, { 614: 'Diamond Bladed Knife' });
+  assert.strictEqual(p.itemId, 614);
   assert.strictEqual(p.itemName, 'Diamond Bladed Knife');
-  assert.strictEqual(p.bonusName, 'Fury');
-  assert.strictEqual(p.buyPrice, 1500000);
+  assert.strictEqual(p.buyPrice, 200000001);
 });
 
-test('parseAuctionWin tolerates a missing bonus and alternate price fields', () => {
+test('parseAuctionWin falls back to "Item #id" with no name map', () => {
   const { parseAuctionWin } = globalThis.__RwthPure;
-  const p = parseAuctionWin({ params: { item: 'Cobra Derringer', price: 800000 } });
-  assert.strictEqual(p.itemName, 'Cobra Derringer');
-  assert.strictEqual(p.bonusName, null);
-  assert.strictEqual(p.buyPrice, 800000);
+  assert.strictEqual(parseAuctionWin(logEntry).itemName, 'Item #614');
+  assert.strictEqual(parseAuctionWin({}).itemId, null);
   assert.strictEqual(parseAuctionWin({}).buyPrice, 0);
 });
 
-test('toScanHits maps a v1 log object and skips already-seen keys', () => {
+test('toScanHits maps the API log array and skips seen entry ids', () => {
   const { toScanHits } = globalThis.__RwthPure;
-  const logObj = {
-    e1: { timestamp: 1000, data: { item: 'Knife (Fury)', cost: 100 } },
-    e2: { timestamp: 2000, data: { item: 'Sword', cost: 200 } },
-  };
-  const hits = toScanHits(logObj, ['e1']);
+  const log = [
+    logEntry,
+    { id: 'EAS', timestamp: 1779368765, data: { item: [{ id: 24 }], final_price: 180000001 } },
+  ];
+  const hits = toScanHits(log, ['YqMfrL3c7OjpBSkPo8cO'], { 24: 'Pocket Knife' });
   assert.strictEqual(hits.length, 1);
-  assert.strictEqual(hits[0].key, 'e2');
-  assert.strictEqual(hits[0].itemName, 'Sword');
-  assert.strictEqual(hits[0].buyTimestamp, 2000 * 1000);
+  assert.strictEqual(hits[0].key, 'EAS');
+  assert.strictEqual(hits[0].itemId, 24);
+  assert.strictEqual(hits[0].itemName, 'Pocket Knife');
+  assert.strictEqual(hits[0].buyPrice, 180000001);
+  assert.strictEqual(hits[0].buyTimestamp, 1779368765 * 1000);
 });
 
 test('toScanHits sorts newest first', () => {
   const { toScanHits } = globalThis.__RwthPure;
-  const hits = toScanHits({
-    old: { timestamp: 100, data: { item: 'A' } },
-    new: { timestamp: 900, data: { item: 'B' } },
-  }, []);
+  const hits = toScanHits([
+    { id: 'old', timestamp: 100, data: { item: [{ id: 1 }] } },
+    { id: 'new', timestamp: 900, data: { item: [{ id: 2 }] } },
+  ], [], {});
   assert.deepStrictEqual(hits.map(h => h.key), ['new', 'old']);
 });
 

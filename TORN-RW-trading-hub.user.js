@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.9
+// @version      0.1.10
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.9';
+  const SCRIPT_VERSION = '0.1.10';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -112,36 +112,40 @@
     return 0;
   }
 
-  // Pure: pull the fields a ScanHit needs out of one v1 log entry. The log
-  // carries the item name (often with the primary bonus in parens) and the
-  // winning bid; defensive about field names since the entry shape is unowned.
-  function parseAuctionWin(entry) {
-    const blob = Object.assign({}, (entry && entry.params) || {}, (entry && entry.data) || {});
-    let itemName = String(blob.item || blob.item_name || blob.itemName || blob.name || '').trim();
-    let bonusName = null;
-    const m = itemName.match(/^(.+?)\s*\(([^()]+)\)\s*$/);
-    if (m) { itemName = m[1].trim(); bonusName = m[2].trim(); }
-    if (!bonusName && typeof blob.bonus === 'string') bonusName = blob.bonus.trim() || null;
+  // Pure: pull the fields a ScanHit needs out of one auction-win log entry.
+  // The API identifies the item by numeric type id only (data.item[0].id) and
+  // gives the winning bid as data.final_price — no item name, no bonus. The
+  // name is resolved from the item dictionary; the bonus is user-entered.
+  function parseAuctionWin(entry, itemNames) {
+    const data = (entry && entry.data) || {};
+    const rec = Array.isArray(data.item) ? (data.item[0] || {}) : {};
+    const itemId = rec.id != null ? Number(rec.id) : null;
+    const names = itemNames || {};
+    let itemName = '';
+    if (itemId != null) itemName = names[itemId] || `Item #${itemId}`;
     return {
+      itemId,
       itemName,
-      bonusName: bonusName || null,
-      buyPrice: firstNum(blob.cost, blob.price, blob.amount, blob.total, blob.bid, blob.value),
+      buyPrice: firstNum(data.final_price, data.cost, data.price),
     };
   }
 
-  // Pure: a v1 log object (keyed by entry id) → ScanHit[] of wins not yet seen.
-  function toScanHits(logObj, seenKeys) {
+  // Pure: the API log list → ScanHit[] of wins whose entry id is not yet seen.
+  // Accepts the array the API returns (also tolerates an object keyed by id).
+  function toScanHits(log, seenKeys, itemNames) {
     const seen = new Set(seenKeys || []);
+    const entries = Array.isArray(log) ? log : Object.values(log || {});
     const out = [];
-    for (const id of Object.keys(logObj || {})) {
-      if (seen.has(id)) continue;
-      const entry = logObj[id];
-      if (!entry) continue;
-      const p = parseAuctionWin(entry);
+    for (const entry of entries) {
+      if (!entry || entry.id == null) continue;
+      const key = String(entry.id);
+      if (seen.has(key)) continue;
+      const p = parseAuctionWin(entry, itemNames);
       out.push({
-        key: id,
+        key,
+        itemId: p.itemId,
         itemName: p.itemName,
-        bonusName: p.bonusName,
+        bonusName: null,
         buyPrice: p.buyPrice,
         buyTimestamp: (Number(entry.timestamp) || 0) * 1000,
       });
@@ -591,6 +595,33 @@
     else Ledger.update(MEM.ledger.editingId, patch);
   }
 
+  // ─── ItemDict — item id → name, fetched once and cached a week ───────────────
+  // The auction-win log identifies items by numeric id only; this resolves the
+  // names. A fetch failure is non-fatal — names just degrade to "Item #id".
+  const ItemDict = {
+    async ensure(key) {
+      const WEEK = 7 * 24 * 3600 * 1000;
+      const cached = Store.get('rwth_items');
+      if (cached && cached.map && cached.ts && Date.now() - cached.ts < WEEK) {
+        return cached.map;
+      }
+      const res = await fetch(`${API_BASE}/torn/?selections=items&key=${encodeURIComponent(key)}`);
+      const d = await res.json();
+      if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+      const map = {};
+      const items = d && d.items;
+      if (Array.isArray(items)) {
+        for (const it of items) if (it && it.id != null) map[it.id] = it.name;
+      } else if (items && typeof items === 'object') {
+        for (const id of Object.keys(items)) {
+          if (items[id] && items[id].name) map[id] = items[id].name;
+        }
+      }
+      Store.set('rwth_items', { ts: Date.now(), map });
+      return map;
+    },
+  };
+
   // ─── LogScanner — auction-win detection (manual trigger only) ────────────────
   // scan() queries the auction-win log category incrementally via rwth_log_cursor
   // and produces a ScanHit[] of wins not already in rwth_seen_wins. No poll, no
@@ -625,14 +656,19 @@
         return;
       }
 
-      const logObj = (d && d.log) || {};
+      // Resolve item names; a failure here only degrades names to "Item #id".
+      let itemNames = {};
+      try { itemNames = await ItemDict.ensure(key); } catch { /* non-fatal */ }
+
+      const log = (d && d.log) || [];
+      const entries = Array.isArray(log) ? log : Object.values(log);
       const seen = Store.get('rwth_seen_wins') || [];
-      const hits = toScanHits(logObj, seen);
+      const hits = toScanHits(log, seen, itemNames);
 
       // Advance the cursor to the newest entry seen — keeps the next scan incremental.
       let maxTs = cursor;
-      for (const id of Object.keys(logObj)) {
-        const ts = Number(logObj[id] && logObj[id].timestamp) || 0;
+      for (const e of entries) {
+        const ts = Number(e && e.timestamp) || 0;
         if (ts > maxTs) maxTs = ts;
       }
       if (maxTs > cursor) Store.set('rwth_log_cursor', maxTs);
@@ -670,7 +706,7 @@
       }
       newItems.push({
         id: makeId(),
-        itemId: null,
+        itemId: hit.itemId != null ? hit.itemId : null,
         itemName: val('itemName') || hit.itemName,
         type: val('type') || 'weapon',
         bonuses,
