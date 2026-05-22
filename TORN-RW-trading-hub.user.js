@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.10
+// @version      0.1.11
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.10';
+  const SCRIPT_VERSION = '0.1.11';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -23,8 +23,8 @@
     mark: 'NC17',
   };
 
-  // Torn v1 API. Log type 4320 ("Auction house item win") filters
-  // user/?selections=log to auction wins only.
+  // Torn v2 API. Log type 4320 ("Auction house item win") filters
+  // /v2/user/log to auction wins only.
   const API_BASE = 'https://api.torn.com';
   const LOG_TYPE_AUCTION_WIN = 4320;
 
@@ -130,15 +130,18 @@
     };
   }
 
-  // Pure: the API log list → ScanHit[] of wins whose entry id is not yet seen.
-  // Accepts the array the API returns (also tolerates an object keyed by id).
+  // Pure: the API log map → ScanHit[] of wins whose entry id is not yet seen.
+  // Torn v1 user/log returns d.log as an OBJECT keyed by hash id — each entry
+  // carries NO id field of its own; the id is the key. Tolerate a plain array
+  // too (id from entry.id, else index) so callers can't break this.
   function toScanHits(log, seenKeys, itemNames) {
     const seen = new Set(seenKeys || []);
-    const entries = Array.isArray(log) ? log : Object.values(log || {});
+    const pairs = Array.isArray(log)
+      ? log.map((e, i) => [e && e.id != null ? String(e.id) : String(i), e])
+      : Object.entries(log || {});
     const out = [];
-    for (const entry of entries) {
-      if (!entry || entry.id == null) continue;
-      const key = String(entry.id);
+    for (const [key, entry] of pairs) {
+      if (!entry) continue;
       if (seen.has(key)) continue;
       const p = parseAuctionWin(entry, itemNames);
       out.push({
@@ -605,7 +608,7 @@
       if (cached && cached.map && cached.ts && Date.now() - cached.ts < WEEK) {
         return cached.map;
       }
-      const res = await fetch(`${API_BASE}/torn/?selections=items&key=${encodeURIComponent(key)}`);
+      const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
       const d = await res.json();
       if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
       const map = {};
@@ -636,9 +639,7 @@
       }
       setState({ fetchError: null, ledger: { ...MEM.ledger, scanning: true, scanMessage: '' } });
 
-      const cursor = Number(Store.get('rwth_log_cursor')) || 0;
-      const url = `${API_BASE}/user/?selections=log&log=${LOG_TYPE_AUCTION_WIN}`
-                + (cursor ? `&from=${cursor}` : '')
+      const url = `${API_BASE}/v2/user/log?log=${LOG_TYPE_AUCTION_WIN}`
                 + `&key=${encodeURIComponent(key)}`;
 
       let d;
@@ -661,17 +662,8 @@
       try { itemNames = await ItemDict.ensure(key); } catch { /* non-fatal */ }
 
       const log = (d && d.log) || [];
-      const entries = Array.isArray(log) ? log : Object.values(log);
       const seen = Store.get('rwth_seen_wins') || [];
       const hits = toScanHits(log, seen, itemNames);
-
-      // Advance the cursor to the newest entry seen — keeps the next scan incremental.
-      let maxTs = cursor;
-      for (const e of entries) {
-        const ts = Number(e && e.timestamp) || 0;
-        if (ts > maxTs) maxTs = ts;
-      }
-      if (maxTs > cursor) Store.set('rwth_log_cursor', maxTs);
 
       setState({
         fetchError: null,

@@ -26,9 +26,9 @@ A trader's workbench for ranked-war (RW) armor and weapon flipping. Replaces jug
 
 ## Data Sources (v0.1.0)
 
-- [x] **Torn API** (`https://api.torn.com/`):
-  - `user?selections=log&log=4320` — auction-win entries ("Auction house item win"). The API gives **item type id only** (`data.item[0].id`), the winning bid (`data.final_price`), the seller (`data.owner`) and a `listing_id` — **no item name, no bonus**. `d.log` is an **array** of `{id, timestamp, details, data, params}`.
-  - `torn?selections=items` — item dictionary, fetched once and cached a week (`rwth_items`) to resolve item id → name. A fetch failure is non-fatal: names degrade to `Item #<id>`.
+- [x] **Torn API v2** (`https://api.torn.com/v2/`):
+  - `/v2/user/log?log=4320` — auction-win entries ("Auction house item win"). The API gives **item type id only** (`data.item[0].id`), the winning bid (`data.final_price`), the seller (`data.owner`) and a `listing_id` — **no item name, no bonus**. `d.log` is an **array**; each entry carries its own `id`.
+  - `/v2/torn/items` — item dictionary, fetched once and cached a week (`rwth_items`) to resolve item id → name. A fetch failure is non-fatal: names degrade to `Item #<id>`.
   - Item name (resolved from the dictionary, editable), **bonus name**, bonus *value %* and *quality* are all entered/confirmed by the user in the scan checklist — none come from the API.
 - [x] **User paste** — sells are logged by pasting Torn transaction-log lines into a "Log a sale" box (see Sell logging below). No sell-side API scan.
 
@@ -123,7 +123,6 @@ Prefix: `rwth_`.
 | `rwth_transactions` | JSON array | Persisted `MEM.advertise.transactions` |
 | `rwth_settings` | JSON object | Persisted `MEM.settings` |
 | `rwth_seen_wins` | JSON array | Auction-win log entry ids already added **or dismissed** — scan dedup |
-| `rwth_log_cursor` | number | Last-seen auction-win log timestamp (epoch s), for incremental scans (`&from=`) |
 | `rwth_items` | JSON object | `{ts, map}` — item id → name dictionary, cached one week |
 
 (Dropped from the original draft: `rwth_window_pos` — window no longer drag/resizable; `rwth_cache_*` — third-party caching is v0.2.0.)
@@ -140,7 +139,7 @@ Prefix: `rwth_`.
 | `Store` | localStorage I/O | `get(k)` / `set(k,v)`; try/catch wrapped; never throws |
 | `setState` | Sole MEM mutation path | `setState(patch)` → `Object.assign(MEM, patch)` → `render()` |
 | `Launcher` | Chat-row button injection | Anchors next to a native chat-header button (`#people_panel_button`, selector fallbacks) via `insertAdjacentElement('afterend')`; a `MutationObserver` on `#chatRoot` re-injects after every Torn chat re-render. **Falls back to a fixed bottom-right element** if no chat / no anchor. Never a free FAB. Approach adapted from the Enhanced Chat Buttons script (Callz/Weav3r). |
-| `LogScanner` | Auction-win detection | `scan()` — manual trigger only (button); queries `user?selections=log&log=4320` (log type **4320** = "Auction house item win"); produces `ScanHit[]` of entry ids not in `rwth_seen_wins`. Incremental via `rwth_log_cursor` (`&from=`). Pure core `parseAuctionWin` + `toScanHits` in `__RwthPure`. |
+| `LogScanner` | Auction-win detection | `scan()` — manual trigger only (button); queries `/v2/user/log?log=4320` (log type **4320** = "Auction house item win"); produces `ScanHit[]` of entry ids not in `rwth_seen_wins`. Full fetch each scan — dedup is `rwth_seen_wins` only. Pure core `parseAuctionWin` + `toScanHits` in `__RwthPure`. |
 | `ItemDict` | Item id → name | `ensure(key)` — fetches `torn?selections=items` once, caches in `rwth_items` for a week. Non-fatal on failure. |
 | `SellParser` | Parse pasted sell lines | `parse(text) → ParsedSell[]` — handles multi-line blocks. Pure; in `__RwthPure`. |
 | `matchSell` | Tie a parsed sell to a ledger row | `match(parsedSell, openPositions) → row|null` (item name; bonus name as tiebreaker). Pure; in `__RwthPure`. |
@@ -268,7 +267,7 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.10 (slice 4 done — auction-win scan: manual `Scan` button, `LogScanner.scan()` via log type 4320, item-name resolution via `ItemDict`/`rwth_items`, incremental `rwth_log_cursor`, scan-result checklist with per-win name/bonus/quality inputs, confirm → `held`/`auction` ledger rows, `rwth_seen_wins` dedup, errors via `MEM.fetchError`)
+- **Version:** 0.1.11 (slice 4 done — auction-win scan: manual `Scan` button, `LogScanner.scan()` via `/v2/user/log?log=4320`, item-name resolution via `ItemDict`/`rwth_items` (`/v2/torn/items`), full-fetch + `rwth_seen_wins` dedup, scan-result checklist with per-win name/bonus/quality inputs, confirm → `held`/`auction` ledger rows, errors via `MEM.fetchError`)
 - **Design:** locked (grill complete 2026-05-21)
 - **Open issues:** #246–#248 (#242–#245 done)
 - **Next up:** slice 5 — #246 sell logging
@@ -287,7 +286,7 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 ## Notes / Gotchas
 
 - **Chat-bar injection** is Torn DOM the script doesn't own. The launcher anchors next to `#people_panel_button` and a `MutationObserver` on `#chatRoot` re-injects after every chat re-render (Torn rebuilds the chat DOM constantly — without the observer the button vanishes). Selector fallbacks + the fixed-corner fallback keep the launcher reachable on Torn DOM changes / PDA. Do **not** append the launcher directly to `#chatRoot` — it flows at page top.
-- **Scan is manual-only.** No background poll, no scan-on-open. `rwth_log_cursor` keeps it incremental; `rwth_seen_wins` stops dismissed wins from re-nagging.
+- **Scan is manual-only.** No background poll, no scan-on-open. Each scan fetches the full auction-win log; `rwth_seen_wins` stops added/dismissed wins from re-nagging. (No incremental cursor — a poisoned cursor silently dropped wins.)
 - **The log only carries the primary bonus name** and no bonus value / quality — the user supplies value % + quality and any second bonus at add time.
 - **ROI uses the log's stated net** — the sell line states fees exactly, so there is no venue fee table. `soldVenue` is display-only.
 - **Forum / bazaar HTML must match the user's templates exactly** — see `rwth-assets.md` (source of truth for markup).

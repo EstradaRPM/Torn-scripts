@@ -156,7 +156,8 @@ test('buildLedgerTab renders the add form when editingId is set', () => {
 });
 
 // ── Auction-win scan (slice 4) ───────────────────────────────────────────────
-// A real auction-win log entry as returned by user/?selections=log&log=4320.
+// An auction-win log entry from /v2/user/log?log=4320 (log is an array;
+// each entry carries its own id).
 const logEntry = {
   id: 'YqMfrL3c7OjpBSkPo8cO',
   timestamp: 1779372185,
