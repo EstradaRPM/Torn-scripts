@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.22
+// @version      0.1.23
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.22';
+  const SCRIPT_VERSION = '0.1.23';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -673,13 +673,15 @@
 
   // One chat-blurb item line. Name is abbreviated via ITEM_ABBREV; the parens
   // default to the primary bonus, falling back to quality % when there is none.
-  function chatItemLine(item) {
+  // withPrice=false drops the price tail — used to claw back characters so an
+  // extra listing can fit before any listing is dropped entirely.
+  function chatItemLine(item, withPrice) {
     const name = ITEM_ABBREV[item.itemName] || item.itemName || '';
     const b = (item.bonuses || [])[0];
     let paren = '';
     if (b && b.name) paren = b.value != null ? `${b.name} ${b.value}%` : b.name;
     else if (item.quality != null) paren = `${item.quality}% q`;
-    const price = fmtChatPrice(item.listPrice);
+    const price = withPrice === false ? '' : fmtChatPrice(item.listPrice);
     return `[S] <b>${name}</b>${paren ? ` (${paren})` : ''}`
          + `${price ? ` — <b>${price}</b>` : ''}`;
   }
@@ -1105,21 +1107,35 @@
       const CHAT_LIMIT = 3;
       // Torn's chat input caps a post at 125 rendered characters (HTML markup
       // does not count). With 3 items + a "+N more" line the tail — the
-      // Bazaar/Forum links — got truncated. Trim item lines until the whole
-      // blurb fits; the links are reserved budget and never dropped.
+      // Bazaar/Forum links — got truncated. To fit: first shed item prices
+      // (from the cheapest listing up), and only drop a whole listing once
+      // every price is already gone. Links are reserved budget, never dropped.
       const CHAR_LIMIT = 125;
       const sorted = (items || []).slice().sort((a, b) =>
         (Number(b.listPrice) || 0) - (Number(a.listPrice) || 0));
-      const candidates = sorted.slice(0, CHAT_LIMIT).map(chatItemLine);
+      const picks = sorted.slice(0, CHAT_LIMIT);
       const visibleLen = (arr) => arr.join('\n').replace(/<[^>]+>/g, '').length;
-      const assemble = (shown) => {
+      // shown = listings kept; dropped = how many of them show without a price
+      // (the trailing/cheapest ones).
+      const assemble = (shown, dropped) => {
+        const itemLines = picks.slice(0, shown)
+          .map((it, i) => chatItemLine(it, i < shown - dropped));
         const remaining = sorted.length - shown;
         const moreLine = remaining > 0 ? [`<i>+${remaining} more listed</i>`] : [];
-        return [...header, ...candidates.slice(0, shown), ...moreLine, ...linkLines];
+        return [...header, ...itemLines, ...moreLine, ...linkLines];
       };
-      let shown = candidates.length;
-      while (shown > 0 && visibleLen(assemble(shown)) > CHAR_LIMIT) shown--;
-      return assemble(shown).join('\n');
+      let chosen = assemble(0, 0);
+      for (let shown = picks.length; shown >= 0; shown--) {
+        let fit = null;
+        for (let dropped = 0; dropped <= shown; dropped++) {
+          if (visibleLen(assemble(shown, dropped)) <= CHAR_LIMIT) {
+            fit = assemble(shown, dropped);
+            break;
+          }
+        }
+        if (fit) { chosen = fit; break; }
+      }
+      return chosen.join('\n');
     },
   };
 
