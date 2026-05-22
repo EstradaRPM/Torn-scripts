@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.23
+// @version      0.1.24
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.23';
+  const SCRIPT_VERSION = '0.1.24';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -79,6 +79,7 @@
       weav3rPricelistUrl: '',
       bannerImageUrl: '',
       forumHeaderImageUrl: '',
+      viewCounterUrl: '',
       apiKey: '###PDA-APIKEY###',
     },
     fetchError: null,
@@ -633,12 +634,28 @@
     { key: 'weav3rPricelistUrl',  label: 'Weav3r pricelist URL', type: 'url',  placeholder: 'https://...' },
     { key: 'bannerImageUrl',      label: 'Bazaar banner image URL',  type: 'url', placeholder: 'https://...' },
     { key: 'forumHeaderImageUrl', label: 'Forum header image URL',   type: 'url', placeholder: 'https://...' },
+    { key: 'viewCounterUrl',      label: 'View counter URL',     type: 'url',  placeholder: 'https://CODE.goatcounter.com/count' },
     { key: 'apiKey',              label: 'Torn API key',         type: 'password', placeholder: '###PDA-APIKEY###' },
   ];
 
   function escapeAttr(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  // Invisible view-counter pixel appended to advertise HTML. Each render of a
+  // forum/bazaar/signature post requests this image, pinging the configured
+  // hit-counter service (e.g. GoatCounter) so visits are tallied server-side.
+  // `label` is the per-surface path tag so the dashboard can split them.
+  // Returns '' when no counter URL is configured.
+  function counterPixel(settings, label) {
+    const base = ((settings || {}).viewCounterUrl || '').trim();
+    if (!base) return '';
+    const sep = base.includes('?') ? '&' : '?';
+    const src = `${base}${sep}p=${encodeURIComponent('/' + label)}`;
+    return `<img src="${escapeAttr(src)}" alt="" width="1" height="1" `
+      + `style="width: 1px; height: 1px; border: 0; display: block;" `
+      + `referrerpolicy="no-referrer">`;
   }
 
   function buildSettingsTab(mem) {
@@ -988,7 +1005,8 @@
         + `${link}</td></tr></tbody></table></td></tr>`);
       return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
         + `border-collapse: collapse; font-family: Verdana, Geneva, sans-serif;">`
-        + `<tbody>${rows.join('')}</tbody></table></div></div>`;
+        + `<tbody>${rows.join('')}</tbody></table></div>`
+        + `${counterPixel(s, 'rwth-forum')}</div>`;
     },
 
     // Output — bazaar description HTML. The bazaar page lists stock natively, so
@@ -1036,7 +1054,8 @@
         + `**Contains explicit deals, weapons, and depictions of violence.</span></td></tr>`);
       return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
         + `border-collapse: collapse; font-family: Verdana, Geneva, sans-serif;">`
-        + `<tbody>${rows.join('')}</tbody></table></div></div>`;
+        + `<tbody>${rows.join('')}</tbody></table></div>`
+        + `${counterPixel(s, 'rwth-bazaar')}</div>`;
     },
 
     // Output — profile signature HTML. A compact, image-less catalogue: the
@@ -1085,7 +1104,8 @@
         : '';
       return `<div><div class="table-wrap"><table ${TBL} width="100%" `
         + `style="background: #080e18; border: 0; border-collapse: collapse;">`
-        + `<tbody>${headerRow}${bodyRows.join('')}${linkRow}</tbody></table></div></div>`;
+        + `<tbody>${headerRow}${bodyRows.join('')}${linkRow}</tbody></table></div>`
+        + `${counterPixel(s, 'rwth-sig')}</div>`;
     },
     // Output 3 — trade-chat blurb. Sorted by list price descending so the
     // highest-value items lead the blurb rather than alphabetised filler.
