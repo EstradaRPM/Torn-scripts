@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.14
+// @version      0.1.15
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.14';
+  const SCRIPT_VERSION = '0.1.15';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -22,6 +22,9 @@
   const BRAND = {
     mark: 'NC17',
     forumThreadTitle: '[S] NC17 Rated ▸ RW Weapons & Armor',
+    // Footer line, bottom-left of the forum/bazaar HTML — an NC-17 movie-rating
+    // gag (the brand is a film rating). Finalised with the user for slice 7.
+    footerTagline: 'Contains explicit deals, weapons, and depictions of violence',
   };
 
   // Display-name abbreviation map for the trade-chat blurb — keeps chat lines
@@ -63,6 +66,7 @@
     },
     advertise: {
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
+      imgEditId: null,        // null | itemId — the row whose [IMG] popover is open
       transactions: [],
       outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
@@ -663,9 +667,206 @@
          + `${price ? ` — <b>${price}</b>` : ''}`;
   }
 
+  // ─── Forum HTML — section-1 markup, polished with sections 2-4 ───────────────
+  // Each helper returns one <tr> (or a wrapper) of the forum post. Inline styles
+  // are byte-verbatim from rwth-assets.md so the rendered post matches the
+  // user's approved template exactly.
+
+  // Brand header (section 4 hairline). The forum header image, when set,
+  // replaces the NC17 text block entirely (user's slice-7 decision).
+  function forumHeader(s) {
+    const img = (s.forumHeaderImageUrl || '').trim();
+    if (img) {
+      return `<tr><td style="background: #080e18; padding: 0; line-height: 0; `
+        + `border-top: 1px solid rgba(0,255,136,0.15); border-bottom: 1px solid rgba(0,255,136,0.08);">`
+        + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener">`
+        + `<img style="display: block; height: auto;" src="${escapeAttr(img)}" alt="" width="100%"/></a></td></tr>`;
+    }
+    return `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center; `
+      + `border-top: 1px solid rgba(0,255,136,0.15); border-bottom: 1px solid rgba(0,255,136,0.08);">`
+      + `<div style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
+      + `${escapeAttr(BRAND.mark)}</div>`
+      + `<div style="color: #8aa898; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
+      + `//&nbsp; Trading Post &nbsp;//</div></td></tr>`;
+  }
+
+  // Centered pill flanked by hairlines (section 3). Same markup for both headers.
+  function forumSectionHeader(label) {
+    const hair = `<td style="width: 35%; border-top: 1px solid rgba(109,196,136,0.18); height: 1px; line-height: 0;">&nbsp;</td>`;
+    return `<tr><td style="background: #080e18; padding: 18px 22px 10px;">`
+      + `<table width="100%" style="border-collapse: collapse;"><tbody><tr>${hair}`
+      + `<td style="text-align: center; vertical-align: middle; padding: 0 14px; white-space: nowrap;">`
+      + `<span style="display: inline-block; background: rgba(109,196,136,0.08); border: 1px solid rgba(109,196,136,0.35); `
+      + `color: #7ed098; font-size: 11px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase; `
+      + `padding: 5px 14px; border-radius: 2px;">● ${escapeAttr(label)}</span></td>`
+      + `${hair}</tr></tbody></table></td></tr>`;
+  }
+
+  // One bonus chip (section 2). Value-less bonuses show the name alone.
+  function forumChip(b) {
+    const txt = b.value != null ? `${escapeAttr(b.name)} &nbsp;${b.value}%` : escapeAttr(b.name);
+    return `<span style="display: inline-block; background: rgba(109,196,136,0.10); `
+      + `border: 1px solid rgba(109,196,136,0.30); color: #7ed098; font-size: 10px; font-weight: bold; `
+      + `letter-spacing: 0.16em; text-transform: uppercase; padding: 3px 9px; border-radius: 2px;">${txt}</span>`;
+  }
+
+  // One "Currently Available" card (section 2): optional screenshot on top,
+  // then a green-accented info cell — name + stacked chips left, price right.
+  function forumItemCard(item) {
+    const bonuses = (item.bonuses || []).filter(b => b && b.name);
+    const chips = bonuses.map((b, i) =>
+      `<div style="margin-top: ${i === 0 ? 7 : 4}px;">${forumChip(b)}</div>`).join('');
+    const img = (item.gyazoUrl || '').trim();
+    const imgRow = img
+      ? `<tr><td style="background: #060a12; padding: 0; line-height: 0; width: 100%;">`
+        + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener">`
+        + `<img style="display: block; height: auto;" src="${escapeAttr(img)}" alt="" width="100%"/></a></td></tr>`
+      : '';
+    return `<tr><td style="background: #080e18; padding: 10px 22px;">`
+      + `<table style="background: #0c1422; border: 1px solid rgba(0,255,136,0.08); border-collapse: collapse; table-layout: fixed;" width="100%"><tbody>`
+      + imgRow
+      + `<tr><td style="background: #0c1422; padding: 16px 18px 16px 14px; border-left: 2px solid rgba(109,196,136,0.45);">`
+      + `<table width="100%" style="border-collapse: collapse;"><tbody><tr>`
+      + `<td style="text-align: left; vertical-align: middle; width: 60%; padding-left: 6px;">`
+      + `<div style="color: #5dc6f0; font-size: 17px; font-weight: bold; letter-spacing: 0.04em; line-height: 1.15;">`
+      + `${escapeAttr(item.itemName)}</div>${chips}</td>`
+      + `<td style="text-align: right; vertical-align: middle; white-space: nowrap; padding-right: 4px;">`
+      + `<span style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.02em; `
+      + `font-family: Consolas, 'Courier New', monospace;">${fmtMoney(item.listPrice)}</span></td>`
+      + `</tr></tbody></table></td></tr></tbody></table></td></tr>`;
+  }
+
+  // One Recent Transactions line. The tx record carries no buyer XID, so the
+  // buyer renders as plain text rather than the template's profile link.
+  function forumTxRow(tx) {
+    const bonus = tx.bonusName ? ` (${escapeAttr(tx.bonusName)})` : '';
+    const buyer = tx.buyer ? ` to&nbsp;${escapeAttr(tx.buyer)}` : '';
+    const price = tx.price != null ? ` at ${fmtMoney(tx.price)}` : '';
+    return `<tr><td style="padding: 9px 14px; color: rgb(138, 168, 152); font-size: 12px; `
+      + `font-family: Consolas, 'Courier New', monospace; border-bottom: 1px solid rgba(0,255,136,0.05);">`
+      + `<span style="font-size: 10px; color: var(--te-text-color-gray4);">`
+      + `<em>You sold a&nbsp;${escapeAttr(tx.itemName)}${bonus}${buyer}${price}</em></span></td></tr>`;
+  }
+
   const AdvertiseGenerator = {
     // Output 1 — forum thread title; static brand text.
     toForumTitle() { return BRAND.forumThreadTitle; },
+
+    // Output — full forum post HTML. Item-driven from the selected `listed`
+    // rows + Recent Transactions; markup matches rwth-assets.md sections 1-4.
+    toForumHtml(items, transactions, settings) {
+      const s = settings || {};
+      const its = items || [];
+      const txs = transactions || [];
+      const rows = [];
+      rows.push(forumHeader(s));
+      // Sub-banner (section 1, row 2).
+      rows.push(`<tr><td style="background: #080e18; padding: 11px 22px 9px; text-align: center;">`
+        + `<strong><span style="font-size: 13px; letter-spacing: 0.16em; color: #6dc488; text-transform: uppercase;">`
+        + `Open shop &nbsp;//&nbsp; Competitively priced</span></strong></td></tr>`);
+      // Intro (section 1, row 3).
+      rows.push(`<tr><td style="background: #080e18; padding: 14px 22px 16px; `
+        + `border-top: 1px solid rgba(0,30,15,0.6); text-align: center; color: #c5dccc; font-size: 13px; line-height: 1.7;">`
+        + `Rotating collection of RW weapons/gear and other useful items.<br/><br/>`
+        + `<span style="color: #9ab5a5;">If something below isn't currently listed, message me.</span></td></tr>`);
+      rows.push(forumSectionHeader('Currently Available'));
+      for (const it of its) rows.push(forumItemCard(it));
+      // Rotating-note line.
+      rows.push(`<tr><td style="background: #080e18; padding: 4px 22px 14px; color: #8aa898; `
+        + `font-size: 12px; font-style: italic;">`
+        + `Also rotating: drugs, plushies, flowers. Check bazaar for live stock.</td></tr>`);
+      if (txs.length) {
+        rows.push(forumSectionHeader('Recent Transactions'));
+        rows.push(`<tr><td style="background: #080e18; padding: 6px 22px 16px;">`
+          + `<table style="background: rgb(12,20,34); border: 1px solid rgba(0,255,136,0.08); border-collapse: collapse;" width="100%">`
+          + `<tbody>${txs.map(forumTxRow).join('')}</tbody></table></td></tr>`);
+      }
+      // Footer — tagline left, bazaar link right (section 1, last row).
+      const pid = (s.playerId || '').trim();
+      const link = pid
+        ? `<strong><a style="color: #5dc6f0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; `
+          + `text-decoration: none; border-bottom: 1px solid rgba(93,198,240,0.4); padding-bottom: 2px;" `
+          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar ↗</a></strong>`
+        : '';
+      rows.push(`<tr><td style="background: #080e18; border-top: 1px solid rgba(0,30,15,0.6); padding: 0;">`
+        + `<table width="100%"><tbody><tr>`
+        + `<td style="background: #080e18; padding: 11px 22px 13px; text-align: left; vertical-align: middle;">`
+        + `<span style="font-size: 12px; letter-spacing: 0.14em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
+        + `${escapeAttr(BRAND.footerTagline)}</span></td>`
+        + `<td style="background: #080e18; padding: 11px 22px 13px; text-align: right; vertical-align: middle;">`
+        + `${link}</td></tr></tbody></table></td></tr>`);
+      return `<div><div class="table-wrap"><table style="background: #080e18; border-collapse: collapse; `
+        + `font-family: Verdana, Geneva, sans-serif;" width="100%"><tbody>${rows.join('')}</tbody></table></div></div>`;
+    },
+
+    // Output — bazaar description HTML. Static brand copy, optional bazaar
+    // banner; Verdana body / Consolas accents (not all-Courier).
+    toBazaarHtml(settings) {
+      const s = settings || {};
+      const banner = (s.bannerImageUrl || '').trim();
+      const bannerRow = banner
+        ? `<tr><td style="background: #060a12; padding: 0; line-height: 0;">`
+          + `<img style="display: block; height: auto;" src="${escapeAttr(banner)}" alt="" width="100%"/></td></tr>`
+        : '';
+      return `<div><div class="table-wrap"><table style="background: #080e18; border-collapse: collapse; `
+        + `font-family: Verdana, Geneva, sans-serif;" width="100%"><tbody>`
+        + bannerRow
+        + `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center; `
+        + `border-top: 1px solid rgba(0,255,136,0.15); border-bottom: 1px solid rgba(0,255,136,0.08);">`
+        + `<div style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
+        + `${escapeAttr(BRAND.mark)}</div>`
+        + `<div style="color: #8aa898; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
+        + `//&nbsp; Trading Post &nbsp;//</div></td></tr>`
+        + `<tr><td style="background: #080e18; padding: 11px 22px 9px; text-align: center;">`
+        + `<strong><span style="font-size: 13px; letter-spacing: 0.16em; color: #6dc488; text-transform: uppercase;">`
+        + `Open shop &nbsp;//&nbsp; Competitively priced</span></strong></td></tr>`
+        + `<tr><td style="background: #080e18; padding: 14px 22px 16px; border-top: 1px solid rgba(0,30,15,0.6); `
+        + `text-align: center; color: #c5dccc; font-size: 13px; line-height: 1.7;">`
+        + `RW weapons, armor and other useful gear — fairly priced, always rotating.<br/><br/>`
+        + `<span style="color: #9ab5a5;">Message me for anything not currently stocked.</span></td></tr>`
+        + `<tr><td style="background: #080e18; border-top: 1px solid rgba(0,255,136,0.08); `
+        + `padding: 11px 22px 13px; text-align: center;">`
+        + `<span style="font-size: 12px; letter-spacing: 0.14em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
+        + `${escapeAttr(BRAND.footerTagline)}</span></td></tr>`
+        + `</tbody></table></div></div>`;
+    },
+
+    // Output — profile signature HTML. Condensed, item-driven; reuses the
+    // forum header image when one is set.
+    toSignatureHtml(items, settings) {
+      const s = settings || {};
+      const its = items || [];
+      const img = (s.forumHeaderImageUrl || '').trim();
+      const headerRow = img
+        ? `<tr><td colspan="2" style="background: #080e18; padding: 0; line-height: 0; `
+          + `border-bottom: 1px solid rgba(0,255,136,0.08);">`
+          + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener">`
+          + `<img style="display: block; height: auto;" src="${escapeAttr(img)}" alt="" width="100%"/></a></td></tr>`
+        : `<tr><td colspan="2" style="background: #080e18; padding: 10px 14px; text-align: center; `
+          + `border-bottom: 1px solid rgba(0,255,136,0.08);">`
+          + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase;">`
+          + `${escapeAttr(BRAND.mark)}</span></td></tr>`;
+      const itemRows = its.map((it) => {
+        const b = (it.bonuses || []).filter(x => x && x.name)[0];
+        const tag = b
+          ? ` <span style="color: #8aa898;">(${escapeAttr(b.name)}${b.value != null ? ' ' + b.value + '%' : ''})</span>`
+          : '';
+        return `<tr><td style="padding: 5px 14px; color: #5dc6f0; font-size: 12px; `
+          + `font-family: Verdana, Geneva, sans-serif;">${escapeAttr(it.itemName)}${tag}</td>`
+          + `<td style="padding: 5px 14px; text-align: right; color: #7ed098; font-size: 12px; font-weight: bold; `
+          + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(it.listPrice))}</td></tr>`;
+      }).join('');
+      const pid = (s.playerId || '').trim();
+      const linkRow = pid
+        ? `<tr><td colspan="2" style="background: #080e18; padding: 7px 14px; text-align: center; `
+          + `border-top: 1px solid rgba(0,255,136,0.08);">`
+          + `<a style="color: #5dc6f0; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; text-decoration: none;" `
+          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar ↗</a></td></tr>`
+        : '';
+      return `<div><div class="table-wrap"><table style="background: #080e18; `
+        + `border: 1px solid rgba(0,255,136,0.08); border-collapse: collapse;" width="100%">`
+        + `<tbody>${headerRow}${itemRows}${linkRow}</tbody></table></div></div>`;
+    },
     // Output 3 — trade-chat blurb; item-driven, matches rwth-assets.md section 6.
     toChat(items, settings) {
       const s = settings || {};
@@ -684,8 +885,18 @@
 
   // One checkbox-selected ledger item on the Advertise tab. The list-price and
   // image-URL inputs persist straight onto the ledger row via syncAdvertiseEdit.
-  function buildAdvItemRow(item, checked) {
+  function buildAdvItemRow(item, checked, imgOpen) {
     const bonus = fmtBonuses(item);
+    const hasImg = !!(item.gyazoUrl && String(item.gyazoUrl).trim());
+    const pop = imgOpen
+      ? `<div class="rwth-img-pop">
+          <span class="rwth-field-label">Screenshot URL</span>
+          <input class="rwth-field-input" data-adv-field="gyazoUrl"
+                 value="${escapeAttr(item.gyazoUrl)}" placeholder="https://i.gyazo.com/…"
+                 autocomplete="off" spellcheck="false">
+          <button class="rwth-btn-sm" type="button" data-action="close-img">Done</button>
+        </div>`
+      : '';
     return `<div class="rwth-adv-item" data-adv-item="${escapeAttr(item.id)}">
       <label class="rwth-adv-check">
         <input type="checkbox" data-adv-check${checked ? ' checked' : ''}>
@@ -698,13 +909,13 @@
           <input class="rwth-field-input" type="number" data-adv-field="listPrice"
                  value="${escapeAttr(item.listPrice)}" placeholder="e.g. 118000000">
         </label>
+        <div class="rwth-adv-img">
+          <button class="rwth-btn-sm${hasImg ? ' rwth-btn-on' : ''}" type="button"
+                  data-action="toggle-img" data-id="${escapeAttr(item.id)}">${
+            hasImg ? 'IMG ●' : '+ IMG'}</button>
+          ${pop}
+        </div>
       </div>
-      <label class="rwth-field">
-        <span class="rwth-field-label">Image URL</span>
-        <input class="rwth-field-input" data-adv-field="gyazoUrl"
-               value="${escapeAttr(item.gyazoUrl)}" placeholder="https://i.gyazo.com/…"
-               autocomplete="off" spellcheck="false">
-      </label>
     </div>`;
   }
 
@@ -746,9 +957,9 @@
 
   // A windowed copy box. Editable boxes are a textarea (the chat blurb is tuned
   // in place before copy); static boxes are a div. Copy reads the live value.
-  function buildOutputBox(label, id, value, editable) {
+  function buildOutputBox(label, id, value, editable, rows) {
     const body = editable
-      ? `<textarea class="rwth-field-input rwth-output-box" id="${id}" rows="8"
+      ? `<textarea class="rwth-field-input rwth-output-box" id="${id}" rows="${rows || 8}"
                    spellcheck="false">${escapeAttr(value)}</textarea>`
       : `<div class="rwth-output-box" id="${id}">${escapeAttr(value)}</div>`;
     return `<div class="rwth-output">
@@ -773,7 +984,7 @@
     const transactions = A.transactions || [];
 
     const itemRows = listed.length
-      ? listed.map(i => buildAdvItemRow(i, isChecked(i))).join('')
+      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
     const txRows = transactions.length
       ? transactions.map(buildTxRow).join('')
@@ -797,6 +1008,12 @@
                          AdvertiseGenerator.toForumTitle(), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
                          AdvertiseGenerator.toChat(selectedItems, settings), true)}
+        ${buildOutputBox('Forum post HTML', 'rwth-out-forum',
+                         AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings), true, 12)}
+        ${buildOutputBox('Bazaar description HTML', 'rwth-out-bazaar',
+                         AdvertiseGenerator.toBazaarHtml(settings), true, 10)}
+        ${buildOutputBox('Profile signature HTML', 'rwth-out-signature',
+                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}
       </div>
     </div>`;
   }
@@ -890,6 +1107,9 @@
         case 'remove-tx':     removeTransaction(id); break;
         case 'promote-tx':    promoteTransaction(id); break;
         case 'copy-output':   copyOutput(actionEl.dataset.copyTarget); break;
+        case 'toggle-img':    setState({ advertise: { ...MEM.advertise,
+                                imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
+        case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
       }
     });
 
@@ -1686,6 +1906,15 @@
       }
       .rwth-adv-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
       .rwth-adv-check input { accent-color: #39ff14; }
+      .rwth-adv-img { position: relative; display: flex; align-items: flex-end; }
+      .rwth-btn-on { color: #39ff14; border-color: #39ff14; }
+      .rwth-img-pop {
+        position: absolute; top: 100%; right: 0; z-index: 5; width: 230px;
+        display: flex; flex-direction: column; gap: 6px; margin-top: 4px;
+        background: #0c1422; border: 1px solid #00e5ff66; border-radius: 4px; padding: 8px;
+        box-shadow: 0 4px 12px #000a;
+      }
+      .rwth-img-pop .rwth-btn-sm { align-self: flex-end; }
       .rwth-tx-row {
         display: flex; flex-direction: column; gap: 8px;
         border: 1px solid #00e5ff22; border-radius: 4px; padding: 8px;
