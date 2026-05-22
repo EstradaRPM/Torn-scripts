@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.17
+// @version      0.1.18
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.17';
+  const SCRIPT_VERSION = '0.1.18';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -923,17 +923,17 @@
           + `letter-spacing: 0.3em; text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`);
       }
       rows.push(forumRule());
-      // About panel — a small kicker (not a second wordmark) + one tight line.
+      // About panel — kicker + the single RW Gear pitch line.
       rows.push(`<tr><td style="background: #080e18; padding: 18px 24px 6px; text-align: center; border: 0;">`
         + `<span style="color: #5dc6f0; font-size: 10px; font-weight: bold; letter-spacing: 0.3em; `
         + `text-transform: uppercase;">//&nbsp; The Trading Post &nbsp;//</span></td></tr>`);
       rows.push(`<tr><td style="background: #080e18; padding: 4px 24px 16px; text-align: center; line-height: 1.7; border: 0;">`
         + `<span style="color: #c5dccc; font-size: 13px;">`
-        + `Ranked-war weapons and armour &mdash; diamond-grade gear, priced fair and rotating constantly.</span></td></tr>`);
+        + `RW Gear &mdash; top tier weapons/bonuses, priced fair and rotating constantly.</span></td></tr>`);
       rows.push(forumRule());
       rows.push(`<tr><td style="background: #080e18; padding: 13px 24px 12px; text-align: center; border: 0;">`
         + `<span style="color: #9ab5a5; font-size: 12px; font-style: italic;">`
-        + `Looking for something that isn't stocked right now? Send me a message &mdash; inventory turns over fast.`
+        + `Check Display Case or send me a message if you don't see an advertised item`
         + `</span></td></tr>`);
       // Link buttons — forum thread and live pricelist, when configured.
       const links = [];
@@ -945,50 +945,68 @@
         rows.push(`<tr><td style="background: #080e18; padding: 2px 20px 16px; text-align: center; border: 0;">`
           + `${links.join('')}</td></tr>`);
       }
-      // Footer tagline on a slightly lifted fill so it reads as a strip.
+      // Footer disclaimer on a slightly lifted fill so it reads as a strip.
       rows.push(`<tr><td style="background: #0b1320; padding: 11px 24px 12px; text-align: center; border: 0;">`
-        + `<span style="font-size: 11px; letter-spacing: 0.12em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
-        + `${escapeAttr(BRAND.footerTagline)}</span></td></tr>`);
+        + `<span style="font-size: 11px; letter-spacing: 0.08em; color: #8aa898; font-style: italic;">`
+        + `**Contains explicit deals, weapons, and depictions of violence.</span></td></tr>`);
       return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
         + `border-collapse: collapse; font-family: Verdana, Geneva, sans-serif;">`
         + `<tbody>${rows.join('')}</tbody></table></div></div>`;
     },
 
-    // Output — profile signature HTML. Condensed, item-driven with category
-    // dividers; reuses the forum header image when one is set.
+    // Output — profile signature HTML. A compact, self-contained card: slim
+    // wordmark bar, understated category labels with a hairline, zebra-striped
+    // item rows, and a link strip (forum / pricelist / bazaar) along the foot.
     toSignatureHtml(items, settings) {
       const s = settings || {};
-      const img = (s.forumHeaderImageUrl || '').trim();
-      const headerRow = img
-        ? `<tr><td colspan="2" style="background: #080e18; padding: 0; line-height: 0; border: 0;">`
-          + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
-          + `${forumImg(img)}</a></td></tr>`
-        : `<tr><td colspan="2" style="background: #080e18; padding: 10px 14px; text-align: center; border: 0;">`
-          + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase;">`
-          + `${escapeAttr(BRAND.mark)}</span></td></tr>`;
+      // Header — a tight wordmark bar (the forum banner is too tall for a
+      // profile signature, so the sig always uses the compact wordmark).
+      const headerRow = `<tr><td colspan="2" style="background: #0b1320; padding: 9px 14px 8px; `
+        + `text-align: center; border: 0;">`
+        + `<div style="color: #7ed098; font-size: 13px; font-weight: bold; letter-spacing: 0.26em; `
+        + `text-transform: uppercase;">${escapeAttr(BRAND.mark)}</div>`
+        + `<div style="color: #5dc6f0; font-size: 8px; font-weight: bold; letter-spacing: 0.26em; `
+        + `text-transform: uppercase; padding-top: 3px;">//&nbsp; Trading Post &nbsp;//</div></td></tr>`;
       const bodyRows = [];
       for (const group of groupByCategory(items)) {
-        bodyRows.push(`<tr><td colspan="2" style="background: #0b1320; padding: 6px 14px 5px; border: 0;">`
-          + `<span style="color: #5dc6f0; font-size: 9px; font-weight: bold; letter-spacing: 0.2em; `
-          + `text-transform: uppercase;">${escapeAttr(group.category)}</span></td></tr>`);
+        // Understated divider — a small left label over a thin hairline.
+        bodyRows.push(`<tr><td colspan="2" style="background: #080e18; padding: 11px 14px 0; border: 0;">`
+          + `<span style="color: #5dc6f0; font-size: 8px; font-weight: bold; letter-spacing: 0.24em; `
+          + `text-transform: uppercase;">${escapeAttr(group.category)}</span>`
+          + `<div style="height: 1px; background: #15301f; margin-top: 4px; font-size: 0; line-height: 0;">&nbsp;</div>`
+          + `</td></tr>`);
         for (const it of group.items) {
+          const zebra = bodyRows.length % 2 ? '#0a121e' : '#080e18';
           const b = (it.bonuses || []).filter(x => x && x.name)[0];
           const tag = b
-            ? ` <span style="color: #8aa898;">(${escapeAttr(b.name)}${b.value != null ? ' ' + b.value + '%' : ''})</span>`
+            ? ` <span style="color: #8aa898; font-size: 10px;">(${escapeAttr(b.name)}`
+              + `${b.value != null ? ' ' + b.value + '%' : ''})</span>`
             : '';
-          bodyRows.push(`<tr><td style="background: #080e18; padding: 5px 14px; border: 0;">`
+          bodyRows.push(`<tr><td style="background: ${zebra}; padding: 6px 14px; vertical-align: middle; border: 0;">`
             + `<span style="color: #5dc6f0; font-size: 12px; font-family: Verdana, Geneva, sans-serif;">`
             + `${escapeAttr(it.itemName)}</span>${tag}</td>`
-            + `<td style="background: #080e18; padding: 5px 14px; text-align: right; border: 0;">`
+            + `<td style="background: ${zebra}; padding: 6px 14px; text-align: right; `
+            + `vertical-align: middle; white-space: nowrap; border: 0;">`
             + `<span style="color: #7ed098; font-size: 12px; font-weight: bold; `
             + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(it.listPrice))}</span></td></tr>`);
         }
       }
+      // Foot — a link strip. Forum / Pricelist / Bazaar, dot-separated.
+      const sigLink = (href, label) =>
+        `<a href="${escapeAttr(href)}" target="_blank" rel="noopener" `
+        + `style="color: #5dc6f0; font-size: 10px; font-weight: bold; letter-spacing: 0.1em; `
+        + `text-transform: uppercase; text-decoration: none;">${escapeAttr(label)} &#8599;</a>`;
+      const links = [];
+      const forumUrl = (s.forumThreadUrl || '').trim();
+      const priceUrl = (s.weav3rPricelistUrl || '').trim();
       const pid = (s.playerId || '').trim();
-      const linkRow = pid
-        ? `<tr><td colspan="2" style="background: #0b1320; padding: 7px 14px; text-align: center; border: 0;">`
-          + `<a style="color: #5dc6f0; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; text-decoration: none;" `
-          + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar &#8599;</a></td></tr>`
+      if (forumUrl) links.push(sigLink(forumUrl, 'Forum'));
+      if (priceUrl) links.push(sigLink(priceUrl, 'Pricelist'));
+      if (pid) links.push(sigLink(`/bazaar.php?userId=${pid}`, 'Bazaar'));
+      const sep = `<span style="color: #2a4738; font-size: 10px;">&nbsp;&nbsp;&bull;&nbsp;&nbsp;</span>`;
+      const linkRow = links.length
+        ? `<tr><td colspan="2" style="background: #0b1320; padding: 9px 14px; text-align: center; border: 0;">`
+          + `${links.join(sep)}</td></tr>`
         : '';
       return `<div><div class="table-wrap"><table ${TBL} width="100%" `
         + `style="background: #080e18; border: 0; border-collapse: collapse;">`
