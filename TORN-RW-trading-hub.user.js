@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.18
+// @version      0.1.19
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.18';
+  const SCRIPT_VERSION = '0.1.19';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -67,6 +67,7 @@
     advertise: {
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
       imgEditId: null,        // null | itemId — the row whose [IMG] popover is open
+      itemsCollapsed: false,  // true = "Advertised items" section folded shut
       transactions: [],
       outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
@@ -373,10 +374,9 @@
       </label>
       <div class="rwth-form-row">
         <label class="rwth-field rwth-field-grow">
-          <span class="rwth-field-label">Type</span>
-          <select class="rwth-field-input" data-form="type">
-            <option value="weapon"${v.type === 'armor' ? '' : ' selected'}>Weapon</option>
-            <option value="armor"${v.type === 'armor' ? ' selected' : ''}>Armor</option>
+          <span class="rwth-field-label">Category</span>
+          <select class="rwth-field-input" data-form="category">
+            ${categoryOptions(editing ? itemCategory(v) : 'Primary')}
           </select>
         </label>
         <label class="rwth-field rwth-field-grow">
@@ -459,7 +459,6 @@
     const bonuses = hit.bonuses || [];
     const b1 = bonuses[0] || {}, b2 = bonuses[1] || {};
     const checked = hit.checked === false ? '' : ' checked';
-    const armor = hit.type === 'armor';
     return `<div class="rwth-scan-row" data-scan-row="${k}">
       <label class="rwth-scan-check">
         <input type="checkbox" data-scan-check${checked}>
@@ -475,10 +474,9 @@
                  value="${escapeAttr(hit.itemName)}" autocomplete="off" spellcheck="false">
         </label>
         <label class="rwth-field rwth-field-sm">
-          <span class="rwth-field-label">Type</span>
-          <select class="rwth-field-input" data-scan-field="type">
-            <option value="weapon"${armor ? '' : ' selected'}>Weapon</option>
-            <option value="armor"${armor ? ' selected' : ''}>Armor</option>
+          <span class="rwth-field-label">Category</span>
+          <select class="rwth-field-input" data-scan-field="category">
+            ${categoryOptions(itemCategory(hit))}
           </select>
         </label>
       </div>
@@ -696,15 +694,25 @@
     }
   }
 
-  // Resolve one item's advertise category. `cats` is the optional name→category
-  // index from ItemDict; it wins when present, then the item's own weapon/armor
-  // type, then the offline fallback map, then "Other".
+  // Resolve one item's advertise category. An explicit, user-set `item.category`
+  // always wins; then the optional name→category index from ItemDict; then the
+  // item's own weapon/armor type; then the offline fallback map; then "Other".
   function itemCategory(item, cats) {
+    if (item && CATEGORY_ORDER.indexOf(item.category) !== -1
+        && item.category !== 'Other') return item.category;
     const name = (item && item.itemName) || '';
     const fromDict = cats && cats[name.toLowerCase()];
     if (fromDict) return fromDict;
     if (item && item.type === 'armor') return 'Armor';
     return WEAPON_CATEGORY[name] || 'Other';
+  }
+
+  // The four user-pickable advertise categories (Other is resolved, not picked).
+  const PICK_CATEGORIES = ['Primary', 'Secondary', 'Melee', 'Armor'];
+  function categoryOptions(selected) {
+    const sel = PICK_CATEGORIES.indexOf(selected) !== -1 ? selected : 'Primary';
+    return PICK_CATEGORIES.map(c =>
+      `<option value="${c}"${c === sel ? ' selected' : ''}>${c}</option>`).join('');
   }
 
   // Selected items → ordered category buckets, alphabetical within each. Empty
@@ -954,41 +962,54 @@
         + `<tbody>${rows.join('')}</tbody></table></div></div>`;
     },
 
-    // Output — profile signature HTML. A compact, self-contained card: slim
-    // wordmark bar, understated category labels with a hairline, zebra-striped
-    // item rows, and a link strip (forum / pricelist / bazaar) along the foot.
+    // Output — profile signature HTML. A compact, self-contained card: the
+    // banner image up top, a fixed Item/Price column header so the rows below
+    // read as a structured ledger (name on the left rail, price anchored to a
+    // constant-width right rail), and a link strip along the foot.
     toSignatureHtml(items, settings) {
       const s = settings || {};
-      // Header — a tight wordmark bar (the forum banner is too tall for a
-      // profile signature, so the sig always uses the compact wordmark).
-      const headerRow = `<tr><td colspan="2" style="background: #0b1320; padding: 9px 14px 8px; `
-        + `text-align: center; border: 0;">`
-        + `<div style="color: #7ed098; font-size: 13px; font-weight: bold; letter-spacing: 0.26em; `
-        + `text-transform: uppercase;">${escapeAttr(BRAND.mark)}</div>`
-        + `<div style="color: #5dc6f0; font-size: 8px; font-weight: bold; letter-spacing: 0.26em; `
-        + `text-transform: uppercase; padding-top: 3px;">//&nbsp; Trading Post &nbsp;//</div></td></tr>`;
-      const bodyRows = [];
+      const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
+      // Header — the configured banner image; a wordmark bar only if none set.
+      const headerRow = img
+        ? `<tr><td colspan="2" style="background: #060a12; padding: 0; line-height: 0; border: 0;">`
+          + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
+          + `${forumImg(img)}</a></td></tr>`
+        : `<tr><td colspan="2" style="background: #0b1320; padding: 11px 14px 9px; `
+          + `text-align: center; border: 0;">`
+          + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
+          + `text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`;
+      // Column header — gives the name + price columns a fixed anchor.
+      const colLabel = (txt, right) =>
+        `<td width="${right ? 120 : ''}" style="${right ? 'width: 120px; ' : ''}`
+        + `background: #11213a; padding: 6px 14px; text-align: ${right ? 'right' : 'left'}; border: 0;">`
+        + `<span style="color: #5dc6f0; font-size: 8px; font-weight: bold; letter-spacing: 0.22em; `
+        + `text-transform: uppercase;">${txt}</span></td>`;
+      const colHead = `<tr>${colLabel('Item', false)}${colLabel('Price', true)}</tr>`;
+      const bodyRows = [colHead];
+      let n = 0;
       for (const group of groupByCategory(items)) {
-        // Understated divider — a small left label over a thin hairline.
-        bodyRows.push(`<tr><td colspan="2" style="background: #080e18; padding: 11px 14px 0; border: 0;">`
-          + `<span style="color: #5dc6f0; font-size: 8px; font-weight: bold; letter-spacing: 0.24em; `
-          + `text-transform: uppercase;">${escapeAttr(group.category)}</span>`
-          + `<div style="height: 1px; background: #15301f; margin-top: 4px; font-size: 0; line-height: 0;">&nbsp;</div>`
-          + `</td></tr>`);
+        // Category band spanning both columns.
+        bodyRows.push(`<tr><td colspan="2" style="background: #0b1320; padding: 7px 14px 6px; border: 0;">`
+          + `<span style="color: #7ed098; font-size: 9px; font-weight: bold; letter-spacing: 0.22em; `
+          + `text-transform: uppercase;">${escapeAttr(group.category)}</span></td></tr>`);
         for (const it of group.items) {
-          const zebra = bodyRows.length % 2 ? '#0a121e' : '#080e18';
+          // Name column zebra-stripes; price column keeps a constant fill so
+          // every price sits on one solid right-hand rail.
+          const stripe = (n++ % 2) ? '#0a121e' : '#080e18';
           const b = (it.bonuses || []).filter(x => x && x.name)[0];
           const tag = b
-            ? ` <span style="color: #8aa898; font-size: 10px;">(${escapeAttr(b.name)}`
-              + `${b.value != null ? ' ' + b.value + '%' : ''})</span>`
+            ? `<div style="color: #8aa898; font-size: 10px; padding-top: 2px;">`
+              + `${escapeAttr(b.name)}${b.value != null ? ' ' + b.value + '%' : ''}</div>`
             : '';
-          bodyRows.push(`<tr><td style="background: ${zebra}; padding: 6px 14px; vertical-align: middle; border: 0;">`
-            + `<span style="color: #5dc6f0; font-size: 12px; font-family: Verdana, Geneva, sans-serif;">`
-            + `${escapeAttr(it.itemName)}</span>${tag}</td>`
-            + `<td style="background: ${zebra}; padding: 6px 14px; text-align: right; `
-            + `vertical-align: middle; white-space: nowrap; border: 0;">`
+          bodyRows.push(`<tr>`
+            + `<td style="background: ${stripe}; padding: 7px 14px; vertical-align: middle; border: 0;">`
+            + `<span style="color: #5dc6f0; font-size: 12px; font-weight: bold; `
+            + `font-family: Verdana, Geneva, sans-serif;">${escapeAttr(it.itemName)}</span>${tag}</td>`
+            + `<td width="120" style="width: 120px; background: #0b1320; padding: 7px 14px; `
+            + `text-align: right; vertical-align: middle; white-space: nowrap; border: 0;">`
             + `<span style="color: #7ed098; font-size: 12px; font-weight: bold; `
-            + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(it.listPrice))}</span></td></tr>`);
+            + `font-family: Consolas, 'Courier New', monospace;">`
+            + `${escapeAttr(fmtChatPrice(it.listPrice))}</span></td></tr>`);
         }
       }
       // Foot — a link strip. Forum / Pricelist / Bazaar, dot-separated.
@@ -1020,9 +1041,15 @@
         `🔹🔷 <u>${BRAND.mark}</u> 🔷🔹`,
         `🟢 <u>Floor Prices</u> 🟢`,
       ];
+      // Chat is a teaser, not a catalogue — show only the 3 priciest, then a
+      // "+N more listed" line so the blurb stays short enough to actually post.
+      const CHAT_LIMIT = 3;
       const sorted = (items || []).slice().sort((a, b) =>
         (Number(b.listPrice) || 0) - (Number(a.listPrice) || 0));
-      for (const it of sorted) lines.push(chatItemLine(it));
+      for (const it of sorted.slice(0, CHAT_LIMIT)) lines.push(chatItemLine(it));
+      if (sorted.length > CHAT_LIMIT) {
+        lines.push(`<i>+${sorted.length - CHAT_LIMIT} more listed</i>`);
+      }
       const pid = (s.playerId || '').trim();
       if (pid) lines.push(`<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>`);
       const forum = (s.forumThreadUrl || '').trim();
@@ -1135,6 +1162,7 @@
       .map(it => ({ ...it, category: itemCategory(it, cats) }));
     const transactions = A.transactions || [];
 
+    const collapsed = !!A.itemsCollapsed;
     const itemRows = listed.length
       ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
@@ -1144,8 +1172,12 @@
 
     return `<div class="rwth-advertise">
       <div class="rwth-adv-section">
-        <div class="rwth-form-title">Advertised items</div>
-        ${itemRows}
+        <button class="rwth-collapse-head" type="button" data-action="toggle-adv-items">
+          <span class="rwth-form-title">Advertised items${
+            listed.length ? ` (${listed.length})` : ''}</span>
+          <span class="rwth-collapse-caret">${collapsed ? '▸' : '▾'}</span>
+        </button>
+        ${collapsed ? '' : itemRows}
       </div>
       <div class="rwth-adv-section">
         <div class="rwth-form-title">Recent Transactions</div>
@@ -1262,6 +1294,8 @@
         case 'toggle-img':    setState({ advertise: { ...MEM.advertise,
                                 imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
         case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
+        case 'toggle-adv-items': setState({ advertise: { ...MEM.advertise,
+                                itemsCollapsed: !MEM.advertise.itemsCollapsed } }); break;
       }
     });
 
@@ -1321,7 +1355,8 @@
     }
     const check = row.querySelector('[data-scan-check]');
     hit.itemName = val('itemName');
-    hit.type = val('type') || 'weapon';
+    hit.category = val('category') || 'Primary';
+    hit.type = hit.category === 'Armor' ? 'armor' : 'weapon';
     hit.bonuses = bonuses;
     hit.quality = numOrNull(val('quality'));
     if (check) hit.checked = check.checked;
@@ -1366,6 +1401,7 @@
         itemId: null,
         itemName: patch.itemName,
         type: patch.type || 'weapon',
+        category: patch.category || null,
         bonuses: patch.bonuses || [],
         quality: patch.quality != null ? patch.quality : null,
         rarity: patch.rarity || null,
@@ -1415,9 +1451,11 @@
       if (name) bonuses.push({ name, value: numOrNull(get('bonus' + n + 'Value')) });
     }
     const dateStr = get('buyDate');
+    const category = get('category') || 'Primary';
     const patch = {
       itemName,
-      type: get('type') || 'weapon',
+      category,
+      type: category === 'Armor' ? 'armor' : 'weapon',
       bonuses,
       quality: numOrNull(get('quality')),
       rarity: get('rarity') || null,
@@ -1582,6 +1620,7 @@
         itemId: hit.itemId != null ? hit.itemId : null,
         itemName: hit.itemName || `Item #${hit.itemId}`,
         type: hit.type || 'weapon',
+        category: hit.category || null,
         bonuses: (hit.bonuses || []).filter(b => b && b.name),
         quality: hit.quality != null ? hit.quality : null,
         rarity: hit.rarity || null,
@@ -2004,6 +2043,12 @@
         border: 1px solid #00e5ff33; border-radius: 6px; padding: 10px;
       }
       .rwth-form-title { font: 700 12px Verdana, sans-serif; color: #39ff14; }
+      .rwth-collapse-head {
+        display: flex; align-items: center; justify-content: space-between;
+        width: 100%; background: none; border: 0; padding: 0; cursor: pointer;
+        text-align: left;
+      }
+      .rwth-collapse-caret { font-size: 11px; color: #39ff14; line-height: 1; }
       .rwth-form-row { display: flex; gap: 8px; }
       .rwth-field-grow { flex: 1; }
       .rwth-field-sm { width: 76px; }
