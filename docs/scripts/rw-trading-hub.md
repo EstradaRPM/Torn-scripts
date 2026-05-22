@@ -2,35 +2,35 @@
 
 > **Status:** In Development
 > **File:** `TORN-RW-trading-hub.user.js`
-> **Target page:** multiple — `amarket.php`, `page.php?sid=ItemMarket`, `bazaar.php`, `item.php`, `displaycase.php`, plus any page (for the floating ledger window)
+> **Target page:** any page (the launcher injects into Torn's chat-icon row); reads `displaycase.php` / `bazaar.php` only as needed
 > **Current version:** 0.1.0 (draft)
+
+> **Grill sessions:** initial 2026-05-21 (interrupted; salvage in `rwth-assets.md`), resumed & completed 2026-05-21. Design below is **locked**.
 
 ---
 
 ## Purpose
 
-A trader's workbench for ranked-war (RW) armor and weapon flipping. Combines three jobs that currently require switching between scripts and manual spreadsheets:
+A trader's workbench for ranked-war (RW) armor and weapon flipping. Replaces juggling a manual ledger spreadsheet and a forum-post template with one panel that does two jobs:
 
-1. **Price intel** — wherever an RW item shows up (auction house, item market, bazaar, item page), surface inline relative-price comparisons against historical auction sales and current market/bazaar listings, ranked by similarity of bonuses + quality.
-2. **Inventory ledger** — automatically log RW armor/weapon purchases by scanning Torn's item log API; track each piece from buy → list → sell with ROI.
-3. **Advertising hub** — turn selected ledger items into ready-to-paste Trade Chat blurbs and HTML forum posts (with optional gyazo image URL embedded), so the entire "I bought this, here's my price, here's where to find me" workflow is one click.
+1. **Inventory ledger** — log RW armor/weapon purchases (auction wins scanned from the Torn item log; other buys added manually); track each piece buy → list → sold with fee-accurate ROI.
+2. **Advertising hub** — turn the ledger + a curated transaction list into five ready-to-paste outputs (forum title, forum post HTML, trade-chat blurb, bazaar description HTML, profile signature HTML).
 
-The user does differently because of this script: they stop juggling Auction Price Checker, the RW Advisor, a manual ledger spreadsheet, and a forum-post template — it all lives in one panel.
+### Scope — v0.1.0 vs v0.2.0
+
+**v0.1.0 (this build): Ledger + Advertise only.**
+
+**Inline price intel is deferred to v0.2.0** — the per-page price-comparison widget, the third-party APIs (weav3r, Supabase), DOM scanning of auction/market/bazaar rows, similarity scoring, and bonus/quality tolerance settings are all v0.2.0. They drop out of v0.1.0 entirely (`PricingEngine`, `DomScanner`, `InlineRenderer`, `similarity`, the third-party-API ADR).
 
 ---
 
-## Data Sources
+## Data Sources (v0.1.0)
 
-- [x] **Torn API** (`https://api.torn.com/`) — selections:
-  - `user?selections=log` — scan recent item-buy log entries to auto-detect RW armor/weapon purchases for ledger entry
-  - `user?selections=log` — also used to detect sales for the Sales tab + ROI calc
-  - `user?selections=bazaar` — pull current listings (to confirm what's still up)
-  - Item metadata as needed for item ID → name / type resolution
-- [x] **Page DOM** — auction house item rows, item market listings, bazaar listings, item page — read item name, bonuses, quality, listed price to drive the inline comparison
-- [x] **TornW3B** (`https://weav3r.dev/api/ranked-weapons`) — unconditional; live market/bazaar comparison data for ranked weapons (ripped from Auction Price Checker)
-- [x] **Third-party auction-history API** (Supabase: `btrmmuuoofbonmuwrkzg.supabase.co`) — historical sold-auction lookups by item + bonus + quality tolerance (ripped from Auction Price Checker)
+- [x] **Torn API** (`https://api.torn.com/`):
+  - `user?selections=log` filtered to the **auction-win log category** — detect RW auction wins for the ledger. The log line carries item name + primary bonus *name* (e.g. `(Fury)`); bonus *value %* and *quality* are not in the log and are entered by the user.
+- [x] **User paste** — sells are logged by pasting Torn transaction-log lines into a "Log a sale" box (see Sell logging below). No sell-side API scan.
 
-Requires `@grant GM_xmlhttpRequest` and `@connect` directives for both third-party hosts. This is an intentional exception to the "no external dependencies / fully self-contained" rule; the third-party calls **are** the comparison logic — re-implementing them is out of scope.
+`@grant none` — no third-party hosts in v0.1.0. (The `GM_xmlhttpRequest` + `@connect` exception belongs to the deferred inline-intel feature.)
 
 See `docs/torn-domain.md` for API rules, rate limits, and compliance checklist.
 
@@ -38,107 +38,206 @@ See `docs/torn-domain.md` for API rules, rate limits, and compliance checklist.
 
 ## Architecture
 
-### MEM shape
+### MEM shape (v0.1.0)
 
 ```js
 const MEM = {
-  // --- Inline price comparison (per-page) ---
-  inline: {
-    activeItem: null,      // { name, bonuses:[{id,value}], quality, listedPrice, source:'auction'|'market'|'bazaar'|'item' }
-    historyResults: [],    // Supabase hits, similarity-scored
-    marketResults: [],     // weav3r hits, similarity-scored
-    loading: false,
-    error: null,
+  ui: {
+    open: false,            // panel visibility
+    activeTab: 'ledger',    // 'ledger' | 'advertise' | 'settings'
   },
 
-  // --- Ledger ---
   ledger: {
-    open: false,           // collapsible window visibility
-    activeTab: 'purchases',// 'purchases' | 'sales' | 'advertise'
-    items: [],             // ledger rows (see LedgerItem shape below)
-    lastLogScan: 0,        // epoch ms; throttle log scans
+    items: [],              // LedgerItem[] — see shape below
+    statusFilter: 'all',    // 'all' | 'held' | 'listed' | 'sold'
+    scanResults: [],        // un-seen auction wins from last scan (ScanHit[])
     scanError: null,
+    lastScan: 0,            // epoch ms
   },
 
-  // --- Advertise tab ---
   advertise: {
-    selectedIds: [],       // ledger item ids checkbox-selected for output
-    chatPreview: '',       // generated trade-chat blurb
-    forumPreview: '',      // generated forum HTML
+    selectedIds: [],        // ledger item ids checkbox-selected for item-driven output
+    transactions: [],       // Transaction[] — curated Recent Transactions list
+    outputs: {              // last-generated output strings (shown in copy windows)
+      title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '',
+    },
   },
 
-  // --- Settings ---
   settings: {
-    bonusTolerance: 10,    // ± for bonus value similarity
-    qualityTolerance: 10,  // ± for quality similarity
-    apiKey: '',            // Torn API key (PDA injects)
+    playerId: '',           // drives bazaar + display-case URLs
+    forumThreadUrl: '',
+    weav3rPricelistUrl: '',
+    bannerImageUrl: '',     // Torn-hosted bazaar banner
+    forumHeaderImageUrl: '',// Torn-hosted forum header (reused for signature)
+    apiKey: '',             // Torn API key (PDA injects ###PDA-APIKEY###)
   },
 
-  fetchError: null,        // last API error surfaced in UI
+  fetchError: null,
 };
 
-// LedgerItem shape
+// LedgerItem
 // {
 //   id: string,            // uuid
-//   itemId: number,
+//   itemId: number|null,
 //   itemName: string,
 //   type: 'weapon'|'armor',
-//   bonuses: [{id, value}],
-//   quality: number,
+//   bonuses: [{name, value}],  // MAX 2. name from log (primary) or manual; value user-entered %
+//   quality: number,           // user-entered %
 //   buyPrice: number,
 //   buyTimestamp: number,
-//   buySource: 'auction'|'market'|'bazaar',
-//   advertisedPrice: number|null,
-//   gyazoUrl: string|null,
+//   buySource: 'auction'|'market'|'bazaar',  // auction = scanned; market/bazaar = manual +add
+//   gyazoUrl: string|null,     // per-item screenshot for the forum card ([IMG] button)
 //   status: 'held'|'listed'|'sold',
-//   soldPrice: number|null,
+//   // --- sale fields, populated when a pasted sell line matches this row ---
+//   saleGross: number|null,    // "$X each" from the log line
+//   saleFees: number|null,     // "after $Y in fees" (0 for bazaar)
+//   saleNet: number|null,      // "for a total of $Z" — authoritative net proceeds
 //   soldTimestamp: number|null,
-//   soldVenue: 'bazaar'|'market'|'auction'|null, // for fee-adjusted ROI
+//   soldVenue: 'bazaar'|'market'|null,  // display only; not used for fee math
+//   buyer: string|null,
 // }
+
+// Transaction (Recent Transactions — curated social proof, separate from the ledger)
+// {
+//   id: string, itemName: string, bonusName: string|null,
+//   buyer: string, price: number, timestamp: number|null,
+//   origin: 'paste'|'ledger',  // pasted historical sale, or promoted from a ledger sale
+// }
+
+// ScanHit (a detected auction win not yet in the ledger / not yet dismissed)
+// { key: string /* log entry timestamp */, itemName, bonusName, buyPrice, buyTimestamp }
 ```
 
 ### Store keys (localStorage)
 
-Prefix: `rwth_` (RW Trading Hub).
+Prefix: `rwth_`.
 
 | Key | Type | Purpose |
 |-----|------|---------|
 | `rwth_ledger` | JSON array | Persisted `MEM.ledger.items` |
+| `rwth_transactions` | JSON array | Persisted `MEM.advertise.transactions` |
 | `rwth_settings` | JSON object | Persisted `MEM.settings` |
-| `rwth_window_pos` | JSON object | Ledger window position/size (PC drag/resize) |
-| `rwth_cache_history` | JSON object | TTL'd Supabase query cache (5 min) |
-| `rwth_cache_market` | JSON object | TTL'd weav3r query cache (5 min) |
-| `rwth_log_cursor` | number | Last-seen log entry timestamp, for incremental scans |
+| `rwth_seen_wins` | JSON array | Auction-win log keys already added **or dismissed** — scan dedup |
+| `rwth_log_cursor` | number | Last-seen auction-win log timestamp, for incremental scans |
 
-### Key modules / functions
+(Dropped from the original draft: `rwth_window_pos` — window no longer drag/resizable; `rwth_cache_*` — third-party caching is v0.2.0.)
 
-| Module/Function | Owns | Interface | Invariants |
-|---|---|---|---|
-| `Store` | localStorage I/O | `get(k)`, `set(k,v)` | try/catch wrapped; never throws |
-| `setState` | Sole MEM mutation path | `setState(patch)` — applies patch, calls `render()` | All MEM mutations route through here. Never `MEM.foo = bar` directly. May batch via `queueMicrotask`. |
-| `PricingEngine` | Third-party price lookups | `searchHistory(query)`, `searchMarket(query)` | Both via `GM_xmlhttpRequest`; results cached 5 min; bonus/quality tolerance applied |
-| `DomScanner` | Page DOM extraction | `detectItem()` returns `inline.activeItem` or null | Per-page selectors with regex fallbacks |
-| `InlineRenderer` | Inline expandable comparison widget | `mount(host, item)` | RW-Advisor-styled; collapsed by default; one widget per detected item |
-| `LogScanner` | Torn API log scan for buys + sells | `scan()` updates `ledger.items` via `setState` | Throttled to 5 min minimum; incremental via `rwth_log_cursor` |
-| `matchSells` | Pure sell-matching | `match(sellEvents, openPositions) → {autoClosed, ambiguous}` | Pure; in `__RwthPure` |
-| `Ledger` | Ledger items CRUD | `add()`, `update(id, patch)`, `remove(id)`, `markSold(id, price, venue)` | All mutations via `setState({ledger: ...})` |
-| `ROI` | Profit + ROI calc | `compute(item) → number` | Pure; fee-adjusted by `soldVenue`: bazaar 0%, market 5%, anon +10% (in `__RwthPure`) |
-| `similarity` | Bonus/quality similarity scoring | `score(activeItem, candidate) → number` | Pure; bonus + quality tolerance from `MEM.settings` (in `__RwthPure`) |
-| `AdvertiseGenerator` | Chat + forum output | `toChat(items)`, `toForumHtml(items, gyazoUrls)` | Pure; output exactly matches user's forum-post template (in `__RwthPure`) |
-| `build*` | Pure HTML builders | `buildLedgerTab(state)`, `buildAdvertiseTab(state)`, `buildInlineWidget(state)` → htmlString | Pure; state in, HTML out (in `__RwthPure`) |
-| `render` | DOM dispatcher | `render(MEM)` | Wires delegated listeners once on stable shell at first call; rewrites inner content via `innerHTML` on subsequent calls. No partial DOM patching above the content container. |
+### Constants (not settings — static, in-file)
+
+- `BRAND` — all brand copy (see Branding below). Editable in-file; not exposed in the Settings UI.
+- `ITEM_ABBREV` — display-name abbreviation map for the chat blurb (`Diamond Bladed Knife → DBK`, `Cobra Derringer → Cobra`, etc.). Static display dictionary — **not** faction data, does not violate the hardcoding ban. Seed from common Torn trade-chat usage at build time.
+
+### Key modules / functions (v0.1.0)
+
+| Module/Function | Owns | Notes |
+|---|---|---|
+| `Store` | localStorage I/O | `get(k)` / `set(k,v)`; try/catch wrapped; never throws |
+| `setState` | Sole MEM mutation path | `setState(patch)` → `Object.assign(MEM, patch)` → `render()` |
+| `Launcher` | Chat-row button injection | Injects a chat-icon-styled button into Torn's chat bar; 2–3 selector fallbacks; **falls back to a fixed bottom-right anchored element** if the chat bar isn't found. Never a free FAB. |
+| `LogScanner` | Auction-win detection | `scan()` — manual trigger only (button); queries the auction-win log category; produces `ScanHit[]` of keys not in `rwth_seen_wins`. Incremental via `rwth_log_cursor`. |
+| `SellParser` | Parse pasted sell lines | `parse(text) → ParsedSell[]` — handles multi-line blocks. Pure; in `__RwthPure`. |
+| `matchSell` | Tie a parsed sell to a ledger row | `match(parsedSell, openPositions) → row|null` (item name; bonus name as tiebreaker). Pure; in `__RwthPure`. |
+| `ROI` | Profit + ROI | `compute(item) → number` = `saleNet − buyPrice`. Log is authoritative; **no venue fee table**. Pure; in `__RwthPure`. |
+| `Ledger` | Ledger item CRUD | `add()`, `update(id,patch)`, `remove(id)`, `markListed(id)`, `applySale(id, parsedSell)` — all via `setState` |
+| `AdvertiseGenerator` | The 5 outputs | `toForumTitle()`, `toForumHtml(items,brand)`, `toChat(items)`, `toBazaarHtml(brand)`, `toSignatureHtml(items,brand)`. Pure; in `__RwthPure`. Output must match user templates exactly. |
+| `build*` | Pure HTML builders | `buildLedgerTab`, `buildAdvertiseTab`, `buildSettingsTab` → htmlString. Pure; in `__RwthPure`. |
+| `render` | DOM dispatcher | First call builds the anchored shell + delegated listeners; later calls rewrite `#rwth-content` via `innerHTML`. |
 
 ### Test seam
 
-The IIFE exports a `globalThis.__RwthPure` block holding all pure functions (`ROI.compute`, `AdvertiseGenerator.toChat`/`toForumHtml`, `similarity.score`, `matchSells`, every `build*`). A Node shim stubs `localStorage` / `GM_xmlhttpRequest` / `document` and `require`s the `.user.js` directly — tests run the exact shipped code, not a re-implementation. Runner: `node:test`. See ADR-NNNN for rationale.
+`globalThis.__RwthPure` exports all pure functions (`SellParser.parse`, `matchSell`, `ROI.compute`, every `AdvertiseGenerator.*`, every `build*`). A Node shim stubs `localStorage` / `document` and `require`s the `.user.js` directly — tests run shipped code. Runner: `node:test`. See [ADR-0002](../adr/0002-rwth-pure-test-seam.md).
 
 ### Render contract
 
 - `render(MEM)` is the only impure dispatcher; everything below it is pure.
-- First call: builds outer shell, wires delegated event listeners on a stable container.
-- Subsequent calls: rewrites `#rwth-content` via `innerHTML = buildContent(MEM)`. Listeners survive because they live on the outer shell.
-- `setState(patch)` is the sole mutation path: `Object.assign(MEM, patch); render();`. No call site sets `MEM.foo = bar` directly.
-- Do not call `render()` while a form input is focused mid-typing — only on submit/cancel.
+- First call builds the anchored panel shell + delegated listeners on a stable container.
+- Subsequent calls rewrite `#rwth-content` via `innerHTML = buildContent(MEM)`.
+- `setState(patch)` is the sole mutation path. No call site sets `MEM.foo = bar` directly.
+- Do not `render()` while a form input is focused mid-typing — only on submit/cancel.
+
+---
+
+## UI
+
+### Launcher & window
+
+- Launcher = a button injected into Torn's **chat-icon row**, styled to look like a native chat icon (the `NC17` mark or a small icon). Selector fallbacks; degrades to a fixed bottom-right anchored element if the chat bar can't be found (covers Torn DOM changes and PDA).
+- Clicking it opens an **anchored, fixed-size panel** that expands upward from the corner — same gesture as opening a chat window. No drag, no resize, no position persistence. Full-width on PDA.
+
+### Tabs
+
+| Tab | Contents |
+|-----|----------|
+| **Ledger** | Item list (compact rows, status filter); `+ add` manual button; `Scan` button + scan-result checklist; `Log a sale` paste box |
+| **Advertise** | Item checkbox-selection; Recent Transactions editor; the 5 output windows (each with a copy-to-clipboard button) |
+| **Settings** | `playerId`, `forumThreadUrl`, `weav3rPricelistUrl`, `bannerImageUrl`, `forumHeaderImageUrl`, `apiKey` |
+
+### Ledger row
+
+Compact single line, **tap-to-expand**:
+- **Collapsed:** item name + bonus · buy price · status (held/listed/sold; shown as ROI once sold).
+- **Expanded:** quality, buy date, buy source, and actions — `[mark listed]`, `[Log sale]`, `[IMG]`, `[edit]`, `[delete]`.
+
+### Auction-win scan flow
+
+1. User clicks `Scan` (manual only — no scan-on-open, no background poll).
+2. `LogScanner` queries the auction-win log category, filters out keys in `rwth_seen_wins`.
+3. Panel shows a **checklist** of detected wins not yet added.
+4. User checkbox-selects which to add; for each selected win, enters **quality %** and **bonus value %** (numeric inputs, not sliders — precision) and optionally a **second bonus** (name + value; max 2 bonuses total).
+5. On confirm: selected wins become `held` ledger rows; **all shown wins** (added or not) are written to `rwth_seen_wins` so they don't reappear. `+ add` is the escape hatch for a dismissed win.
+
+### Sell logging (paste-to-log)
+
+User pastes one or more Torn transaction-log lines into the "Log a sale" box. `SellParser` handles a multi-line block; per line it extracts timestamp, item name, bonus name, venue, buyer, gross/fees/net. Line grammar to support:
+
+- optional `anonymously`
+- `sold a` **and** `sold a pair of` (strip article/quantifier for the item name)
+- venue: `on your bazaar` | `on the item market`
+- `at $X each for a total of $Y` — `$Y` ("total") is the **net proceeds**
+- optional ` after $Z in fees` (absent for bazaar = 0% fee)
+- timestamps on their own interleaved lines — best-effort association; null if none adjacent
+
+Per parsed sell:
+- **Matches an open `held`/`listed` ledger row** (by item name; bonus name disambiguates) → close it: `status: 'sold'`, store `saleGross`/`saleFees`/`saleNet`/`soldTimestamp`/`soldVenue`/`buyer`. ROI = `saleNet − buyPrice`. Offer one-click "add to Recent Transactions".
+- **No match** (pre-ledger historical sale) → straight into Recent Transactions as social proof; never touches the ledger.
+
+The confirmation step shows a parsed summary ("N sales parsed, M matched, K → Recent Transactions") before committing.
+
+### Advertise — five outputs
+
+Each renders into a windowed copy box with a copy-to-clipboard button.
+
+| # | Output | Type | Image |
+|---|--------|------|-------|
+| 1 | Forum title | static brand | — |
+| 2 | Forum post HTML | item-driven (`listed` items selected) + Recent Transactions | forum header #2 + per-item `[IMG]` shots |
+| 3 | Trade-chat blurb | item-driven; uses `ITEM_ABBREV`; auto-default then user edits in the window | — |
+| 4 | Bazaar description HTML | static brand | bazaar banner |
+| 5 | Profile signature HTML | item-driven, condensed | forum header #2 (reused) |
+
+- **Currently Available** in the forum post = hand-picked `listed` rows via `selectedIds` checkboxes (default-checked: all `listed`).
+- **Recent Transactions** = the curated `transactions` list — editable on the Advertise tab, seeded by pasted historical sales and optionally fed by promoted ledger sales. Buyer name is kept (it is the verifiable proof).
+- Chat blurb: generator truncates names, applies `ITEM_ABBREV` for known items, defaults parens to the bonus — user tweaks the output text directly before copying.
+- `[IMG]` button per ledger row → floating textbox to paste a screenshot URL (gyazo or Torn-hosted); injected into the forum card. Item-shot images are per-item; the two brand banners are Torn-hosted and set once via Settings.
+
+---
+
+## Branding
+
+Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the film-rating gag). Identity: neon green + cyan on near-black; cinema / MPAA-rating humour.
+
+| `BRAND` field | Value |
+|---|---|
+| Mark | `NC17` |
+| Bazaar name (Torn field) | `NC17 Rated RW Deals` |
+| Forum thread title | `[S] NC17 Rated ▸ RW Weapons & Armor` |
+| Footer line | crude-but-clever MPAA content-advisory gag (replaces `drugs, guns & bitches`) — final wording TBD by user at build |
+| Subtitle | `// Restricted //` (replaces `// Trading Post //`) |
+| Display-case line | "Not listed in bazaar? Check my display case or message me." (display-case URL derived from `playerId`) |
+
+- **Graphics are made externally**, not generated by the script. Banner #2 (framed `NC17`, flanking guns, `NOW SHOWING`, + a legible joint for the rating edge) and forum header #2 (slim strip, `NC17 RATED DEALS` / `NOW SHOWING`, single gun) are approved. Image-gen prompts + the bazaar-description HTML the user pasted are captured in `rwth-assets.md`.
+- **Only the wordmark + evergreen flavor go in images.** Functional/editable text (titles, prices, links) lives in HTML or Torn fields.
+- Bazaar description generator must use the **forum HTML font scheme** (`Verdana` body, `Consolas`/monospace accents) — not the all-`Courier New` of the current bazaar markup (light/dark readability fix).
 
 ---
 
@@ -147,37 +246,41 @@ The IIFE exports a `globalThis.__RwthPure` block holding all pure functions (`RO
 | Term | Definition | Avoid |
 |------|-----------|-------|
 | RW item | Ranked-war weapon or armor (bonus-bearing) | "war item", "PvP item" |
-| Inline widget | Expandable price-comparison element injected into existing page rows | "popup", "tooltip" |
-| Ledger | Persistent record of bought / listed / sold RW items owned by user | "inventory", "log" |
+| Ledger | Persistent record of bought / listed / sold RW items the user owns | "inventory", "log" |
 | Held / Listed / Sold | Ledger item status states | "open", "active", "closed" |
-| Advertise | Generating chat blurb + forum HTML from ledger selection | "post", "share", "broadcast" |
-| Similarity score | How closely a comparison result matches active item (bonus IDs equal, value within tolerance, quality within tolerance) | "match score", "relevance" |
-| Bonus tolerance | ± percentage band for bonus value matching (default 10) | "fuzz", "range" |
-| Quality tolerance | ± percentage band for quality matching (default 10) | — |
-| Fee-adjusted ROI | Profit calc using sell venue's fee (bazaar 0%, market 5%, anon +10%) | "net profit", "real profit" |
-| Gyazo URL | Optional screenshot URL embedded in forum HTML for a ledger item | "image link", "screenshot" |
+| Scan | Manual button → detect auction wins from the Torn log | "poll", "sync" |
+| Scan checklist | The post-scan list of detected wins the user selects from | "queue", "inbox" |
+| Log a sale | Pasting a transaction-log line to close a ledger row | "mark sold", "record sale" |
+| Recent Transactions | Curated social-proof list of past sales, separate from the ledger | "sales history", "sold tab" |
+| Advertise | Generating the five copy-paste outputs | "post", "share", "broadcast" |
+| ROI | `saleNet − buyPrice`; `saleNet` is the log's authoritative after-fees total | "net profit", "real profit" |
+| Bonus | Up to 2 per item; `{name, value}`; name from the log, value user-entered | — |
+| Inline intel | The deferred v0.2.0 per-page price-comparison feature | — |
 
 ---
 
 ## Active State
 
 - **Version:** 0.1.0 (draft — no code yet)
+- **Design:** locked (grill complete 2026-05-21)
 - **Open issues:** none filed yet
-- **Next up:** review doc → file PRD via `/to-prd` → break into issues via `/to-issues`
+- **Next up:** `/to-prd` → `/to-issues`
+- **Build-time TODO:** seed `ITEM_ABBREV` from common Torn trade-chat abbreviations; user to finalise the footer-line wording.
 
 ---
 
 ## ADRs
 
-- *(none yet — anticipated: ADR on intentional third-party-API exception to self-contained rule)*
 - [ADR-0002](../adr/0002-rwth-pure-test-seam.md) — pure functions exposed via `globalThis.__RwthPure` for Node testing
+- *(deferred to v0.2.0: ADR on the third-party-API exception to the self-contained rule — only relevant once inline intel is built)*
 
 ---
 
 ## Notes / Gotchas
 
-- **PDA + cross-origin fetches**: per session memory, `GM_xmlhttpRequest` on Torn PDA's WebView does not bypass page CSP — `weav3r.dev` and Supabase calls may fail silently on PDA. Script must continue to function (ledger, advertise output, Torn-API-driven log scan) when third-party lookups fail; inline widget should show a graceful "comparison unavailable" state.
-- **Log scan throttling**: 5-minute minimum poll. Use `rwth_log_cursor` to fetch only new entries; never re-process the full log.
-- **Forum HTML must match user's template exactly** — template HTML will be pasted by user and is the source of truth for markup/classes/structure.
-- **Mug risk threshold**: $10M+ listings carry mug risk per session memory; advertise generator should not surface this as a feature unless user requests it.
-- **Inline widget hosts**: auction rows, market rows, bazaar rows, item-page header — each needs its own mount point selector with fallbacks.
+- **Chat-bar injection** is Torn DOM the script doesn't own — selector fallbacks + the fixed-corner fallback are mandatory so the launcher is never unreachable.
+- **Scan is manual-only.** No background poll, no scan-on-open. `rwth_log_cursor` keeps it incremental; `rwth_seen_wins` stops dismissed wins from re-nagging.
+- **The log only carries the primary bonus name** and no bonus value / quality — the user supplies value % + quality and any second bonus at add time.
+- **ROI uses the log's stated net** — the sell line states fees exactly, so there is no venue fee table. `soldVenue` is display-only.
+- **Forum / bazaar HTML must match the user's templates exactly** — see `rwth-assets.md` (source of truth for markup).
+- **Mug risk** ($10M+ listings) is not surfaced as a feature unless the user asks.
