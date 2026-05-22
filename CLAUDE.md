@@ -40,8 +40,11 @@ Personal collection of userscripts for the browser game **Torn City** (torn.com)
 | `torn-snipe-tracker-v1.user.js` | Active | `docs/scripts/snipe-tracker.md` |
 | `torn-gym-optomizer-v5.js` | Active | `docs/scripts/gym-optimizer.md` |
 | `torn-rw-auction-advisor-v1.user.js` | **Parked v1.33.1** | `docs/scripts/rw-advisor.md` |
-| `torn-api-monitor.user.js` | In Development | `docs/scripts/api-monitor.md` |
-| `torn-trade-ledger-v1.user.js` | In Development | `docs/scripts/trade-ledger.md` |
+| `torn-api-monitor.user.js` | Active | `docs/scripts/api-monitor.md` |
+| `torn-trade-ledger-v1.user.js` | Active | `docs/scripts/trade-ledger.md` |
+| `TORN-RW-trading-hub.user.js` | **In Development (current focus)** | `docs/scripts/rw-trading-hub.md` |
+
+**Current focus: RW Trading Hub** — PRD #241, slices #242–#248. All other scripts are complete or parked; no other open work.
 
 **Before touching any script: read its script doc.**
 **Parked scripts:** run `/grill-me` before any changes.
