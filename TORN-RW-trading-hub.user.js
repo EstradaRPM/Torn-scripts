@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.6
+// @version      0.1.7
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.6';
+  const SCRIPT_VERSION = '0.1.7';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -21,7 +21,6 @@
   // ─── Brand (static, in-file; not exposed in Settings) ────────────────────────
   const BRAND = {
     mark: 'NC17',
-    subtitle: '// Restricted //',
   };
 
   // ─── State ───────────────────────────────────────────────────────────────────
@@ -145,8 +144,8 @@
       <div id="rwth-panel" role="dialog" aria-label="RW Trading Hub">
         <header id="rwth-header">
           <div id="rwth-brand">
-            <span id="rwth-mark">${BRAND.mark}</span>
-            <span id="rwth-subtitle">${BRAND.subtitle}</span>
+            <span id="rwth-title">RW Trading Hub</span>
+            <span id="rwth-version">v${SCRIPT_VERSION}</span>
           </div>
           <div id="rwth-header-actions">
             <button id="rwth-max" data-action="maximize" aria-label="Toggle full screen" title="Toggle full screen">⛶</button>
@@ -373,8 +372,8 @@
         display: flex; align-items: center; justify-content: space-between;
         padding: 8px 10px; border-bottom: 1px solid #00e5ff33;
       }
-      #rwth-mark { font: 700 14px Consolas, monospace; color: #39ff14; letter-spacing: 1px; }
-      #rwth-subtitle { font: 11px Consolas, monospace; color: #00e5ff; margin-left: 8px; }
+      #rwth-title { font: 700 13px Verdana, sans-serif; color: #39ff14; letter-spacing: .3px; }
+      #rwth-version { font: 10px Consolas, monospace; color: #00e5ff; margin-left: 8px; }
       #rwth-header-actions { display: flex; align-items: center; gap: 6px; }
       #rwth-max, #rwth-close {
         background: none; border: none; color: #00e5ff;
