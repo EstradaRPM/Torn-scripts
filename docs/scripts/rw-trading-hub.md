@@ -261,10 +261,10 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.7 (slice 2 in progress — Settings tab w/ Save button + masked API key; panel header now `RW Trading Hub` + version, NC17/subtitle chrome dropped)
+- **Version:** 0.1.8 (slice 3 done — Ledger tab: manual add/edit form, compact tap-to-expand rows, status filter, CRUD via `setState`, `rwth_ledger` persistence, `ROI.compute`)
 - **Design:** locked (grill complete 2026-05-21)
-- **Open issues:** #244–#248 (#242, #243 done)
-- **Next up:** slice 2 — #244 Ledger manual add
+- **Open issues:** #245–#248 (#242, #243, #244 done)
+- **Next up:** slice 4 — #245 auction scan
 - **Tests:** `node test-rwth.js` — Node shim requires the shipped `.user.js`, asserts the `__RwthPure` seam
 - **Build-time TODO:** seed `ITEM_ABBREV` from common Torn trade-chat abbreviations; user to finalise the footer-line wording.
 

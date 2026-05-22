@@ -40,7 +40,7 @@ test('build* tab functions are exposed and return strings', () => {
 
 test('buildContent dispatches on activeTab', () => {
   const { buildContent } = globalThis.__RwthPure;
-  assert.match(buildContent({ ui: { activeTab: 'ledger' } }), /Ledger/);
+  assert.match(buildContent({ ui: { activeTab: 'ledger' } }), /rwth-ledger/);
   assert.match(buildContent({ ui: { activeTab: 'advertise' } }), /Advertise/);
   assert.match(buildContent({ ui: { activeTab: 'settings' } }), /data-setting/);
   assert.strictEqual(buildContent({ ui: { activeTab: 'bogus' } }), '');
@@ -83,4 +83,74 @@ test('buildSettingsTab masks the API key as a password field', () => {
   const { buildSettingsTab } = globalThis.__RwthPure;
   const html = buildSettingsTab({ settings: {} });
   assert.match(html, /type="password" data-setting="apiKey"/);
+});
+
+// ── Ledger (slice 3) ─────────────────────────────────────────────────────────
+const heldItem = {
+  id: 'a1', itemName: 'Diamond Bladed Knife', type: 'weapon',
+  bonuses: [{ name: 'Fury', value: 25 }], quality: 80,
+  buyPrice: 600000, buyTimestamp: Date.UTC(2026, 4, 1), buySource: 'market',
+  status: 'held', saleNet: null,
+};
+const soldItem = {
+  ...heldItem, id: 'b2', status: 'sold', buyPrice: 600000, saleNet: 900000,
+};
+
+test('ROI.compute returns saleNet - buyPrice for a sold item', () => {
+  const { ROI } = globalThis.__RwthPure;
+  assert.strictEqual(ROI.compute(soldItem), 300000);
+  assert.strictEqual(ROI.compute({ saleNet: 500, buyPrice: 800 }), -300);
+});
+
+test('ROI.compute returns null when the item is not sold', () => {
+  const { ROI } = globalThis.__RwthPure;
+  assert.strictEqual(ROI.compute(heldItem), null);
+  assert.strictEqual(ROI.compute(null), null);
+});
+
+test('buildLedgerTab renders an + add button and a status filter', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const html = buildLedgerTab({ ledger: { items: [], statusFilter: 'all' } });
+  assert.match(html, /data-action="add-item"/);
+  for (const f of ['all', 'held', 'listed', 'sold']) {
+    assert.match(html, new RegExp(`data-filter="${f}"`));
+  }
+});
+
+test('buildLedgerTab renders a row per item with name, bonus and price', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const html = buildLedgerTab({ ledger: { items: [heldItem], statusFilter: 'all' } });
+  assert.match(html, /Diamond Bladed Knife/);
+  assert.match(html, /Fury 25%/);
+  assert.match(html, /\$600,000/);
+  assert.match(html, /data-row-toggle="a1"/);
+});
+
+test('buildLedgerTab status filter narrows the visible rows', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const html = buildLedgerTab({ ledger: { items: [heldItem, soldItem], statusFilter: 'sold' } });
+  assert.doesNotMatch(html, /data-row-toggle="a1"/);
+  assert.match(html, /data-row-toggle="b2"/);
+});
+
+test('buildLedgerTab shows ROI in a sold row collapsed line', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const html = buildLedgerTab({ ledger: { items: [soldItem], statusFilter: 'all' } });
+  assert.match(html, /\+\$300,000/);
+});
+
+test('buildLedgerTab expanded row exposes mark-listed / edit / delete actions', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const html = buildLedgerTab({ ledger: { items: [heldItem], statusFilter: 'all', expandedId: 'a1' } });
+  assert.match(html, /data-action="mark-listed" data-id="a1"/);
+  assert.match(html, /data-action="edit-item" data-id="a1"/);
+  assert.match(html, /data-action="delete-item" data-id="a1"/);
+});
+
+test('buildLedgerTab renders the add form when editingId is set', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const html = buildLedgerTab({ ledger: { items: [], statusFilter: 'all', editingId: 'new' } });
+  assert.match(html, /data-form="itemName"/);
+  assert.match(html, /data-form="buySource"/);
+  assert.match(html, /data-action="save-item"/);
 });

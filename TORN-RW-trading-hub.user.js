@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.7
+// @version      0.1.8
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.7';
+  const SCRIPT_VERSION = '0.1.8';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -33,6 +33,8 @@
     ledger: {
       items: [],
       statusFilter: 'all',
+      editingId: null,        // null | 'new' | itemId — drives the add/edit form
+      expandedId: null,       // null | itemId — the tap-expanded row
       scanResults: [],
       scanError: null,
       lastScan: 0,
@@ -83,8 +85,164 @@
   function placeholder(label) {
     return `<div class="rwth-placeholder">${label} — coming in a later slice.</div>`;
   }
-  function buildLedgerTab()    { return placeholder('Ledger'); }
   function buildAdvertiseTab() { return placeholder('Advertise'); }
+
+  // ROI = net proceeds minus buy price. The sell log states fees exactly, so
+  // saleNet is authoritative — no venue fee table. Null until the row is sold.
+  const ROI = {
+    compute(item) {
+      if (!item || item.saleNet == null) return null;
+      return item.saleNet - (item.buyPrice || 0);
+    },
+  };
+
+  const STATUS_FILTERS = ['all', 'held', 'listed', 'sold'];
+
+  function fmtMoney(n) {
+    const v = Number(n || 0);
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US');
+  }
+  function fmtDate(ts) {
+    if (!ts || !Number.isFinite(ts)) return '—';
+    return new Date(ts).toISOString().slice(0, 10);
+  }
+  function fmtBonuses(item) {
+    const b = (item && item.bonuses) || [];
+    return b.map(x => (x.value != null ? `${x.name} ${x.value}%` : x.name)).join(', ');
+  }
+
+  function buildLedgerRow(item, expanded) {
+    const bonus = fmtBonuses(item);
+    let statusCell;
+    if (item.status === 'sold') {
+      const roi = ROI.compute(item);
+      const cls = roi >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+      statusCell = `<span class="rwth-roi ${cls}">${roi >= 0 ? '+' : ''}${fmtMoney(roi)}</span>`;
+    } else {
+      statusCell = `<span class="rwth-status rwth-status-${item.status}">${item.status}</span>`;
+    }
+    const head = `<div class="rwth-row-head" data-row-toggle="${item.id}">
+        <span class="rwth-row-name">${escapeAttr(item.itemName)}${
+          bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''}</span>
+        <span class="rwth-row-price">${fmtMoney(item.buyPrice)}</span>
+        ${statusCell}
+      </div>`;
+    if (!expanded) return `<div class="rwth-row">${head}</div>`;
+    const detail = `<div class="rwth-row-detail">
+        <div class="rwth-row-meta">
+          <span>Quality: ${item.quality != null ? item.quality + '%' : '—'}</span>
+          <span>Bought: ${fmtDate(item.buyTimestamp)}</span>
+          <span>Source: ${escapeAttr(item.buySource)}</span>
+        </div>
+        <div class="rwth-row-actions">
+          ${item.status === 'held'
+            ? `<button class="rwth-btn-sm" type="button" data-action="mark-listed" data-id="${item.id}">mark listed</button>`
+            : ''}
+          <button class="rwth-btn-sm" type="button" data-action="edit-item" data-id="${item.id}">edit</button>
+          <button class="rwth-btn-sm rwth-btn-danger" type="button" data-action="delete-item" data-id="${item.id}">delete</button>
+        </div>
+      </div>`;
+    return `<div class="rwth-row rwth-row-expanded">${head}${detail}</div>`;
+  }
+
+  function buildLedgerForm(mem) {
+    const L = mem.ledger;
+    const editing = L.editingId && L.editingId !== 'new'
+      ? L.items.find(i => i.id === L.editingId) : null;
+    const v = editing || {};
+    const bonuses = v.bonuses || [];
+    const b1 = bonuses[0] || {}, b2 = bonuses[1] || {};
+    const dateVal = v.buyTimestamp ? fmtDate(v.buyTimestamp) : '';
+    return `<div class="rwth-form">
+      <div class="rwth-form-title">${editing ? 'Edit item' : 'Add item'}</div>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Item name</span>
+        <input class="rwth-field-input" data-form="itemName" value="${escapeAttr(v.itemName)}"
+               autocomplete="off" spellcheck="false">
+      </label>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Type</span>
+        <select class="rwth-field-input" data-form="type">
+          <option value="weapon"${v.type === 'armor' ? '' : ' selected'}>Weapon</option>
+          <option value="armor"${v.type === 'armor' ? ' selected' : ''}>Armor</option>
+        </select>
+      </label>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Bonus 1</span>
+          <input class="rwth-field-input" data-form="bonus1Name" value="${escapeAttr(b1.name)}"
+                 placeholder="e.g. Fury" autocomplete="off">
+        </label>
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">%</span>
+          <input class="rwth-field-input" type="number" data-form="bonus1Value" value="${escapeAttr(b1.value)}">
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Bonus 2</span>
+          <input class="rwth-field-input" data-form="bonus2Name" value="${escapeAttr(b2.name)}"
+                 placeholder="optional" autocomplete="off">
+        </label>
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">%</span>
+          <input class="rwth-field-input" type="number" data-form="bonus2Value" value="${escapeAttr(b2.value)}">
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">Quality %</span>
+          <input class="rwth-field-input" type="number" data-form="quality" value="${escapeAttr(v.quality)}">
+        </label>
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Buy price</span>
+          <input class="rwth-field-input" type="number" data-form="buyPrice" value="${escapeAttr(v.buyPrice)}">
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Buy date</span>
+          <input class="rwth-field-input" type="date" data-form="buyDate" value="${escapeAttr(dateVal)}">
+        </label>
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Buy source</span>
+          <select class="rwth-field-input" data-form="buySource">
+            <option value="market"${v.buySource === 'bazaar' ? '' : ' selected'}>Market</option>
+            <option value="bazaar"${v.buySource === 'bazaar' ? ' selected' : ''}>Bazaar</option>
+          </select>
+        </label>
+      </div>
+      <div class="rwth-form-error" id="rwth-form-error"></div>
+      <div class="rwth-form-actions">
+        <button class="rwth-btn" type="button" data-action="save-item">Save</button>
+        <button class="rwth-btn rwth-btn-ghost" type="button" data-action="cancel-item">Cancel</button>
+      </div>
+    </div>`;
+  }
+
+  function buildLedgerTab(mem) {
+    const L = (mem && mem.ledger) || { items: [], statusFilter: 'all' };
+    const items = L.items || [];
+    const filter = L.statusFilter || 'all';
+    const filtered = filter === 'all' ? items : items.filter(i => i.status === filter);
+
+    const filterBtns = STATUS_FILTERS.map(f =>
+      `<button class="rwth-filter${f === filter ? ' rwth-filter-active' : ''}" type="button"
+               data-filter="${f}">${f}</button>`).join('');
+
+    const list = filtered.length
+      ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId)).join('')
+      : `<div class="rwth-placeholder">No ${filter === 'all' ? '' : filter + ' '}items yet.</div>`;
+
+    return `<div class="rwth-ledger">
+      <div class="rwth-ledger-bar">
+        <div class="rwth-filters">${filterBtns}</div>
+        <button class="rwth-btn rwth-btn-add" type="button" data-action="add-item">+ add</button>
+      </div>
+      ${L.editingId ? buildLedgerForm(mem) : ''}
+      <div class="rwth-rows">${list}</div>
+    </div>`;
+  }
 
   // Settings fields — order is the on-screen order.
   const SETTINGS_FIELDS = [
@@ -166,16 +324,30 @@
         setState({ ui: { ...MEM.ui, activeTab: tabBtn.dataset.tab } });
         return;
       }
-      if (e.target.closest('[data-action="close"]')) {
-        setState({ ui: { ...MEM.ui, open: false } });
+      const rowToggle = e.target.closest('[data-row-toggle]');
+      if (rowToggle) {
+        const id = rowToggle.dataset.rowToggle;
+        setState({ ledger: { ...MEM.ledger, expandedId: MEM.ledger.expandedId === id ? null : id } });
         return;
       }
-      if (e.target.closest('[data-action="maximize"]')) {
-        setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } });
+      const filterBtn = e.target.closest('[data-filter]');
+      if (filterBtn) {
+        setState({ ledger: { ...MEM.ledger, statusFilter: filterBtn.dataset.filter } });
         return;
       }
-      if (e.target.closest('[data-action="save-settings"]')) {
-        saveSettings();
+      const actionEl = e.target.closest('[data-action]');
+      if (!actionEl) return;
+      const id = actionEl.dataset.id;
+      switch (actionEl.dataset.action) {
+        case 'close':         setState({ ui: { ...MEM.ui, open: false } }); break;
+        case 'maximize':      setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } }); break;
+        case 'save-settings': saveSettings(); break;
+        case 'add-item':      setState({ ledger: { ...MEM.ledger, editingId: 'new' } }); break;
+        case 'edit-item':     setState({ ledger: { ...MEM.ledger, editingId: id, expandedId: id } }); break;
+        case 'cancel-item':   setState({ ledger: { ...MEM.ledger, editingId: null } }); break;
+        case 'save-item':     saveLedgerItem(); break;
+        case 'mark-listed':   Ledger.markListed(id); break;
+        case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
       }
     });
   }
@@ -199,6 +371,83 @@
       const el = document.getElementById('rwth-settings-status');
       if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
     }, 2200);
+  }
+
+  // ─── Ledger — item CRUD (impure; routed through setState) ────────────────────
+  function makeId() {
+    if (globalThis.crypto && globalThis.crypto.randomUUID) return globalThis.crypto.randomUUID();
+    return 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function numOrNull(s) {
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  const Ledger = {
+    add(patch) {
+      const item = {
+        id: makeId(),
+        itemId: null,
+        itemName: patch.itemName,
+        type: patch.type || 'weapon',
+        bonuses: patch.bonuses || [],
+        quality: patch.quality != null ? patch.quality : null,
+        buyPrice: patch.buyPrice || 0,
+        buyTimestamp: patch.buyTimestamp || Date.now(),
+        buySource: patch.buySource || 'market',
+        gyazoUrl: null,
+        status: 'held',
+        saleGross: null, saleFees: null, saleNet: null,
+        soldTimestamp: null, soldVenue: null, buyer: null,
+      };
+      const items = [item, ...MEM.ledger.items];
+      Store.set('rwth_ledger', items);
+      setState({ ledger: { ...MEM.ledger, items, editingId: null } });
+    },
+    update(id, patch) {
+      const items = MEM.ledger.items.map(i => (i.id === id ? { ...i, ...patch } : i));
+      Store.set('rwth_ledger', items);
+      setState({ ledger: { ...MEM.ledger, items, editingId: null } });
+    },
+    remove(id) {
+      const items = MEM.ledger.items.filter(i => i.id !== id);
+      Store.set('rwth_ledger', items);
+      const expandedId = MEM.ledger.expandedId === id ? null : MEM.ledger.expandedId;
+      setState({ ledger: { ...MEM.ledger, items, expandedId } });
+    },
+    markListed(id) { Ledger.update(id, { status: 'listed' }); },
+  };
+
+  // Collect the add/edit form from the DOM on Save — reading on click (not per
+  // keystroke) keeps render() from firing mid-typing.
+  function saveLedgerItem() {
+    const get = (name) => {
+      const el = document.querySelector(`#rwth-content [data-form="${name}"]`);
+      return el ? el.value.trim() : '';
+    };
+    const itemName = get('itemName');
+    if (!itemName) {
+      const err = document.getElementById('rwth-form-error');
+      if (err) err.textContent = 'Item name is required.';
+      return;
+    }
+    const bonuses = [];
+    for (const n of ['1', '2']) {
+      const name = get('bonus' + n + 'Name');
+      if (name) bonuses.push({ name, value: numOrNull(get('bonus' + n + 'Value')) });
+    }
+    const dateStr = get('buyDate');
+    const patch = {
+      itemName,
+      type: get('type') || 'weapon',
+      bonuses,
+      quality: numOrNull(get('quality')),
+      buyPrice: numOrNull(get('buyPrice')) || 0,
+      buyTimestamp: dateStr ? Date.parse(dateStr) : Date.now(),
+      buySource: get('buySource') || 'market',
+    };
+    if (MEM.ledger.editingId === 'new') Ledger.add(patch);
+    else Ledger.update(MEM.ledger.editingId, patch);
   }
 
   function render() {
@@ -420,6 +669,72 @@
       }
       .rwth-settings-status.rwth-saved-show { opacity: 1; }
 
+      .rwth-ledger { display: flex; flex-direction: column; gap: 10px; }
+      .rwth-ledger-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .rwth-filters { display: flex; gap: 4px; }
+      .rwth-filter {
+        background: none; border: 1px solid #00e5ff33; border-radius: 4px;
+        color: #8aa; cursor: pointer; padding: 4px 8px;
+        font: 600 10px Consolas, monospace; text-transform: uppercase; letter-spacing: .3px;
+      }
+      .rwth-filter:hover { color: #cfe; }
+      .rwth-filter-active { color: #0a0a0a; background: #39ff14; border-color: #39ff14; }
+      .rwth-btn-add { padding: 5px 12px; }
+
+      .rwth-form {
+        display: flex; flex-direction: column; gap: 10px;
+        border: 1px solid #00e5ff33; border-radius: 6px; padding: 10px;
+      }
+      .rwth-form-title { font: 700 12px Verdana, sans-serif; color: #39ff14; }
+      .rwth-form-row { display: flex; gap: 8px; }
+      .rwth-field-grow { flex: 1; }
+      .rwth-field-sm { width: 76px; }
+      .rwth-form-error { font: 600 11px Consolas, monospace; color: #ff5d5d; }
+      .rwth-form-error:empty { display: none; }
+      .rwth-form-actions { display: flex; gap: 8px; }
+      .rwth-btn-ghost {
+        background: none; color: #00e5ff; border: 1px solid #00e5ff44;
+      }
+      .rwth-btn-ghost:hover { box-shadow: none; color: #39ff14; border-color: #39ff14; }
+
+      .rwth-rows { display: flex; flex-direction: column; gap: 4px; }
+      .rwth-row { border: 1px solid #00e5ff22; border-radius: 4px; }
+      .rwth-row-expanded { border-color: #00e5ff55; }
+      .rwth-row-head {
+        display: flex; align-items: center; gap: 8px; cursor: pointer;
+        padding: 7px 9px;
+      }
+      .rwth-row-head:hover { background: #00e5ff11; }
+      .rwth-row-name { flex: 1; font: 600 12px Verdana, sans-serif; color: #cfe; }
+      .rwth-row-bonus { font: 400 11px Consolas, monospace; color: #00e5ff; }
+      .rwth-row-price { font: 600 11px Consolas, monospace; color: #cfe; }
+      .rwth-status {
+        font: 700 10px Consolas, monospace; text-transform: uppercase;
+        padding: 2px 6px; border-radius: 3px;
+      }
+      .rwth-status-held   { color: #8aa; border: 1px solid #8aa66; }
+      .rwth-status-listed { color: #00e5ff; border: 1px solid #00e5ff66; }
+      .rwth-roi { font: 700 11px Consolas, monospace; }
+      .rwth-roi-pos { color: #39ff14; }
+      .rwth-roi-neg { color: #ff5d5d; }
+      .rwth-row-detail {
+        border-top: 1px solid #00e5ff22; padding: 8px 9px;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .rwth-row-meta {
+        display: flex; flex-wrap: wrap; gap: 4px 12px;
+        font: 11px Consolas, monospace; color: #8aa;
+      }
+      .rwth-row-actions { display: flex; gap: 6px; }
+      .rwth-btn-sm {
+        background: none; border: 1px solid #00e5ff44; border-radius: 3px;
+        color: #00e5ff; cursor: pointer; padding: 3px 8px;
+        font: 600 10px Consolas, monospace;
+      }
+      .rwth-btn-sm:hover { color: #39ff14; border-color: #39ff14; }
+      .rwth-btn-danger { color: #ff5d5d; border-color: #ff5d5d44; }
+      .rwth-btn-danger:hover { color: #ff5d5d; border-color: #ff5d5d; }
+
       @media (max-width: 480px) {
         #rwth-panel { width: calc(100vw - 24px); right: 12px; }
       }
@@ -434,6 +749,7 @@
     buildAdvertiseTab,
     buildSettingsTab,
     buildContent,
+    ROI,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
