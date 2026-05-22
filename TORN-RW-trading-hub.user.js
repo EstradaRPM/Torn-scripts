@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.11
+// @version      0.1.12
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.11';
+  const SCRIPT_VERSION = '0.1.12';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -72,6 +72,10 @@
     const ledger = Store.get('rwth_ledger');
     if (Array.isArray(ledger)) MEM.ledger.items = ledger;
 
+    // Pending scan checklist — survives panel close/reopen and page reload.
+    const scan = Store.get('rwth_scan');
+    if (Array.isArray(scan)) MEM.ledger.scanResults = scan;
+
     const transactions = Store.get('rwth_transactions');
     if (Array.isArray(transactions)) MEM.advertise.transactions = transactions;
 
@@ -120,11 +124,13 @@
     const data = (entry && entry.data) || {};
     const rec = Array.isArray(data.item) ? (data.item[0] || {}) : {};
     const itemId = rec.id != null ? Number(rec.id) : null;
+    const uid = rec.uid != null ? Number(rec.uid) : null;
     const names = itemNames || {};
     let itemName = '';
     if (itemId != null) itemName = names[itemId] || `Item #${itemId}`;
     return {
       itemId,
+      uid,
       itemName,
       buyPrice: firstNum(data.final_price, data.cost, data.price),
     };
@@ -147,8 +153,13 @@
       out.push({
         key,
         itemId: p.itemId,
+        uid: p.uid,
         itemName: p.itemName,
-        bonusName: null,
+        type: 'weapon',
+        bonuses: [],
+        quality: null,
+        rarity: null,
+        checked: true,
         buyPrice: p.buyPrice,
         buyTimestamp: (Number(entry.timestamp) || 0) * 1000,
       });
@@ -184,7 +195,8 @@
     }
     const head = `<div class="rwth-row-head" data-row-toggle="${item.id}">
         <span class="rwth-row-name">${escapeAttr(item.itemName)}${
-          bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''}</span>
+          bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''} ${
+          rarityChip(item.rarity)}</span>
         <span class="rwth-row-price">${fmtMoney(item.buyPrice)}</span>
         ${statusCell}
       </div>`;
@@ -221,13 +233,19 @@
         <input class="rwth-field-input" data-form="itemName" value="${escapeAttr(v.itemName)}"
                autocomplete="off" spellcheck="false">
       </label>
-      <label class="rwth-field">
-        <span class="rwth-field-label">Type</span>
-        <select class="rwth-field-input" data-form="type">
-          <option value="weapon"${v.type === 'armor' ? '' : ' selected'}>Weapon</option>
-          <option value="armor"${v.type === 'armor' ? ' selected' : ''}>Armor</option>
-        </select>
-      </label>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Type</span>
+          <select class="rwth-field-input" data-form="type">
+            <option value="weapon"${v.type === 'armor' ? '' : ' selected'}>Weapon</option>
+            <option value="armor"${v.type === 'armor' ? ' selected' : ''}>Armor</option>
+          </select>
+        </label>
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Rarity</span>
+          <select class="rwth-field-input" data-form="rarity">${rarityOptions(v.rarity)}</select>
+        </label>
+      </div>
       <div class="rwth-form-row">
         <label class="rwth-field rwth-field-grow">
           <span class="rwth-field-label">Bonus 1</span>
@@ -281,16 +299,34 @@
     </div>`;
   }
 
-  // One checklist entry for a detected auction win. Item name + bonus 1 are
-  // pre-filled from the log; quality, bonus values and a 2nd bonus are blank
-  // for the user to enter. Inputs render for every win — the checkbox alone
-  // decides what gets added — so the panel never re-renders mid-typing.
+  // Rarity is API-sourced, not user-typed — fixed option list for the forms.
+  const RARITIES = ['', 'white', 'yellow', 'orange', 'red'];
+  function rarityOptions(selected) {
+    const sel = selected || '';
+    return RARITIES.map(r =>
+      `<option value="${r}"${r === sel ? ' selected' : ''}>${
+        r ? r[0].toUpperCase() + r.slice(1) : '—'}</option>`).join('');
+  }
+  function rarityChip(rarity) {
+    if (!rarity) return '';
+    return `<span class="rwth-rarity rwth-rarity-${escapeAttr(rarity)}">${escapeAttr(rarity)}</span>`;
+  }
+
+  // One checklist entry for a detected auction win. Every field — name, type,
+  // bonuses, quality — is pre-filled from the itemdetails API lookup; the user
+  // only reviews. All edits are persisted into MEM.ledger.scanResults via the
+  // delegated input listener, so a close/reopen or reload never loses them.
   function buildScanRow(hit) {
     const k = escapeAttr(hit.key);
+    const bonuses = hit.bonuses || [];
+    const b1 = bonuses[0] || {}, b2 = bonuses[1] || {};
+    const checked = hit.checked === false ? '' : ' checked';
+    const armor = hit.type === 'armor';
     return `<div class="rwth-scan-row" data-scan-row="${k}">
       <label class="rwth-scan-check">
-        <input type="checkbox" data-scan-check checked>
+        <input type="checkbox" data-scan-check${checked}>
         <span class="rwth-scan-title">${escapeAttr(hit.itemName) || 'Unknown item'}</span>
+        ${rarityChip(hit.rarity)}
         <span class="rwth-scan-price">${fmtMoney(hit.buyPrice)}</span>
       </label>
       <div class="rwth-scan-meta">Won ${fmtDate(hit.buyTimestamp)}</div>
@@ -303,8 +339,8 @@
         <label class="rwth-field rwth-field-sm">
           <span class="rwth-field-label">Type</span>
           <select class="rwth-field-input" data-scan-field="type">
-            <option value="weapon" selected>Weapon</option>
-            <option value="armor">Armor</option>
+            <option value="weapon"${armor ? '' : ' selected'}>Weapon</option>
+            <option value="armor"${armor ? ' selected' : ''}>Armor</option>
           </select>
         </label>
       </div>
@@ -312,28 +348,31 @@
         <label class="rwth-field rwth-field-grow">
           <span class="rwth-field-label">Bonus 1</span>
           <input class="rwth-field-input" data-scan-field="bonus1Name"
-                 value="${escapeAttr(hit.bonusName)}" placeholder="e.g. Fury" autocomplete="off">
+                 value="${escapeAttr(b1.name)}" placeholder="e.g. Fury" autocomplete="off">
         </label>
         <label class="rwth-field rwth-field-sm">
           <span class="rwth-field-label">%</span>
-          <input class="rwth-field-input" type="number" data-scan-field="bonus1Value">
+          <input class="rwth-field-input" type="number" data-scan-field="bonus1Value"
+                 value="${escapeAttr(b1.value)}">
         </label>
       </div>
       <div class="rwth-form-row">
         <label class="rwth-field rwth-field-grow">
           <span class="rwth-field-label">Bonus 2</span>
           <input class="rwth-field-input" data-scan-field="bonus2Name"
-                 placeholder="optional" autocomplete="off">
+                 value="${escapeAttr(b2.name)}" placeholder="optional" autocomplete="off">
         </label>
         <label class="rwth-field rwth-field-sm">
           <span class="rwth-field-label">%</span>
-          <input class="rwth-field-input" type="number" data-scan-field="bonus2Value">
+          <input class="rwth-field-input" type="number" data-scan-field="bonus2Value"
+                 value="${escapeAttr(b2.value)}">
         </label>
       </div>
       <div class="rwth-form-row">
         <label class="rwth-field rwth-field-sm">
           <span class="rwth-field-label">Quality %</span>
-          <input class="rwth-field-input" type="number" data-scan-field="quality">
+          <input class="rwth-field-input" type="number" data-scan-field="quality"
+                 value="${escapeAttr(hit.quality)}">
         </label>
       </div>
     </div>`;
@@ -493,11 +532,41 @@
         case 'save-item':     saveLedgerItem(); break;
         case 'scan':          LogScanner.scan(); break;
         case 'confirm-scan':  confirmScan(); break;
-        case 'cancel-scan':   setState({ ledger: { ...MEM.ledger, scanResults: [], scanMessage: '' } }); break;
+        case 'cancel-scan':   Store.set('rwth_scan', []);
+                              setState({ ledger: { ...MEM.ledger, scanResults: [], scanMessage: '' } }); break;
         case 'mark-listed':   Ledger.markListed(id); break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
       }
     });
+
+    // Scan-checklist edits → write straight back into MEM.ledger.scanResults and
+    // persist. No render() call: the DOM already shows the value, and the hit is
+    // now the source of truth, so a close/reopen or reload rebuilds it intact.
+    root.addEventListener('input', syncScanEdit);
+    root.addEventListener('change', syncScanEdit);
+  }
+
+  function syncScanEdit(e) {
+    const row = e.target.closest('[data-scan-row]');
+    if (!row) return;
+    const hit = (MEM.ledger.scanResults || []).find(h => h.key === row.dataset.scanRow);
+    if (!hit) return;
+    const val = (name) => {
+      const el = row.querySelector(`[data-scan-field="${name}"]`);
+      return el ? el.value.trim() : '';
+    };
+    const bonuses = [];
+    for (const n of ['1', '2']) {
+      const name = val('bonus' + n + 'Name');
+      if (name) bonuses.push({ name, value: numOrNull(val('bonus' + n + 'Value')) });
+    }
+    const check = row.querySelector('[data-scan-check]');
+    hit.itemName = val('itemName');
+    hit.type = val('type') || 'weapon';
+    hit.bonuses = bonuses;
+    hit.quality = numOrNull(val('quality'));
+    if (check) hit.checked = check.checked;
+    Store.set('rwth_scan', MEM.ledger.scanResults);
   }
 
   // Collect every settings input from the DOM, persist, re-render, then flash
@@ -540,6 +609,7 @@
         type: patch.type || 'weapon',
         bonuses: patch.bonuses || [],
         quality: patch.quality != null ? patch.quality : null,
+        rarity: patch.rarity || null,
         buyPrice: patch.buyPrice || 0,
         buyTimestamp: patch.buyTimestamp || Date.now(),
         buySource: patch.buySource || 'market',
@@ -590,6 +660,7 @@
       type: get('type') || 'weapon',
       bonuses,
       quality: numOrNull(get('quality')),
+      rarity: get('rarity') || null,
       buyPrice: numOrNull(get('buyPrice')) || 0,
       buyTimestamp: dateStr ? Date.parse(dateStr) : Date.now(),
       buySource: get('buySource') || 'market',
@@ -624,6 +695,41 @@
       return map;
     },
   };
+
+  // ─── ItemDetails — uid → real stats/bonuses/rarity for one won item ──────────
+  // The auction-win log carries the won item's unique id (data.item[0].uid).
+  // /v2/torn/{uid}/itemdetails resolves that exact instance: quality, every
+  // bonus, rarity. A failure is non-fatal — the checklist row stays editable.
+  const ItemDetails = {
+    async fetch(uid, key) {
+      const res = await fetch(
+        `${API_BASE}/v2/torn/${encodeURIComponent(uid)}/itemdetails?key=${encodeURIComponent(key)}`);
+      const d = await res.json();
+      if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+      return (d && d.itemdetails) || null;
+    },
+  };
+
+  // Pure: fold an itemdetails payload onto a ScanHit. Torn bonus objects carry
+  // `title`; the ledger stores `name`. Type comes back capitalised ("Weapon").
+  function applyItemDetails(hit, details) {
+    if (!details) return hit;
+    const bonuses = Array.isArray(details.bonuses)
+      ? details.bonuses.map(b => ({
+          name: b && b.title != null ? String(b.title) : '',
+          value: b && b.value != null ? Number(b.value) : null,
+        })).filter(b => b.name)
+      : hit.bonuses;
+    const stats = details.stats || {};
+    return {
+      ...hit,
+      itemName: details.name || hit.itemName,
+      type: /armor/i.test(details.type || '') ? 'armor' : 'weapon',
+      bonuses,
+      quality: stats.quality != null ? Number(stats.quality) : hit.quality,
+      rarity: details.rarity || hit.rarity,
+    };
+  }
 
   // ─── LogScanner — auction-win detection (manual trigger only) ────────────────
   // scan() queries the auction-win log category incrementally via rwth_log_cursor
@@ -665,44 +771,44 @@
       const seen = Store.get('rwth_seen_wins') || [];
       const hits = toScanHits(log, seen, itemNames);
 
+      // Auto-fill each win from itemdetails (uid → real stats/bonuses/rarity).
+      // A per-item failure just leaves that row's fields as the user can edit.
+      const enriched = await Promise.all(hits.map(async (h) => {
+        if (h.uid == null) return h;
+        try { return applyItemDetails(h, await ItemDetails.fetch(h.uid, key)); }
+        catch { return h; }
+      }));
+
+      Store.set('rwth_scan', enriched);
       setState({
         fetchError: null,
         ledger: {
-          ...MEM.ledger, scanning: false, scanResults: hits, lastScan: Date.now(),
-          scanMessage: hits.length ? '' : 'No new auction wins found.',
+          ...MEM.ledger, scanning: false, scanResults: enriched, lastScan: Date.now(),
+          scanMessage: enriched.length ? '' : 'No new auction wins found.',
         },
       });
     },
   };
 
   // Commit the scan checklist: checked wins become held ledger rows; every shown
-  // win (added or not) is written to rwth_seen_wins so it cannot reappear.
+  // win (added or not) is written to rwth_seen_wins so it cannot reappear. Hits
+  // are read straight from state — the input listener keeps them synced with the
+  // DOM, so no live querying of the (about-to-be-torn-down) checklist is needed.
   function confirmScan() {
     const results = MEM.ledger.scanResults || [];
     if (!results.length) return;
 
     const newItems = [];
     for (const hit of results) {
-      const row = document.querySelector(`#rwth-content [data-scan-row="${hit.key}"]`);
-      if (!row) continue;
-      const check = row.querySelector('[data-scan-check]');
-      if (!check || !check.checked) continue;
-      const val = (name) => {
-        const el = row.querySelector(`[data-scan-field="${name}"]`);
-        return el ? el.value.trim() : '';
-      };
-      const bonuses = [];
-      for (const n of ['1', '2']) {
-        const name = val('bonus' + n + 'Name');
-        if (name) bonuses.push({ name, value: numOrNull(val('bonus' + n + 'Value')) });
-      }
+      if (hit.checked === false) continue;
       newItems.push({
         id: makeId(),
         itemId: hit.itemId != null ? hit.itemId : null,
-        itemName: val('itemName') || hit.itemName,
-        type: val('type') || 'weapon',
-        bonuses,
-        quality: numOrNull(val('quality')),
+        itemName: hit.itemName || `Item #${hit.itemId}`,
+        type: hit.type || 'weapon',
+        bonuses: (hit.bonuses || []).filter(b => b && b.name),
+        quality: hit.quality != null ? hit.quality : null,
+        rarity: hit.rarity || null,
         buyPrice: hit.buyPrice || 0,
         buyTimestamp: hit.buyTimestamp || Date.now(),
         buySource: 'auction',
@@ -719,6 +825,7 @@
     const seen = new Set(Store.get('rwth_seen_wins') || []);
     for (const hit of results) seen.add(hit.key);
     Store.set('rwth_seen_wins', [...seen]);
+    Store.set('rwth_scan', []);
 
     setState({ ledger: { ...MEM.ledger, items, scanResults: [], scanMessage: '' } });
   }
@@ -967,6 +1074,14 @@
       .rwth-scan-meta { font: 11px Consolas, monospace; color: #8aa; }
       .rwth-scan-note { font: 11px Consolas, monospace; color: #8aa; }
       .rwth-scan-note strong { color: #00e5ff; }
+      .rwth-rarity {
+        font: 700 9px Consolas, monospace; text-transform: uppercase;
+        color: #0a0a0a; padding: 1px 5px; border-radius: 3px;
+      }
+      .rwth-rarity-white  { background: #d6d6d6; }
+      .rwth-rarity-yellow { background: #ffd93b; }
+      .rwth-rarity-orange { background: #ff9f1c; }
+      .rwth-rarity-red    { background: #ff5d5d; }
       .rwth-filters { display: flex; gap: 4px; }
       .rwth-filter {
         background: none; border: 1px solid #00e5ff33; border-radius: 4px;
@@ -1049,6 +1164,7 @@
     ROI,
     parseAuctionWin,
     toScanHits,
+    applyItemDetails,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
