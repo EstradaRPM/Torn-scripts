@@ -133,7 +133,7 @@ Prefix: `rwth_`.
 |---|---|---|
 | `Store` | localStorage I/O | `get(k)` / `set(k,v)`; try/catch wrapped; never throws |
 | `setState` | Sole MEM mutation path | `setState(patch)` → `Object.assign(MEM, patch)` → `render()` |
-| `Launcher` | Chat-row button injection | Injects a chat-icon-styled button into Torn's chat bar; 2–3 selector fallbacks; **falls back to a fixed bottom-right anchored element** if the chat bar isn't found. Never a free FAB. |
+| `Launcher` | Chat-row button injection | Anchors next to a native chat-header button (`#people_panel_button`, selector fallbacks) via `insertAdjacentElement('afterend')`; a `MutationObserver` on `#chatRoot` re-injects after every Torn chat re-render. **Falls back to a fixed bottom-right element** if no chat / no anchor. Never a free FAB. Approach adapted from the Enhanced Chat Buttons script (Callz/Weav3r). |
 | `LogScanner` | Auction-win detection | `scan()` — manual trigger only (button); queries the auction-win log category; produces `ScanHit[]` of keys not in `rwth_seen_wins`. Incremental via `rwth_log_cursor`. |
 | `SellParser` | Parse pasted sell lines | `parse(text) → ParsedSell[]` — handles multi-line blocks. Pure; in `__RwthPure`. |
 | `matchSell` | Tie a parsed sell to a ledger row | `match(parsedSell, openPositions) → row|null` (item name; bonus name as tiebreaker). Pure; in `__RwthPure`. |
@@ -279,7 +279,7 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Notes / Gotchas
 
-- **Chat-bar injection** is Torn DOM the script doesn't own — selector fallbacks + the fixed-corner fallback are mandatory so the launcher is never unreachable.
+- **Chat-bar injection** is Torn DOM the script doesn't own. The launcher anchors next to `#people_panel_button` and a `MutationObserver` on `#chatRoot` re-injects after every chat re-render (Torn rebuilds the chat DOM constantly — without the observer the button vanishes). Selector fallbacks + the fixed-corner fallback keep the launcher reachable on Torn DOM changes / PDA. Do **not** append the launcher directly to `#chatRoot` — it flows at page top.
 - **Scan is manual-only.** No background poll, no scan-on-open. `rwth_log_cursor` keeps it incremental; `rwth_seen_wins` stops dismissed wins from re-nagging.
 - **The log only carries the primary bonus name** and no bonus value / quality — the user supplies value % + quality and any second bonus at add time.
 - **ROI uses the log's stated net** — the sell line states fees exactly, so there is no venue fee table. `soldVenue` is display-only.

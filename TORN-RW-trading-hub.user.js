@@ -159,14 +159,16 @@
   }
 
   // ─── Launcher ────────────────────────────────────────────────────────────────
-  const CHAT_BAR_SELECTORS = [
-    '#chatRoot [class*="_chat-app__"]',
-    '#chatRoot [class*="chat-app"]',
-    '#chatRoot',
+  // Chat-header injection approach adapted from the Enhanced Chat Buttons script
+  // (Callz [2188704] / Weav3r [1853324]): anchor to a known native chat-header
+  // button and re-inject on every chat re-render — Torn rebuilds the chat DOM.
+  const LAUNCHER_ANCHOR_SELECTORS = [
+    '#people_panel_button',
+    '#chatRoot [class*="chat-app-header"] button',
   ];
 
-  function findChatBar() {
-    for (const sel of CHAT_BAR_SELECTORS) {
+  function findLauncherAnchor() {
+    for (const sel of LAUNCHER_ANCHOR_SELECTORS) {
       const el = document.querySelector(sel);
       if (el) return el;
     }
@@ -186,24 +188,40 @@
     return btn;
   }
 
-  function injectLauncher(attempt) {
-    if (document.getElementById('rwth-launcher')) return;
+  // Insert the launcher next to a native chat-header button.
+  function placeLauncherInChat() {
+    if (document.getElementById('rwth-launcher')) return true;
+    const anchor = findLauncherAnchor();
+    if (!anchor) return false;
+    const btn = makeLauncherButton();
+    btn.classList.add('rwth-launcher-chat');
+    anchor.insertAdjacentElement('afterend', btn);
+    return true;
+  }
 
-    const chatBar = findChatBar();
-    if (chatBar) {
-      const btn = makeLauncherButton();
-      btn.classList.add('rwth-launcher-chat');
-      chatBar.appendChild(btn);
-      return;
+  function placeLauncherFixed() {
+    if (document.getElementById('rwth-launcher')) return;
+    const btn = makeLauncherButton();
+    btn.classList.add('rwth-launcher-fixed');
+    document.body.appendChild(btn);
+  }
+
+  function startLauncher() {
+    placeLauncherInChat();
+
+    const chatRoot = document.querySelector('#chatRoot');
+    if (chatRoot) {
+      // Torn rebuilds the chat DOM on its own — re-inject whenever it does.
+      new MutationObserver(() => placeLauncherInChat())
+        .observe(chatRoot, { childList: true, subtree: true });
+      // Anchor never appeared (Torn DOM change) — fall back to a corner button.
+      setTimeout(() => {
+        if (!document.getElementById('rwth-launcher')) placeLauncherFixed();
+      }, 12000);
+    } else {
+      // No chat on this page/build (or PDA) — fixed bottom-right fallback.
+      placeLauncherFixed();
     }
-    if (attempt >= 8) {
-      // Chat bar not found (Torn DOM change / PDA) — fixed bottom-right fallback.
-      const btn = makeLauncherButton();
-      btn.classList.add('rwth-launcher-fixed');
-      document.body.appendChild(btn);
-      return;
-    }
-    setTimeout(() => injectLauncher(attempt + 1), 1000);
   }
 
   // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -223,7 +241,10 @@
         padding: 6px 8px;
       }
       #rwth-launcher:hover { box-shadow: 0 0 6px #00e5ff; }
-      .rwth-launcher-chat { margin: 4px; }
+      .rwth-launcher-chat {
+        padding: 2px 5px; font-size: 10px; margin: 0 4px;
+        vertical-align: middle;
+      }
       .rwth-launcher-fixed { position: fixed; bottom: 12px; right: 12px; z-index: 2147483646; }
 
       #rwth-panel {
@@ -290,7 +311,7 @@
   function bootstrap() {
     hydrate();
     render();          // builds the shell (hidden until MEM.ui.open)
-    injectLauncher(0);
+    startLauncher();
   }
 
   if (!TEST) {
