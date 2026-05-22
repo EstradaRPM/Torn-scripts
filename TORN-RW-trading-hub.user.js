@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.1
+// @version      0.1.2
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.1';
+  const SCRIPT_VERSION = '0.1.2';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -103,8 +103,6 @@
     { id: 'settings',  label: 'Settings' },
   ];
 
-  let shellBuilt = false;
-
   function buildShell() {
     injectStyles();
 
@@ -137,12 +135,11 @@
         setState({ ui: { ...MEM.ui, open: false } });
       }
     });
-
-    shellBuilt = true;
   }
 
   function render() {
-    if (!shellBuilt) buildShell();
+    // Self-heal: rebuild the shell if Torn (or an SPA re-render) dropped it.
+    if (!document.getElementById('rwth-root')) buildShell();
 
     // Never rewrite content while a form input inside the panel is focused.
     const focused = document.activeElement;
@@ -175,26 +172,51 @@
     return null;
   }
 
+  function togglePanel() {
+    setState({ ui: { ...MEM.ui, open: !MEM.ui.open } });
+  }
+
+  // Brand price-tag glyph; inherits the native icon's class so Torn sizes it.
+  function makeLauncherIcon(anchor) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('xmlns', NS);
+    svg.setAttribute('viewBox', '0 0 448 512');
+    svg.setAttribute('width', '24');
+    svg.setAttribute('height', '24');
+    const refSvg = anchor && anchor.querySelector('svg');
+    if (refSvg) svg.setAttribute('class', refSvg.getAttribute('class') || '');
+    svg.innerHTML = `
+      <defs>
+        <linearGradient id="rwth-grad" x1="0.5" x2="0.5" y2="1">
+          <stop offset="0" stop-color="#39ff14"/>
+          <stop offset="1" stop-color="#00e5ff"/>
+        </linearGradient>
+      </defs>
+      <path fill="url(#rwth-grad)" d="M0 80L0 229.5c0 17 6.7 33.3 18.7 45.3l176 176c25 25 65.5 25 90.5 0L418.7 317.3c25-25 25-65.5 0-90.5l-176-176c-12-12-28.3-18.7-45.3-18.7L48 32C21.5 32 0 53.5 0 80zm112 32a32 32 0 1 1 0 64 32 32 0 1 1 0-64z"/>`;
+    return svg;
+  }
+
   function makeLauncherButton() {
     const btn = document.createElement('button');
     btn.id = 'rwth-launcher';
     btn.type = 'button';
-    btn.textContent = BRAND.mark;
     btn.title = 'RW Trading Hub';
     btn.setAttribute('aria-label', 'Open RW Trading Hub');
-    btn.addEventListener('click', () => {
-      setState({ ui: { ...MEM.ui, open: !MEM.ui.open } });
-    });
+    btn.addEventListener('click', togglePanel);
     return btn;
   }
 
-  // Insert the launcher next to a native chat-header button.
+  // Insert the launcher next to a native chat-header button, cloning that
+  // button's class so it renders as a native chat icon.
   function placeLauncherInChat() {
     if (document.getElementById('rwth-launcher')) return true;
     const anchor = findLauncherAnchor();
     if (!anchor) return false;
     const btn = makeLauncherButton();
+    btn.className = anchor.className;
     btn.classList.add('rwth-launcher-chat');
+    btn.appendChild(makeLauncherIcon(anchor));
     anchor.insertAdjacentElement('afterend', btn);
     return true;
   }
@@ -203,6 +225,7 @@
     if (document.getElementById('rwth-launcher')) return;
     const btn = makeLauncherButton();
     btn.classList.add('rwth-launcher-fixed');
+    btn.textContent = BRAND.mark;
     document.body.appendChild(btn);
   }
 
@@ -230,22 +253,16 @@
     const style = document.createElement('style');
     style.id = 'rwth-styles';
     style.textContent = `
-      #rwth-launcher {
-        font: 700 12px/1 Consolas, monospace;
-        letter-spacing: 1px;
-        color: #39ff14;
-        background: #0a0a0a;
-        border: 1px solid #00e5ff;
-        border-radius: 6px;
-        cursor: pointer;
-        padding: 6px 8px;
+      #rwth-launcher.rwth-launcher-chat { cursor: pointer; }
+      #rwth-launcher.rwth-launcher-chat svg { display: block; }
+      #rwth-launcher.rwth-launcher-chat:hover svg { filter: drop-shadow(0 0 3px #00e5ff); }
+      .rwth-launcher-fixed {
+        position: fixed; bottom: 12px; right: 12px; z-index: 2147483646;
+        font: 700 12px/1 Consolas, monospace; letter-spacing: 1px;
+        color: #39ff14; background: #0a0a0a; border: 1px solid #00e5ff;
+        border-radius: 6px; cursor: pointer; padding: 6px 9px;
       }
-      #rwth-launcher:hover { box-shadow: 0 0 6px #00e5ff; }
-      .rwth-launcher-chat {
-        padding: 2px 5px; font-size: 10px; margin: 0 4px;
-        vertical-align: middle;
-      }
-      .rwth-launcher-fixed { position: fixed; bottom: 12px; right: 12px; z-index: 2147483646; }
+      .rwth-launcher-fixed:hover { box-shadow: 0 0 6px #00e5ff; }
 
       #rwth-panel {
         position: fixed;
