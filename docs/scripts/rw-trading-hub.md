@@ -261,7 +261,7 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.2 (slice 1 built — scaffold + panel shell; launcher: native chat-icon styling + self-healing render)
+- **Version:** 0.1.4 (slice 1 built — scaffold + panel shell; native chat-icon launcher w/ open-state gradient flip; full-screen maximize toggle)
 - **Design:** locked (grill complete 2026-05-21)
 - **Open issues:** #243–#248 (slice 1 / #242 done)
 - **Next up:** slice 2 — #243 Settings tab and #244 Ledger manual add

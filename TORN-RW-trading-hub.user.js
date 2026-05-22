@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.2
+// @version      0.1.4
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.2';
+  const SCRIPT_VERSION = '0.1.4';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -28,6 +28,7 @@
   const MEM = {
     ui: {
       open: false,
+      maximized: false,
       activeTab: 'ledger', // 'ledger' | 'advertise' | 'settings'
     },
     ledger: {
@@ -115,7 +116,10 @@
             <span id="rwth-mark">${BRAND.mark}</span>
             <span id="rwth-subtitle">${BRAND.subtitle}</span>
           </div>
-          <button id="rwth-close" data-action="close" aria-label="Close" title="Close">×</button>
+          <div id="rwth-header-actions">
+            <button id="rwth-max" data-action="maximize" aria-label="Toggle full screen" title="Toggle full screen">⛶</button>
+            <button id="rwth-close" data-action="close" aria-label="Close" title="Close">×</button>
+          </div>
         </header>
         <nav id="rwth-tabs">
           ${TABS.map(t => `<button class="rwth-tab" data-tab="${t.id}">${t.label}</button>`).join('')}
@@ -133,6 +137,10 @@
       }
       if (e.target.closest('[data-action="close"]')) {
         setState({ ui: { ...MEM.ui, open: false } });
+        return;
+      }
+      if (e.target.closest('[data-action="maximize"]')) {
+        setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } });
       }
     });
   }
@@ -148,7 +156,11 @@
       return;
     }
 
-    document.getElementById('rwth-panel').classList.toggle('rwth-open', MEM.ui.open);
+    const panel = document.getElementById('rwth-panel');
+    panel.classList.toggle('rwth-open', MEM.ui.open);
+    panel.classList.toggle('rwth-max', MEM.ui.maximized);
+    const launcher = document.getElementById('rwth-launcher');
+    if (launcher) launcher.classList.toggle('rwth-launcher-open', MEM.ui.open);
     document.querySelectorAll('.rwth-tab').forEach(t => {
       t.classList.toggle('rwth-tab-active', t.dataset.tab === MEM.ui.activeTab);
     });
@@ -192,8 +204,12 @@
           <stop offset="0" stop-color="#39ff14"/>
           <stop offset="1" stop-color="#00e5ff"/>
         </linearGradient>
+        <linearGradient id="rwth-grad-flip" x1="0.5" x2="0.5" y2="1">
+          <stop offset="0" stop-color="#00e5ff"/>
+          <stop offset="1" stop-color="#39ff14"/>
+        </linearGradient>
       </defs>
-      <path fill="url(#rwth-grad)" d="M0 80L0 229.5c0 17 6.7 33.3 18.7 45.3l176 176c25 25 65.5 25 90.5 0L418.7 317.3c25-25 25-65.5 0-90.5l-176-176c-12-12-28.3-18.7-45.3-18.7L48 32C21.5 32 0 53.5 0 80zm112 32a32 32 0 1 1 0 64 32 32 0 1 1 0-64z"/>`;
+      <path d="M0 80L0 229.5c0 17 6.7 33.3 18.7 45.3l176 176c25 25 65.5 25 90.5 0L418.7 317.3c25-25 25-65.5 0-90.5l-176-176c-12-12-28.3-18.7-45.3-18.7L48 32C21.5 32 0 53.5 0 80zm112 32a32 32 0 1 1 0 64 32 32 0 1 1 0-64z"/>`;
     return svg;
   }
 
@@ -203,6 +219,7 @@
     btn.type = 'button';
     btn.title = 'RW Trading Hub';
     btn.setAttribute('aria-label', 'Open RW Trading Hub');
+    btn.classList.toggle('rwth-launcher-open', MEM.ui.open);
     btn.addEventListener('click', togglePanel);
     return btn;
   }
@@ -255,7 +272,11 @@
     style.textContent = `
       #rwth-launcher.rwth-launcher-chat { cursor: pointer; }
       #rwth-launcher.rwth-launcher-chat svg { display: block; }
+      #rwth-launcher.rwth-launcher-chat svg path { fill: url(#rwth-grad); }
       #rwth-launcher.rwth-launcher-chat:hover svg { filter: drop-shadow(0 0 3px #00e5ff); }
+      #rwth-launcher.rwth-launcher-chat.rwth-launcher-open svg path { fill: url(#rwth-grad-flip); }
+      #rwth-launcher.rwth-launcher-chat.rwth-launcher-open svg { filter: drop-shadow(0 0 3px #39ff14); }
+      .rwth-launcher-fixed.rwth-launcher-open { color: #0a0a0a; background: #39ff14; }
       .rwth-launcher-fixed {
         position: fixed; bottom: 12px; right: 12px; z-index: 2147483646;
         font: 700 12px/1 Consolas, monospace; letter-spacing: 1px;
@@ -285,6 +306,11 @@
         transition: transform .12s ease-out, opacity .12s ease-out;
       }
       #rwth-panel.rwth-open { transform: scale(1); opacity: 1; pointer-events: auto; }
+      #rwth-panel.rwth-max {
+        width: 100vw; height: 100vh;
+        bottom: 0; right: 0;
+        border-radius: 0;
+      }
 
       #rwth-header {
         display: flex; align-items: center; justify-content: space-between;
@@ -292,10 +318,14 @@
       }
       #rwth-mark { font: 700 14px Consolas, monospace; color: #39ff14; letter-spacing: 1px; }
       #rwth-subtitle { font: 11px Consolas, monospace; color: #00e5ff; margin-left: 8px; }
-      #rwth-close {
+      #rwth-header-actions { display: flex; align-items: center; gap: 6px; }
+      #rwth-max, #rwth-close {
         background: none; border: none; color: #00e5ff;
-        font-size: 18px; cursor: pointer; line-height: 1;
+        cursor: pointer; line-height: 1; padding: 0;
       }
+      #rwth-close { font-size: 18px; }
+      #rwth-max { font-size: 14px; }
+      #rwth-max:hover, #rwth-close:hover { color: #39ff14; }
 
       #rwth-tabs { display: flex; border-bottom: 1px solid #00e5ff33; }
       .rwth-tab {
