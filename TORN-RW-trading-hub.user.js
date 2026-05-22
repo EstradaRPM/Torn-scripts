@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.4
+// @version      0.1.5
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.4';
+  const SCRIPT_VERSION = '0.1.5';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -86,7 +86,33 @@
   }
   function buildLedgerTab()    { return placeholder('Ledger'); }
   function buildAdvertiseTab() { return placeholder('Advertise'); }
-  function buildSettingsTab()  { return placeholder('Settings'); }
+
+  // Settings fields — order is the on-screen order.
+  const SETTINGS_FIELDS = [
+    { key: 'playerId',            label: 'Player ID',            type: 'text', placeholder: 'e.g. 1234567' },
+    { key: 'forumThreadUrl',      label: 'Forum thread URL',     type: 'url',  placeholder: 'https://www.torn.com/forums.php#/p=threads&f=...' },
+    { key: 'weav3rPricelistUrl',  label: 'Weav3r pricelist URL', type: 'url',  placeholder: 'https://...' },
+    { key: 'bannerImageUrl',      label: 'Bazaar banner image URL',  type: 'url', placeholder: 'https://...' },
+    { key: 'forumHeaderImageUrl', label: 'Forum header image URL',   type: 'url', placeholder: 'https://...' },
+    { key: 'apiKey',              label: 'Torn API key',         type: 'text', placeholder: '###PDA-APIKEY###' },
+  ];
+
+  function escapeAttr(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  function buildSettingsTab(mem) {
+    const s = (mem && mem.settings) || {};
+    const rows = SETTINGS_FIELDS.map(f => `
+      <label class="rwth-field">
+        <span class="rwth-field-label">${f.label}</span>
+        <input class="rwth-field-input" type="${f.type}" data-setting="${f.key}"
+               value="${escapeAttr(s[f.key])}" placeholder="${escapeAttr(f.placeholder)}"
+               autocomplete="off" spellcheck="false">
+      </label>`).join('');
+    return `<div class="rwth-settings">${rows}</div>`;
+  }
 
   function buildContent(mem) {
     switch (mem.ui.activeTab) {
@@ -142,6 +168,15 @@
       if (e.target.closest('[data-action="maximize"]')) {
         setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } });
       }
+    });
+
+    // Settings edits — `change` fires on blur, so render() never runs mid-typing.
+    root.addEventListener('change', (e) => {
+      const input = e.target.closest('[data-setting]');
+      if (!input) return;
+      const next = { ...MEM.settings, [input.dataset.setting]: input.value };
+      Store.set('rwth_settings', next);
+      setState({ settings: next });
     });
   }
 
@@ -337,6 +372,19 @@
 
       #rwth-content { flex: 1; overflow-y: auto; padding: 12px; }
       .rwth-placeholder { color: #8aa; font-style: italic; }
+
+      .rwth-settings { display: flex; flex-direction: column; gap: 12px; }
+      .rwth-field { display: flex; flex-direction: column; gap: 4px; }
+      .rwth-field-label {
+        font: 600 11px Consolas, monospace; color: #00e5ff; letter-spacing: .3px;
+      }
+      .rwth-field-input {
+        background: #111; color: #cfe; border: 1px solid #00e5ff44;
+        border-radius: 4px; padding: 6px 8px;
+        font: 12px Consolas, monospace; outline: none;
+      }
+      .rwth-field-input:focus { border-color: #39ff14; }
+      .rwth-field-input::placeholder { color: #557; }
 
       @media (max-width: 480px) {
         #rwth-panel { width: calc(100vw - 24px); right: 12px; }

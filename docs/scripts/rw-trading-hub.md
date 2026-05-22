@@ -261,10 +261,10 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.4 (slice 1 built — scaffold + panel shell; native chat-icon launcher w/ open-state gradient flip; full-screen maximize toggle)
+- **Version:** 0.1.5 (slice 2 in progress — Settings tab built: six fields, edits persisted to `rwth_settings` via `setState`)
 - **Design:** locked (grill complete 2026-05-21)
-- **Open issues:** #243–#248 (slice 1 / #242 done)
-- **Next up:** slice 2 — #243 Settings tab and #244 Ledger manual add
+- **Open issues:** #244–#248 (#242, #243 done)
+- **Next up:** slice 2 — #244 Ledger manual add
 - **Tests:** `node test-rwth.js` — Node shim requires the shipped `.user.js`, asserts the `__RwthPure` seam
 - **Build-time TODO:** seed `ITEM_ABBREV` from common Torn trade-chat abbreviations; user to finalise the footer-line wording.
 
