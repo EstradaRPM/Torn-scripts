@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.8
+// @version      0.1.9
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.8';
+  const SCRIPT_VERSION = '0.1.9';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -22,6 +22,11 @@
   const BRAND = {
     mark: 'NC17',
   };
+
+  // Torn v1 API. Log type 4320 ("Auction house item win") filters
+  // user/?selections=log to auction wins only.
+  const API_BASE = 'https://api.torn.com';
+  const LOG_TYPE_AUCTION_WIN = 4320;
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const MEM = {
@@ -35,9 +40,10 @@
       statusFilter: 'all',
       editingId: null,        // null | 'new' | itemId — drives the add/edit form
       expandedId: null,       // null | itemId — the tap-expanded row
-      scanResults: [],
-      scanError: null,
-      lastScan: 0,
+      scanResults: [],        // ScanHit[] from the last scan, awaiting confirm
+      scanMessage: '',        // transient scan feedback (e.g. "No new auction wins found.")
+      scanning: false,        // a scan request is in flight
+      lastScan: 0,            // epoch ms of the last completed scan
     },
     advertise: {
       selectedIds: [],
@@ -95,6 +101,54 @@
       return item.saleNet - (item.buyPrice || 0);
     },
   };
+
+  // First finite, present number among the candidates; 0 if none.
+  function firstNum(...vals) {
+    for (const v of vals) {
+      if (v == null || v === '') continue;
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return 0;
+  }
+
+  // Pure: pull the fields a ScanHit needs out of one v1 log entry. The log
+  // carries the item name (often with the primary bonus in parens) and the
+  // winning bid; defensive about field names since the entry shape is unowned.
+  function parseAuctionWin(entry) {
+    const blob = Object.assign({}, (entry && entry.params) || {}, (entry && entry.data) || {});
+    let itemName = String(blob.item || blob.item_name || blob.itemName || blob.name || '').trim();
+    let bonusName = null;
+    const m = itemName.match(/^(.+?)\s*\(([^()]+)\)\s*$/);
+    if (m) { itemName = m[1].trim(); bonusName = m[2].trim(); }
+    if (!bonusName && typeof blob.bonus === 'string') bonusName = blob.bonus.trim() || null;
+    return {
+      itemName,
+      bonusName: bonusName || null,
+      buyPrice: firstNum(blob.cost, blob.price, blob.amount, blob.total, blob.bid, blob.value),
+    };
+  }
+
+  // Pure: a v1 log object (keyed by entry id) → ScanHit[] of wins not yet seen.
+  function toScanHits(logObj, seenKeys) {
+    const seen = new Set(seenKeys || []);
+    const out = [];
+    for (const id of Object.keys(logObj || {})) {
+      if (seen.has(id)) continue;
+      const entry = logObj[id];
+      if (!entry) continue;
+      const p = parseAuctionWin(entry);
+      out.push({
+        key: id,
+        itemName: p.itemName,
+        bonusName: p.bonusName,
+        buyPrice: p.buyPrice,
+        buyTimestamp: (Number(entry.timestamp) || 0) * 1000,
+      });
+    }
+    out.sort((a, b) => b.buyTimestamp - a.buyTimestamp);
+    return out;
+  }
 
   const STATUS_FILTERS = ['all', 'held', 'listed', 'sold'];
 
@@ -220,6 +274,81 @@
     </div>`;
   }
 
+  // One checklist entry for a detected auction win. Item name + bonus 1 are
+  // pre-filled from the log; quality, bonus values and a 2nd bonus are blank
+  // for the user to enter. Inputs render for every win — the checkbox alone
+  // decides what gets added — so the panel never re-renders mid-typing.
+  function buildScanRow(hit) {
+    const k = escapeAttr(hit.key);
+    return `<div class="rwth-scan-row" data-scan-row="${k}">
+      <label class="rwth-scan-check">
+        <input type="checkbox" data-scan-check checked>
+        <span class="rwth-scan-title">${escapeAttr(hit.itemName) || 'Unknown item'}</span>
+        <span class="rwth-scan-price">${fmtMoney(hit.buyPrice)}</span>
+      </label>
+      <div class="rwth-scan-meta">Won ${fmtDate(hit.buyTimestamp)}</div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Item name</span>
+          <input class="rwth-field-input" data-scan-field="itemName"
+                 value="${escapeAttr(hit.itemName)}" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">Type</span>
+          <select class="rwth-field-input" data-scan-field="type">
+            <option value="weapon" selected>Weapon</option>
+            <option value="armor">Armor</option>
+          </select>
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Bonus 1</span>
+          <input class="rwth-field-input" data-scan-field="bonus1Name"
+                 value="${escapeAttr(hit.bonusName)}" placeholder="e.g. Fury" autocomplete="off">
+        </label>
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">%</span>
+          <input class="rwth-field-input" type="number" data-scan-field="bonus1Value">
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Bonus 2</span>
+          <input class="rwth-field-input" data-scan-field="bonus2Name"
+                 placeholder="optional" autocomplete="off">
+        </label>
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">%</span>
+          <input class="rwth-field-input" type="number" data-scan-field="bonus2Value">
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-sm">
+          <span class="rwth-field-label">Quality %</span>
+          <input class="rwth-field-input" type="number" data-scan-field="quality">
+        </label>
+      </div>
+    </div>`;
+  }
+
+  function buildScanChecklist(mem) {
+    const L = (mem && mem.ledger) || {};
+    const results = L.scanResults || [];
+    if (!results.length) return '';
+    const n = results.length;
+    return `<div class="rwth-scan">
+      <div class="rwth-form-title">${n} auction win${n === 1 ? '' : 's'} detected</div>
+      ${results.map(buildScanRow).join('')}
+      <div class="rwth-scan-note">Checked wins are added as held items. Unchecked
+        wins are dismissed and won't reappear — use <strong>+ add</strong> later if needed.</div>
+      <div class="rwth-form-actions">
+        <button class="rwth-btn" type="button" data-action="confirm-scan">Add to ledger</button>
+        <button class="rwth-btn rwth-btn-ghost" type="button" data-action="cancel-scan">Cancel</button>
+      </div>
+    </div>`;
+  }
+
   function buildLedgerTab(mem) {
     const L = (mem && mem.ledger) || { items: [], statusFilter: 'all' };
     const items = L.items || [];
@@ -234,11 +363,20 @@
       ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId)).join('')
       : `<div class="rwth-placeholder">No ${filter === 'all' ? '' : filter + ' '}items yet.</div>`;
 
+    const scanning = !!L.scanning;
+    const err = mem && mem.fetchError;
     return `<div class="rwth-ledger">
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
-        <button class="rwth-btn rwth-btn-add" type="button" data-action="add-item">+ add</button>
+        <div class="rwth-ledger-actions">
+          <button class="rwth-btn rwth-btn-ghost" type="button" data-action="scan"${
+            scanning ? ' disabled' : ''}>${scanning ? 'Scanning…' : 'Scan'}</button>
+          <button class="rwth-btn rwth-btn-add" type="button" data-action="add-item">+ add</button>
+        </div>
       </div>
+      ${err ? `<div class="rwth-form-error rwth-banner">${escapeAttr(err)}</div>` : ''}
+      ${L.scanMessage && !err ? `<div class="rwth-placeholder">${escapeAttr(L.scanMessage)}</div>` : ''}
+      ${buildScanChecklist(mem)}
       ${L.editingId ? buildLedgerForm(mem) : ''}
       <div class="rwth-rows">${list}</div>
     </div>`;
@@ -346,6 +484,9 @@
         case 'edit-item':     setState({ ledger: { ...MEM.ledger, editingId: id, expandedId: id } }); break;
         case 'cancel-item':   setState({ ledger: { ...MEM.ledger, editingId: null } }); break;
         case 'save-item':     saveLedgerItem(); break;
+        case 'scan':          LogScanner.scan(); break;
+        case 'confirm-scan':  confirmScan(); break;
+        case 'cancel-scan':   setState({ ledger: { ...MEM.ledger, scanResults: [], scanMessage: '' } }); break;
         case 'mark-listed':   Ledger.markListed(id); break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
       }
@@ -448,6 +589,110 @@
     };
     if (MEM.ledger.editingId === 'new') Ledger.add(patch);
     else Ledger.update(MEM.ledger.editingId, patch);
+  }
+
+  // ─── LogScanner — auction-win detection (manual trigger only) ────────────────
+  // scan() queries the auction-win log category incrementally via rwth_log_cursor
+  // and produces a ScanHit[] of wins not already in rwth_seen_wins. No poll, no
+  // scan-on-open — the Ledger Scan button is the only caller.
+  const LogScanner = {
+    async scan() {
+      if (MEM.ledger.scanning) return;
+      const key = (MEM.settings.apiKey || '').trim();
+      if (!key) {
+        setState({ fetchError: 'Set your Torn API key in Settings before scanning.' });
+        return;
+      }
+      setState({ fetchError: null, ledger: { ...MEM.ledger, scanning: true, scanMessage: '' } });
+
+      const cursor = Number(Store.get('rwth_log_cursor')) || 0;
+      const url = `${API_BASE}/user/?selections=log&log=${LOG_TYPE_AUCTION_WIN}`
+                + (cursor ? `&from=${cursor}` : '')
+                + `&key=${encodeURIComponent(key)}`;
+
+      let d;
+      try {
+        const res = await fetch(url);
+        d = await res.json();
+      } catch {
+        setState({ fetchError: 'Network error while scanning the auction log.',
+                   ledger: { ...MEM.ledger, scanning: false } });
+        return;
+      }
+      if (d && d.error) {
+        setState({ fetchError: `Torn API error: ${d.error.error} (code ${d.error.code}).`,
+                   ledger: { ...MEM.ledger, scanning: false } });
+        return;
+      }
+
+      const logObj = (d && d.log) || {};
+      const seen = Store.get('rwth_seen_wins') || [];
+      const hits = toScanHits(logObj, seen);
+
+      // Advance the cursor to the newest entry seen — keeps the next scan incremental.
+      let maxTs = cursor;
+      for (const id of Object.keys(logObj)) {
+        const ts = Number(logObj[id] && logObj[id].timestamp) || 0;
+        if (ts > maxTs) maxTs = ts;
+      }
+      if (maxTs > cursor) Store.set('rwth_log_cursor', maxTs);
+
+      setState({
+        fetchError: null,
+        ledger: {
+          ...MEM.ledger, scanning: false, scanResults: hits, lastScan: Date.now(),
+          scanMessage: hits.length ? '' : 'No new auction wins found.',
+        },
+      });
+    },
+  };
+
+  // Commit the scan checklist: checked wins become held ledger rows; every shown
+  // win (added or not) is written to rwth_seen_wins so it cannot reappear.
+  function confirmScan() {
+    const results = MEM.ledger.scanResults || [];
+    if (!results.length) return;
+
+    const newItems = [];
+    for (const hit of results) {
+      const row = document.querySelector(`#rwth-content [data-scan-row="${hit.key}"]`);
+      if (!row) continue;
+      const check = row.querySelector('[data-scan-check]');
+      if (!check || !check.checked) continue;
+      const val = (name) => {
+        const el = row.querySelector(`[data-scan-field="${name}"]`);
+        return el ? el.value.trim() : '';
+      };
+      const bonuses = [];
+      for (const n of ['1', '2']) {
+        const name = val('bonus' + n + 'Name');
+        if (name) bonuses.push({ name, value: numOrNull(val('bonus' + n + 'Value')) });
+      }
+      newItems.push({
+        id: makeId(),
+        itemId: null,
+        itemName: val('itemName') || hit.itemName,
+        type: val('type') || 'weapon',
+        bonuses,
+        quality: numOrNull(val('quality')),
+        buyPrice: hit.buyPrice || 0,
+        buyTimestamp: hit.buyTimestamp || Date.now(),
+        buySource: 'auction',
+        gyazoUrl: null,
+        status: 'held',
+        saleGross: null, saleFees: null, saleNet: null,
+        soldTimestamp: null, soldVenue: null, buyer: null,
+      });
+    }
+
+    const items = [...newItems, ...MEM.ledger.items];
+    Store.set('rwth_ledger', items);
+
+    const seen = new Set(Store.get('rwth_seen_wins') || []);
+    for (const hit of results) seen.add(hit.key);
+    Store.set('rwth_seen_wins', [...seen]);
+
+    setState({ ledger: { ...MEM.ledger, items, scanResults: [], scanMessage: '' } });
   }
 
   function render() {
@@ -671,6 +916,29 @@
 
       .rwth-ledger { display: flex; flex-direction: column; gap: 10px; }
       .rwth-ledger-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .rwth-ledger-actions { display: flex; align-items: center; gap: 6px; }
+      .rwth-btn:disabled { opacity: .5; cursor: default; box-shadow: none; }
+      .rwth-banner {
+        border: 1px solid #ff5d5d66; border-radius: 4px;
+        padding: 6px 8px; background: #ff5d5d11;
+      }
+      .rwth-scan {
+        display: flex; flex-direction: column; gap: 10px;
+        border: 1px solid #00e5ff33; border-radius: 6px; padding: 10px;
+      }
+      .rwth-scan-row {
+        display: flex; flex-direction: column; gap: 8px;
+        border: 1px solid #00e5ff22; border-radius: 4px; padding: 8px;
+      }
+      .rwth-scan-check {
+        display: flex; align-items: center; gap: 8px; cursor: pointer;
+      }
+      .rwth-scan-check input { accent-color: #39ff14; }
+      .rwth-scan-title { flex: 1; font: 600 12px Verdana, sans-serif; color: #cfe; }
+      .rwth-scan-price { font: 600 11px Consolas, monospace; color: #cfe; }
+      .rwth-scan-meta { font: 11px Consolas, monospace; color: #8aa; }
+      .rwth-scan-note { font: 11px Consolas, monospace; color: #8aa; }
+      .rwth-scan-note strong { color: #00e5ff; }
       .rwth-filters { display: flex; gap: 4px; }
       .rwth-filter {
         background: none; border: 1px solid #00e5ff33; border-radius: 4px;
@@ -748,8 +1016,11 @@
     buildLedgerTab,
     buildAdvertiseTab,
     buildSettingsTab,
+    buildScanChecklist,
     buildContent,
     ROI,
+    parseAuctionWin,
+    toScanHits,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────

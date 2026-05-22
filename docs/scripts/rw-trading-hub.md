@@ -50,9 +50,12 @@ const MEM = {
   ledger: {
     items: [],              // LedgerItem[] — see shape below
     statusFilter: 'all',    // 'all' | 'held' | 'listed' | 'sold'
-    scanResults: [],        // un-seen auction wins from last scan (ScanHit[])
-    scanError: null,
-    lastScan: 0,            // epoch ms
+    editingId: null,        // null | 'new' | itemId — add/edit form
+    expandedId: null,       // null | itemId — tap-expanded row
+    scanResults: [],        // un-seen auction wins from last scan (ScanHit[]), awaiting confirm
+    scanMessage: '',        // transient scan feedback (e.g. "No new auction wins found.")
+    scanning: false,        // a scan request is in flight
+    lastScan: 0,            // epoch ms of last completed scan
   },
 
   advertise: {
@@ -134,7 +137,7 @@ Prefix: `rwth_`.
 | `Store` | localStorage I/O | `get(k)` / `set(k,v)`; try/catch wrapped; never throws |
 | `setState` | Sole MEM mutation path | `setState(patch)` → `Object.assign(MEM, patch)` → `render()` |
 | `Launcher` | Chat-row button injection | Anchors next to a native chat-header button (`#people_panel_button`, selector fallbacks) via `insertAdjacentElement('afterend')`; a `MutationObserver` on `#chatRoot` re-injects after every Torn chat re-render. **Falls back to a fixed bottom-right element** if no chat / no anchor. Never a free FAB. Approach adapted from the Enhanced Chat Buttons script (Callz/Weav3r). |
-| `LogScanner` | Auction-win detection | `scan()` — manual trigger only (button); queries the auction-win log category; produces `ScanHit[]` of keys not in `rwth_seen_wins`. Incremental via `rwth_log_cursor`. |
+| `LogScanner` | Auction-win detection | `scan()` — manual trigger only (button); queries `user?selections=log&log=4320` (log type **4320** = "Auction house item win"); produces `ScanHit[]` of keys not in `rwth_seen_wins`. Incremental via `rwth_log_cursor` (`&from=`). Pure core `parseAuctionWin` + `toScanHits` in `__RwthPure`. |
 | `SellParser` | Parse pasted sell lines | `parse(text) → ParsedSell[]` — handles multi-line blocks. Pure; in `__RwthPure`. |
 | `matchSell` | Tie a parsed sell to a ledger row | `match(parsedSell, openPositions) → row|null` (item name; bonus name as tiebreaker). Pure; in `__RwthPure`. |
 | `ROI` | Profit + ROI | `compute(item) → number` = `saleNet − buyPrice`. Log is authoritative; **no venue fee table**. Pure; in `__RwthPure`. |
@@ -261,10 +264,10 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 
 ## Active State
 
-- **Version:** 0.1.8 (slice 3 done — Ledger tab: manual add/edit form, compact tap-to-expand rows, status filter, CRUD via `setState`, `rwth_ledger` persistence, `ROI.compute`)
+- **Version:** 0.1.9 (slice 4 done — auction-win scan: manual `Scan` button, `LogScanner.scan()` via log type 4320, incremental `rwth_log_cursor`, scan-result checklist with per-win quality/bonus inputs, confirm → `held`/`auction` ledger rows, `rwth_seen_wins` dedup, errors via `MEM.fetchError`)
 - **Design:** locked (grill complete 2026-05-21)
-- **Open issues:** #245–#248 (#242, #243, #244 done)
-- **Next up:** slice 4 — #245 auction scan
+- **Open issues:** #246–#248 (#242–#245 done)
+- **Next up:** slice 5 — #246 sell logging
 - **Tests:** `node test-rwth.js` — Node shim requires the shipped `.user.js`, asserts the `__RwthPure` seam
 - **Build-time TODO:** seed `ITEM_ABBREV` from common Torn trade-chat abbreviations; user to finalise the footer-line wording.
 

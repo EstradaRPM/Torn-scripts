@@ -154,3 +154,68 @@ test('buildLedgerTab renders the add form when editingId is set', () => {
   assert.match(html, /data-form="buySource"/);
   assert.match(html, /data-action="save-item"/);
 });
+
+// ── Auction-win scan (slice 4) ───────────────────────────────────────────────
+test('parseAuctionWin extracts name, parenthetical bonus and price', () => {
+  const { parseAuctionWin } = globalThis.__RwthPure;
+  const p = parseAuctionWin({ data: { item: 'Diamond Bladed Knife (Fury)', cost: 1500000 } });
+  assert.strictEqual(p.itemName, 'Diamond Bladed Knife');
+  assert.strictEqual(p.bonusName, 'Fury');
+  assert.strictEqual(p.buyPrice, 1500000);
+});
+
+test('parseAuctionWin tolerates a missing bonus and alternate price fields', () => {
+  const { parseAuctionWin } = globalThis.__RwthPure;
+  const p = parseAuctionWin({ params: { item: 'Cobra Derringer', price: 800000 } });
+  assert.strictEqual(p.itemName, 'Cobra Derringer');
+  assert.strictEqual(p.bonusName, null);
+  assert.strictEqual(p.buyPrice, 800000);
+  assert.strictEqual(parseAuctionWin({}).buyPrice, 0);
+});
+
+test('toScanHits maps a v1 log object and skips already-seen keys', () => {
+  const { toScanHits } = globalThis.__RwthPure;
+  const logObj = {
+    e1: { timestamp: 1000, data: { item: 'Knife (Fury)', cost: 100 } },
+    e2: { timestamp: 2000, data: { item: 'Sword', cost: 200 } },
+  };
+  const hits = toScanHits(logObj, ['e1']);
+  assert.strictEqual(hits.length, 1);
+  assert.strictEqual(hits[0].key, 'e2');
+  assert.strictEqual(hits[0].itemName, 'Sword');
+  assert.strictEqual(hits[0].buyTimestamp, 2000 * 1000);
+});
+
+test('toScanHits sorts newest first', () => {
+  const { toScanHits } = globalThis.__RwthPure;
+  const hits = toScanHits({
+    old: { timestamp: 100, data: { item: 'A' } },
+    new: { timestamp: 900, data: { item: 'B' } },
+  }, []);
+  assert.deepStrictEqual(hits.map(h => h.key), ['new', 'old']);
+});
+
+test('buildScanChecklist renders a checklist when scan results exist', () => {
+  const { buildScanChecklist } = globalThis.__RwthPure;
+  const html = buildScanChecklist({ ledger: { scanResults: [
+    { key: 'e2', itemName: 'Sword', bonusName: null, buyPrice: 200, buyTimestamp: 2e9 },
+  ] } });
+  assert.match(html, /data-scan-row="e2"/);
+  assert.match(html, /data-scan-check/);
+  assert.match(html, /data-scan-field="quality"/);
+  assert.match(html, /data-action="confirm-scan"/);
+});
+
+test('buildScanChecklist is empty with no results', () => {
+  const { buildScanChecklist } = globalThis.__RwthPure;
+  assert.strictEqual(buildScanChecklist({ ledger: { scanResults: [] } }), '');
+  assert.strictEqual(buildScanChecklist({}), '');
+});
+
+test('buildLedgerTab renders a Scan button and surfaces fetchError', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  assert.match(buildLedgerTab({ ledger: { items: [] } }), /data-action="scan"/);
+  const err = buildLedgerTab({ ledger: { items: [] }, fetchError: 'API error: x' });
+  assert.match(err, /rwth-banner/);
+  assert.match(err, /API error: x/);
+});
