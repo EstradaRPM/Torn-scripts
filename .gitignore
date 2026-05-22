@@ -1,2 +1,5 @@
 .claude/settings.local.json
 .claude/worktrees/
+
+# Third-party reference scripts (not ours — kept locally for reference only)
+Torn.com Enhanced Chat Buttons*.user.js
