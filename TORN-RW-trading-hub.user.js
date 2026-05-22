@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.21
+// @version      0.1.22
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.21';
+  const SCRIPT_VERSION = '0.1.22';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1089,26 +1089,37 @@
     // highest-value items lead the blurb rather than alphabetised filler.
     toChat(items, settings) {
       const s = settings || {};
-      const lines = [
+      const header = [
         `🔹🔷 <u>${BRAND.mark}</u> 🔷🔹`,
         `🟢 <u>Floor Prices</u> 🟢`,
       ];
-      // Chat is a teaser, not a catalogue — show only the 3 priciest, then a
-      // "+N more listed" line so the blurb stays short enough to actually post.
-      const CHAT_LIMIT = 3;
-      const sorted = (items || []).slice().sort((a, b) =>
-        (Number(b.listPrice) || 0) - (Number(a.listPrice) || 0));
-      for (const it of sorted.slice(0, CHAT_LIMIT)) lines.push(chatItemLine(it));
-      if (sorted.length > CHAT_LIMIT) {
-        lines.push(`<i>+${sorted.length - CHAT_LIMIT} more listed</i>`);
-      }
       // Brackets sit OUTSIDE the anchor so they render as plain text, not as
       // part of the hotlink.
+      const linkLines = [];
       const pid = (s.playerId || '').trim();
-      if (pid) lines.push(`[<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>]`);
+      if (pid) linkLines.push(`[<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>]`);
       const forum = (s.forumThreadUrl || '').trim();
-      if (forum) lines.push(`[<a href="${forum}">Forum</a>]`);
-      return lines.join('\n');
+      if (forum) linkLines.push(`[<a href="${forum}">Forum</a>]`);
+      // Chat is a teaser, not a catalogue — show at most the 3 priciest, then a
+      // "+N more listed" line so the blurb stays short enough to actually post.
+      const CHAT_LIMIT = 3;
+      // Torn's chat input caps a post at 125 rendered characters (HTML markup
+      // does not count). With 3 items + a "+N more" line the tail — the
+      // Bazaar/Forum links — got truncated. Trim item lines until the whole
+      // blurb fits; the links are reserved budget and never dropped.
+      const CHAR_LIMIT = 125;
+      const sorted = (items || []).slice().sort((a, b) =>
+        (Number(b.listPrice) || 0) - (Number(a.listPrice) || 0));
+      const candidates = sorted.slice(0, CHAT_LIMIT).map(chatItemLine);
+      const visibleLen = (arr) => arr.join('\n').replace(/<[^>]+>/g, '').length;
+      const assemble = (shown) => {
+        const remaining = sorted.length - shown;
+        const moreLine = remaining > 0 ? [`<i>+${remaining} more listed</i>`] : [];
+        return [...header, ...candidates.slice(0, shown), ...moreLine, ...linkLines];
+      };
+      let shown = candidates.length;
+      while (shown > 0 && visibleLen(assemble(shown)) > CHAR_LIMIT) shown--;
+      return assemble(shown).join('\n');
     },
   };
 
