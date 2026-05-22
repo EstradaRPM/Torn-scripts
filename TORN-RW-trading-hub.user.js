@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.19
+// @version      0.1.20
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.19';
+  const SCRIPT_VERSION = '0.1.20';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -51,6 +51,9 @@
       open: false,
       maximized: false,
       activeTab: 'ledger', // 'ledger' | 'advertise' | 'settings'
+      // Per-section fold state, persisted under rwth_collapsed. Outputs and the
+      // sale-log box start collapsed; the advertised-items list starts open.
+      collapsed: { advItems: false, advOutputs: true, saleLog: true },
     },
     ledger: {
       items: [],
@@ -67,7 +70,6 @@
     advertise: {
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
       imgEditId: null,        // null | itemId — the row whose [IMG] popover is open
-      itemsCollapsed: false,  // true = "Advertised items" section folded shut
       transactions: [],
       outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
@@ -104,6 +106,11 @@
     if (settings && typeof settings === 'object') {
       MEM.settings = { ...MEM.settings, ...settings };
     }
+
+    const collapsed = Store.get('rwth_collapsed');
+    if (collapsed && typeof collapsed === 'object') {
+      MEM.ui.collapsed = { ...MEM.ui.collapsed, ...collapsed };
+    }
   }
 
   // ─── setState — sole mutation path ───────────────────────────────────────────
@@ -115,6 +122,16 @@
   // ─── Pure HTML builders (exposed via __RwthPure — ADR-0002) ──────────────────
   function placeholder(label) {
     return `<div class="rwth-placeholder">${label} — coming in a later slice.</div>`;
+  }
+
+  // A collapsible-section header — a full-width button carrying the section
+  // title and a caret. `key` indexes MEM.ui.collapsed; the click is handled by
+  // the delegated `toggle-collapse` action.
+  function collapseHead(label, key, collapsed) {
+    return `<button class="rwth-collapse-head" type="button" `
+      + `data-action="toggle-collapse" data-collapse="${key}">`
+      + `<span class="rwth-form-title">${label}</span>`
+      + `<span class="rwth-collapse-caret">${collapsed ? '▸' : '▾'}</span></button>`;
   }
 
   // ROI = net proceeds minus buy price. The sell log states fees exactly, so
@@ -561,15 +578,17 @@
         </div>
       </div>`;
     }
+    const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     return `<div class="rwth-sellbox">
-      <div class="rwth-form-title">Log a sale</div>
+      ${collapseHead('Log a sale', 'saleLog', fold.saleLog)}
+      ${fold.saleLog ? '' : `
       <textarea class="rwth-field-input rwth-sell-input" data-sell-input rows="4"
                 placeholder="Paste one or more Torn sell-log lines…"
                 autocomplete="off" spellcheck="false"></textarea>
       ${L.sellMessage ? `<div class="rwth-form-error">${escapeAttr(L.sellMessage)}</div>` : ''}
       <div class="rwth-form-actions">
         <button class="rwth-btn" type="button" data-action="parse-sells">Parse</button>
-      </div>
+      </div>`}
     </div>`;
   }
 
@@ -1050,10 +1069,12 @@
       if (sorted.length > CHAT_LIMIT) {
         lines.push(`<i>+${sorted.length - CHAT_LIMIT} more listed</i>`);
       }
+      // Brackets sit OUTSIDE the anchor so they render as plain text, not as
+      // part of the hotlink.
       const pid = (s.playerId || '').trim();
-      if (pid) lines.push(`<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>`);
+      if (pid) lines.push(`[<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>]`);
       const forum = (s.forumThreadUrl || '').trim();
-      if (forum) lines.push(`<a href="${forum}">Forum</a>`);
+      if (forum) lines.push(`[<a href="${forum}">Forum</a>]`);
       return lines.join('\n');
     },
   };
@@ -1162,7 +1183,7 @@
       .map(it => ({ ...it, category: itemCategory(it, cats) }));
     const transactions = A.transactions || [];
 
-    const collapsed = !!A.itemsCollapsed;
+    const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     const itemRows = listed.length
       ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
@@ -1172,12 +1193,9 @@
 
     return `<div class="rwth-advertise">
       <div class="rwth-adv-section">
-        <button class="rwth-collapse-head" type="button" data-action="toggle-adv-items">
-          <span class="rwth-form-title">Advertised items${
-            listed.length ? ` (${listed.length})` : ''}</span>
-          <span class="rwth-collapse-caret">${collapsed ? '▸' : '▾'}</span>
-        </button>
-        ${collapsed ? '' : itemRows}
+        ${collapseHead(`Advertised items${listed.length ? ` (${listed.length})` : ''}`,
+                       'advItems', fold.advItems)}
+        ${fold.advItems ? '' : itemRows}
       </div>
       <div class="rwth-adv-section">
         <div class="rwth-form-title">Recent Transactions</div>
@@ -1187,7 +1205,8 @@
         </div>
       </div>
       <div class="rwth-adv-section">
-        <div class="rwth-form-title">Outputs</div>
+        ${collapseHead('Outputs', 'advOutputs', fold.advOutputs)}
+        ${fold.advOutputs ? '' : `
         ${buildOutputBox('Forum title', 'rwth-out-title',
                          AdvertiseGenerator.toForumTitle(), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
@@ -1197,7 +1216,7 @@
         ${buildOutputBox('Bazaar description HTML', 'rwth-out-bazaar',
                          AdvertiseGenerator.toBazaarHtml(settings), true, 10)}
         ${buildOutputBox('Profile signature HTML', 'rwth-out-signature',
-                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}
+                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}`}
       </div>
     </div>`;
   }
@@ -1294,8 +1313,7 @@
         case 'toggle-img':    setState({ advertise: { ...MEM.advertise,
                                 imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
         case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
-        case 'toggle-adv-items': setState({ advertise: { ...MEM.advertise,
-                                itemsCollapsed: !MEM.advertise.itemsCollapsed } }); break;
+        case 'toggle-collapse': toggleCollapse(actionEl.dataset.collapse); break;
       }
     });
 
@@ -1382,6 +1400,14 @@
       const el = document.getElementById('rwth-settings-status');
       if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
     }, 2200);
+  }
+
+  // Flip one section's fold state and persist it so it survives a reload.
+  function toggleCollapse(key) {
+    const cur = MEM.ui.collapsed || {};
+    const collapsed = { ...cur, [key]: !cur[key] };
+    Store.set('rwth_collapsed', collapsed);
+    setState({ ui: { ...MEM.ui, collapsed } });
   }
 
   // ─── Ledger — item CRUD (impure; routed through setState) ────────────────────
