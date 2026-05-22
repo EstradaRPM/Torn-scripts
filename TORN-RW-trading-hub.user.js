@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.20
+// @version      0.1.21
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.20';
+  const SCRIPT_VERSION = '0.1.21';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -876,6 +876,62 @@
       + `padding: 9px 17px; border-radius: 2px; margin: 4px 5px;">${escapeAttr(label)} &#8599;</a>`;
   }
 
+  // ─── Signature HTML — section markup ─────────────────────────────────────────
+  // The profile signature is a truncated, image-less catalogue, so each item
+  // card carries a few stored metrics (rarity, bonuses, quality) as chips
+  // instead of leaning on a screenshot the way the forum cards do.
+  const CATEGORY_ACCENT = {
+    Primary: '#6dc488', Secondary: '#5dc6f0', Melee: '#e0a85a',
+    Armor: '#b48ce0', Other: '#8aa898',
+  };
+  const RARITY_COLOR = {
+    white: '#d7dde2', yellow: '#e8d24a', orange: '#e8993a', red: '#e0524a',
+  };
+
+  // One signature chip — a small background-filled pill, theme-proof.
+  function sigChip(txt, fg, bg) {
+    return `<span style="display: inline-block; background: ${bg}; color: ${fg}; `
+      + `font-size: 9px; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase; `
+      + `padding: 3px 7px; border-radius: 2px; margin: 4px 4px 0 0;">${txt}</span>`;
+  }
+
+  // One signature item card — a category-coloured left accent rail, the name
+  // with its rarity, a chip row of bonuses + quality, and the price anchored
+  // to a constant-width right rail.
+  function sigItemCard(item, accent) {
+    const bonuses = (item.bonuses || []).filter(b => b && b.name);
+    const rarity = String(item.rarity || '').toLowerCase();
+    const chips = [];
+    for (const b of bonuses) {
+      const v = b.value != null ? ` ${b.value}%` : '';
+      chips.push(sigChip(`${escapeAttr(b.name)}${v}`, '#7ed098', '#16301f'));
+    }
+    if (item.quality != null) {
+      chips.push(sigChip(`${escapeAttr(item.quality)}% Quality`, '#9ab5a5', '#11251a'));
+    }
+    const chipRow = chips.length
+      ? `<div style="margin-top: 3px;">${chips.join('')}</div>` : '';
+    const rarityTag = (rarity && RARITY_COLOR[rarity])
+      ? `<span style="display: inline-block; color: ${RARITY_COLOR[rarity]}; font-size: 9px; `
+        + `font-weight: bold; letter-spacing: 0.14em; text-transform: uppercase; `
+        + `padding-left: 8px; vertical-align: middle;">&#9670; ${escapeAttr(rarity)}</span>`
+      : '';
+    return `<tr><td colspan="2" style="background: #080e18; padding: 4px 12px; border: 0;">`
+      + `<table ${TBL} width="100%" style="background: #0c1422; border: 0; border-collapse: collapse;">`
+      + `<tbody><tr>`
+      + `<td style="width: 3px; background: ${accent}; font-size: 0; line-height: 0; padding: 0; `
+      + `border: 0;">&nbsp;</td>`
+      + `<td style="padding: 9px 12px; vertical-align: middle; border: 0;">`
+      + `<div><span style="color: #5dc6f0; font-size: 13px; font-weight: bold; `
+      + `letter-spacing: 0.02em; vertical-align: middle; font-family: Verdana, Geneva, sans-serif;">`
+      + `${escapeAttr(item.itemName)}</span>${rarityTag}</div>${chipRow}</td>`
+      + `<td width="104" style="width: 104px; padding: 9px 12px; text-align: right; `
+      + `vertical-align: middle; white-space: nowrap; border: 0;">`
+      + `<span style="color: #7ed098; font-size: 15px; font-weight: bold; `
+      + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(item.listPrice))}</span>`
+      + `</td></tr></tbody></table></td></tr>`;
+  }
+
   const AdvertiseGenerator = {
     // Output 1 — forum thread title; static brand text.
     toForumTitle() { return BRAND.forumThreadTitle; },
@@ -981,10 +1037,10 @@
         + `<tbody>${rows.join('')}</tbody></table></div></div>`;
     },
 
-    // Output — profile signature HTML. A compact, self-contained card: the
-    // banner image up top, a fixed Item/Price column header so the rows below
-    // read as a structured ledger (name on the left rail, price anchored to a
-    // constant-width right rail), and a link strip along the foot.
+    // Output — profile signature HTML. A compact, image-less catalogue: the
+    // banner up top, slim category dividers, one metric-rich card per item
+    // (accent rail + name/rarity + bonus/quality chips + price), and a link
+    // strip along the foot.
     toSignatureHtml(items, settings) {
       const s = settings || {};
       const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
@@ -997,39 +1053,16 @@
           + `text-align: center; border: 0;">`
           + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
           + `text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`;
-      // Column header — gives the name + price columns a fixed anchor.
-      const colLabel = (txt, right) =>
-        `<td width="${right ? 120 : ''}" style="${right ? 'width: 120px; ' : ''}`
-        + `background: #11213a; padding: 6px 14px; text-align: ${right ? 'right' : 'left'}; border: 0;">`
-        + `<span style="color: #5dc6f0; font-size: 8px; font-weight: bold; letter-spacing: 0.22em; `
-        + `text-transform: uppercase;">${txt}</span></td>`;
-      const colHead = `<tr>${colLabel('Item', false)}${colLabel('Price', true)}</tr>`;
-      const bodyRows = [colHead];
-      let n = 0;
+      const bodyRows = [];
       for (const group of groupByCategory(items)) {
-        // Category band spanning both columns.
-        bodyRows.push(`<tr><td colspan="2" style="background: #0b1320; padding: 7px 14px 6px; border: 0;">`
-          + `<span style="color: #7ed098; font-size: 9px; font-weight: bold; letter-spacing: 0.22em; `
-          + `text-transform: uppercase;">${escapeAttr(group.category)}</span></td></tr>`);
-        for (const it of group.items) {
-          // Name column zebra-stripes; price column keeps a constant fill so
-          // every price sits on one solid right-hand rail.
-          const stripe = (n++ % 2) ? '#0a121e' : '#080e18';
-          const b = (it.bonuses || []).filter(x => x && x.name)[0];
-          const tag = b
-            ? `<div style="color: #8aa898; font-size: 10px; padding-top: 2px;">`
-              + `${escapeAttr(b.name)}${b.value != null ? ' ' + b.value + '%' : ''}</div>`
-            : '';
-          bodyRows.push(`<tr>`
-            + `<td style="background: ${stripe}; padding: 7px 14px; vertical-align: middle; border: 0;">`
-            + `<span style="color: #5dc6f0; font-size: 12px; font-weight: bold; `
-            + `font-family: Verdana, Geneva, sans-serif;">${escapeAttr(it.itemName)}</span>${tag}</td>`
-            + `<td width="120" style="width: 120px; background: #0b1320; padding: 7px 14px; `
-            + `text-align: right; vertical-align: middle; white-space: nowrap; border: 0;">`
-            + `<span style="color: #7ed098; font-size: 12px; font-weight: bold; `
-            + `font-family: Consolas, 'Courier New', monospace;">`
-            + `${escapeAttr(fmtChatPrice(it.listPrice))}</span></td></tr>`);
-        }
+        const accent = CATEGORY_ACCENT[group.category] || CATEGORY_ACCENT.Other;
+        // Category divider — accent-dotted label over a hairline.
+        bodyRows.push(`<tr><td colspan="2" style="background: #080e18; padding: 11px 14px 4px; border: 0;">`
+          + `<span style="color: ${accent}; font-size: 9px; font-weight: bold; letter-spacing: 0.24em; `
+          + `text-transform: uppercase;">&#9679;&nbsp; ${escapeAttr(group.category)}</span>`
+          + `<div style="height: 1px; background: #15301f; margin-top: 5px; font-size: 0; `
+          + `line-height: 0;">&nbsp;</div></td></tr>`);
+        for (const it of group.items) bodyRows.push(sigItemCard(it, accent));
       }
       // Foot — a link strip. Forum / Pricelist / Bazaar, dot-separated.
       const sigLink = (href, label) =>
