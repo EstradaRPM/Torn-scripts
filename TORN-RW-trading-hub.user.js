@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.13
+// @version      0.1.14
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.13';
+  const SCRIPT_VERSION = '0.1.14';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -21,6 +21,20 @@
   // ─── Brand (static, in-file; not exposed in Settings) ────────────────────────
   const BRAND = {
     mark: 'NC17',
+    forumThreadTitle: '[S] NC17 Rated ▸ RW Weapons & Armor',
+  };
+
+  // Display-name abbreviation map for the trade-chat blurb — keeps chat lines
+  // narrow. Static display dictionary (not faction data); seeded from common
+  // Torn trade-chat usage. Build-time TODO: extend as new RW items appear.
+  const ITEM_ABBREV = {
+    'Diamond Bladed Knife': 'DBK',
+    'Enfield SA-80': 'Enfield',
+    'Cobra Derringer': 'Cobra',
+    'Sub-Machine Gun': 'SMG',
+    'Heavy Machine Gun': 'HMG',
+    'Light Anti-Tank Weapon': 'LAW',
+    'Rocket-Propelled Grenade Launcher': 'RPG',
   };
 
   // Torn v2 API. Log type 4320 ("Auction house item win") filters
@@ -48,7 +62,7 @@
       sellMessage: '',        // transient feedback for the Log-a-sale box
     },
     advertise: {
-      selectedIds: [],
+      selectedIds: null,      // null = default (all `listed` rows checked); else id[]
       transactions: [],
       outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
@@ -97,7 +111,6 @@
   function placeholder(label) {
     return `<div class="rwth-placeholder">${label} — coming in a later slice.</div>`;
   }
-  function buildAdvertiseTab() { return placeholder('Advertise'); }
 
   // ROI = net proceeds minus buy price. The sell log states fees exactly, so
   // saleNet is authoritative — no venue fee table. Null until the row is sold.
@@ -328,6 +341,9 @@
         <div class="rwth-row-actions">
           ${item.status === 'held'
             ? `<button class="rwth-btn-sm" type="button" data-action="mark-listed" data-id="${item.id}">mark listed</button>`
+            : ''}
+          ${item.status === 'sold'
+            ? `<button class="rwth-btn-sm" type="button" data-action="promote-tx" data-id="${item.id}">+ Recent Transactions</button>`
             : ''}
           <button class="rwth-btn-sm" type="button" data-action="edit-item" data-id="${item.id}">edit</button>
           <button class="rwth-btn-sm rwth-btn-danger" type="button" data-action="delete-item" data-id="${item.id}">delete</button>
@@ -622,6 +638,169 @@
     </div>`;
   }
 
+  // ─── Advertise — outputs + generators (pure) ─────────────────────────────────
+  // Compact money for the chat blurb: $118m, $78.5m, $1.5b. Empty for non-positive.
+  function fmtChatPrice(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return '';
+    const trim = (s) => s.replace(/\.?0+$/, '');
+    if (v >= 1e9) return '$' + trim((v / 1e9).toFixed(2)) + 'b';
+    if (v >= 1e6) return '$' + trim((v / 1e6).toFixed(1)) + 'm';
+    if (v >= 1e3) return '$' + trim((v / 1e3).toFixed(1)) + 'k';
+    return '$' + v;
+  }
+
+  // One chat-blurb item line. Name is abbreviated via ITEM_ABBREV; the parens
+  // default to the primary bonus, falling back to quality % when there is none.
+  function chatItemLine(item) {
+    const name = ITEM_ABBREV[item.itemName] || item.itemName || '';
+    const b = (item.bonuses || [])[0];
+    let paren = '';
+    if (b && b.name) paren = b.value != null ? `${b.name} ${b.value}%` : b.name;
+    else if (item.quality != null) paren = `${item.quality}% q`;
+    const price = fmtChatPrice(item.listPrice);
+    return `[S] <b>${name}</b>${paren ? ` (${paren})` : ''}`
+         + `${price ? ` — <b>${price}</b>` : ''}`;
+  }
+
+  const AdvertiseGenerator = {
+    // Output 1 — forum thread title; static brand text.
+    toForumTitle() { return BRAND.forumThreadTitle; },
+    // Output 3 — trade-chat blurb; item-driven, matches rwth-assets.md section 6.
+    toChat(items, settings) {
+      const s = settings || {};
+      const lines = [
+        `🔹🔷 <u>${BRAND.mark}</u> 🔷🔹`,
+        `🟢 <u>Floor Prices</u> 🟢`,
+      ];
+      for (const it of (items || [])) lines.push(chatItemLine(it));
+      const pid = (s.playerId || '').trim();
+      if (pid) lines.push(`<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>`);
+      const forum = (s.forumThreadUrl || '').trim();
+      if (forum) lines.push(`<a href="${forum}">Forum</a>`);
+      return lines.join('\n');
+    },
+  };
+
+  // One checkbox-selected ledger item on the Advertise tab. The list-price and
+  // image-URL inputs persist straight onto the ledger row via syncAdvertiseEdit.
+  function buildAdvItemRow(item, checked) {
+    const bonus = fmtBonuses(item);
+    return `<div class="rwth-adv-item" data-adv-item="${escapeAttr(item.id)}">
+      <label class="rwth-adv-check">
+        <input type="checkbox" data-adv-check${checked ? ' checked' : ''}>
+        <span class="rwth-row-name">${escapeAttr(item.itemName)}${
+          bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''}</span>
+      </label>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">List price</span>
+          <input class="rwth-field-input" type="number" data-adv-field="listPrice"
+                 value="${escapeAttr(item.listPrice)}" placeholder="e.g. 118000000">
+        </label>
+      </div>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Image URL</span>
+        <input class="rwth-field-input" data-adv-field="gyazoUrl"
+               value="${escapeAttr(item.gyazoUrl)}" placeholder="https://i.gyazo.com/…"
+               autocomplete="off" spellcheck="false">
+      </label>
+    </div>`;
+  }
+
+  // One Recent Transactions entry — inline-editable; edits persist via
+  // syncAdvertiseEdit. Buyer name is kept as verifiable social proof.
+  function buildTxRow(tx) {
+    const k = escapeAttr(tx.id);
+    return `<div class="rwth-tx-row" data-tx-row="${k}">
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Item</span>
+          <input class="rwth-field-input" data-tx-field="itemName"
+                 value="${escapeAttr(tx.itemName)}" autocomplete="off">
+        </label>
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Bonus</span>
+          <input class="rwth-field-input" data-tx-field="bonusName"
+                 value="${escapeAttr(tx.bonusName)}" placeholder="optional" autocomplete="off">
+        </label>
+      </div>
+      <div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Buyer</span>
+          <input class="rwth-field-input" data-tx-field="buyer"
+                 value="${escapeAttr(tx.buyer)}" autocomplete="off">
+        </label>
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Price</span>
+          <input class="rwth-field-input" type="number" data-tx-field="price"
+                 value="${escapeAttr(tx.price)}">
+        </label>
+      </div>
+      <div class="rwth-tx-actions">
+        <button class="rwth-btn-sm rwth-btn-danger" type="button"
+                data-action="remove-tx" data-id="${k}">remove</button>
+      </div>
+    </div>`;
+  }
+
+  // A windowed copy box. Editable boxes are a textarea (the chat blurb is tuned
+  // in place before copy); static boxes are a div. Copy reads the live value.
+  function buildOutputBox(label, id, value, editable) {
+    const body = editable
+      ? `<textarea class="rwth-field-input rwth-output-box" id="${id}" rows="8"
+                   spellcheck="false">${escapeAttr(value)}</textarea>`
+      : `<div class="rwth-output-box" id="${id}">${escapeAttr(value)}</div>`;
+    return `<div class="rwth-output">
+      <div class="rwth-output-head">
+        <span class="rwth-field-label">${label}</span>
+        <button class="rwth-btn-sm" type="button" data-action="copy-output"
+                data-copy-target="${id}">Copy</button>
+      </div>
+      ${body}
+    </div>`;
+  }
+
+  function buildAdvertiseTab(mem) {
+    const A = (mem && mem.advertise) || {};
+    const L = (mem && mem.ledger) || {};
+    const settings = (mem && mem.settings) || {};
+    const items = L.items || [];
+    const listed = items.filter(i => i.status === 'listed');
+    const sel = A.selectedIds;
+    const isChecked = (it) => (sel == null ? true : sel.includes(it.id));
+    const selectedItems = listed.filter(isChecked);
+    const transactions = A.transactions || [];
+
+    const itemRows = listed.length
+      ? listed.map(i => buildAdvItemRow(i, isChecked(i))).join('')
+      : `<div class="rwth-placeholder">No listed items yet.</div>`;
+    const txRows = transactions.length
+      ? transactions.map(buildTxRow).join('')
+      : `<div class="rwth-placeholder">No recent transactions yet.</div>`;
+
+    return `<div class="rwth-advertise">
+      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Advertised items</div>
+        ${itemRows}
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Recent Transactions</div>
+        ${txRows}
+        <div class="rwth-form-actions">
+          <button class="rwth-btn rwth-btn-add" type="button" data-action="add-tx">+ add transaction</button>
+        </div>
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Outputs</div>
+        ${buildOutputBox('Forum title', 'rwth-out-title',
+                         AdvertiseGenerator.toForumTitle(), false)}
+        ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
+                         AdvertiseGenerator.toChat(selectedItems, settings), true)}
+      </div>
+    </div>`;
+  }
+
   function buildContent(mem) {
     switch (mem.ui.activeTab) {
       case 'ledger':    return buildLedgerTab(mem);
@@ -680,6 +859,13 @@
         setState({ ledger: { ...MEM.ledger, statusFilter: filterBtn.dataset.filter } });
         return;
       }
+      const advCheck = e.target.matches && e.target.matches('[data-adv-check]')
+        ? e.target : null;
+      if (advCheck) {
+        const row = advCheck.closest('[data-adv-item]');
+        if (row) toggleAdvItem(row.dataset.advItem);
+        return;
+      }
       const actionEl = e.target.closest('[data-action]');
       if (!actionEl) return;
       const id = actionEl.dataset.id;
@@ -700,14 +886,51 @@
         case 'cancel-sells':  setState({ ledger: { ...MEM.ledger, sellPreview: null, sellMessage: '' } }); break;
         case 'mark-listed':   Ledger.markListed(id); break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
+        case 'add-tx':        addTransaction(); break;
+        case 'remove-tx':     removeTransaction(id); break;
+        case 'promote-tx':    promoteTransaction(id); break;
+        case 'copy-output':   copyOutput(actionEl.dataset.copyTarget); break;
       }
     });
 
     // Scan-checklist edits → write straight back into MEM.ledger.scanResults and
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
-    root.addEventListener('input', syncScanEdit);
-    root.addEventListener('change', syncScanEdit);
+    root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); });
+  }
+
+  // Advertise-tab inline edits → write straight back into state and persist,
+  // mirroring syncScanEdit. Recent Transactions write to rwth_transactions;
+  // list-price / image-URL write onto the ledger row (rwth_ledger). A list-price
+  // change re-renders on `change` so the chat blurb output picks up the new price.
+  function syncAdvertiseEdit(e) {
+    const txRow = e.target.closest && e.target.closest('[data-tx-row]');
+    if (txRow) {
+      const tx = (MEM.advertise.transactions || []).find(t => t.id === txRow.dataset.txRow);
+      if (!tx) return;
+      const val = (name) => {
+        const el = txRow.querySelector(`[data-tx-field="${name}"]`);
+        return el ? el.value.trim() : '';
+      };
+      tx.itemName = val('itemName');
+      tx.bonusName = val('bonusName') || null;
+      tx.buyer = val('buyer');
+      tx.price = numOrNull(val('price'));
+      Store.set('rwth_transactions', MEM.advertise.transactions);
+      return;
+    }
+    const advRow = e.target.closest && e.target.closest('[data-adv-item]');
+    if (advRow) {
+      const item = (MEM.ledger.items || []).find(i => i.id === advRow.dataset.advItem);
+      if (!item) return;
+      const lp = advRow.querySelector('[data-adv-field="listPrice"]');
+      const gz = advRow.querySelector('[data-adv-field="gyazoUrl"]');
+      if (lp) item.listPrice = numOrNull(lp.value);
+      if (gz) item.gyazoUrl = gz.value.trim() || null;
+      Store.set('rwth_ledger', MEM.ledger.items);
+      if (e.type === 'change') render();
+    }
   }
 
   function syncScanEdit(e) {
@@ -777,6 +1000,7 @@
         buyPrice: patch.buyPrice || 0,
         buyTimestamp: patch.buyTimestamp || Date.now(),
         buySource: patch.buySource || 'market',
+        listPrice: null,
         gyazoUrl: null,
         status: 'held',
         saleGross: null, saleFees: null, saleNet: null,
@@ -976,6 +1200,7 @@
         buyPrice: hit.buyPrice || 0,
         buyTimestamp: hit.buyTimestamp || Date.now(),
         buySource: 'auction',
+        listPrice: null,
         gyazoUrl: null,
         status: 'held',
         saleGross: null, saleFees: null, saleNet: null,
@@ -1052,6 +1277,76 @@
       ledger: { ...MEM.ledger, items, sellPreview: null, sellMessage: '' },
       advertise: { ...MEM.advertise, transactions },
     });
+  }
+
+  // ─── Advertise — selection, transactions, copy (impure; via setState) ────────
+  // Toggle one ledger item's checkbox selection. selectedIds starts null
+  // ("default = all listed"); the first toggle materialises the current set.
+  function toggleAdvItem(id) {
+    const listedIds = MEM.ledger.items
+      .filter(i => i.status === 'listed').map(i => i.id);
+    const cur = MEM.advertise.selectedIds == null
+      ? listedIds.slice() : MEM.advertise.selectedIds.slice();
+    const idx = cur.indexOf(id);
+    if (idx >= 0) cur.splice(idx, 1); else cur.push(id);
+    if (document.activeElement && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    setState({ advertise: { ...MEM.advertise, selectedIds: cur } });
+  }
+
+  function addTransaction() {
+    const tx = {
+      id: makeId(), itemName: '', bonusName: null, buyer: '',
+      price: null, timestamp: null, origin: 'paste',
+    };
+    const transactions = [...MEM.advertise.transactions, tx];
+    Store.set('rwth_transactions', transactions);
+    setState({ advertise: { ...MEM.advertise, transactions } });
+  }
+
+  function removeTransaction(id) {
+    const transactions = MEM.advertise.transactions.filter(t => t.id !== id);
+    Store.set('rwth_transactions', transactions);
+    setState({ advertise: { ...MEM.advertise, transactions } });
+  }
+
+  // One-click promote a sold ledger row into Recent Transactions; the buyer
+  // name is carried over as verifiable proof.
+  function promoteTransaction(id) {
+    const item = MEM.ledger.items.find(i => i.id === id);
+    if (!item) return;
+    const tx = {
+      id: makeId(),
+      itemName: item.itemName,
+      bonusName: (item.bonuses && item.bonuses[0] && item.bonuses[0].name) || null,
+      buyer: item.buyer || '',
+      price: item.saleNet,
+      timestamp: item.soldTimestamp,
+      origin: 'ledger',
+    };
+    const transactions = [tx, ...MEM.advertise.transactions];
+    Store.set('rwth_transactions', transactions);
+    setState({ advertise: { ...MEM.advertise, transactions } });
+  }
+
+  // Copy a windowed output box's live content to the clipboard, flashing the
+  // button. Reads .value for the editable textarea, textContent for static divs.
+  function copyOutput(id) {
+    const el = id && document.getElementById(id);
+    if (!el) return;
+    const text = el.tagName === 'TEXTAREA' ? el.value : el.textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text);
+    }
+    const btn = document.querySelector(`[data-copy-target="${id}"]`);
+    if (btn) {
+      btn.textContent = '✓ Copied';
+      setTimeout(() => {
+        const b = document.querySelector(`[data-copy-target="${id}"]`);
+        if (b) b.textContent = 'Copy';
+      }, 1600);
+    }
   }
 
   function render() {
@@ -1383,6 +1678,31 @@
       .rwth-sell-matched { font: 700 10px Consolas, monospace; color: #39ff14; }
       .rwth-sell-recent  { font: 700 10px Consolas, monospace; color: #00e5ff; }
 
+      .rwth-advertise { display: flex; flex-direction: column; gap: 14px; }
+      .rwth-adv-section { display: flex; flex-direction: column; gap: 8px; }
+      .rwth-adv-item {
+        display: flex; flex-direction: column; gap: 8px;
+        border: 1px solid #00e5ff22; border-radius: 4px; padding: 8px;
+      }
+      .rwth-adv-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+      .rwth-adv-check input { accent-color: #39ff14; }
+      .rwth-tx-row {
+        display: flex; flex-direction: column; gap: 8px;
+        border: 1px solid #00e5ff22; border-radius: 4px; padding: 8px;
+      }
+      .rwth-tx-actions { display: flex; justify-content: flex-end; }
+      .rwth-output { display: flex; flex-direction: column; gap: 6px; }
+      .rwth-output-head {
+        display: flex; align-items: center; justify-content: space-between;
+      }
+      .rwth-output-box {
+        background: #111; color: #cfe; border: 1px solid #00e5ff44;
+        border-radius: 4px; padding: 8px;
+        font: 12px Consolas, monospace; white-space: pre-wrap; word-break: break-word;
+      }
+      textarea.rwth-output-box { resize: vertical; outline: none; }
+      textarea.rwth-output-box:focus { border-color: #39ff14; }
+
       @media (max-width: 480px) {
         #rwth-panel { width: calc(100vw - 24px); right: 12px; }
       }
@@ -1406,6 +1726,7 @@
     SellParser,
     matchSell,
     summarizeSells,
+    AdvertiseGenerator,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────

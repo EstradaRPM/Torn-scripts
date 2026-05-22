@@ -378,3 +378,109 @@ test('buildLedgerTab includes the Log-a-sale box', () => {
   const { buildLedgerTab } = globalThis.__RwthPure;
   assert.match(buildLedgerTab({ ledger: { items: [] } }), /data-sell-input/);
 });
+
+// ── Advertise (slice 6) ──────────────────────────────────────────────────────
+const listedEnfield = {
+  id: 'e1', itemName: 'Enfield SA-80', type: 'weapon', status: 'listed',
+  bonuses: [{ name: 'Deadeye', value: 29 }], quality: 70, listPrice: 118000000,
+};
+const listedRiot = {
+  id: 'r1', itemName: 'Riot Body', type: 'armor', status: 'listed',
+  bonuses: [], quality: 6.5, listPrice: 78000000,
+};
+
+test('AdvertiseGenerator.toForumTitle returns the static brand title', () => {
+  const { AdvertiseGenerator } = globalThis.__RwthPure;
+  assert.strictEqual(AdvertiseGenerator.toForumTitle(),
+    '[S] NC17 Rated ▸ RW Weapons & Armor');
+});
+
+test('AdvertiseGenerator.toChat builds the approved section-6 layout', () => {
+  const { AdvertiseGenerator } = globalThis.__RwthPure;
+  const out = AdvertiseGenerator.toChat([listedRiot, listedEnfield], {
+    playerId: '1171127',
+    forumThreadUrl: 'https://www.torn.com/forums.php#/p=threads&f=10&t=15951654&b=0&a=0',
+  });
+  assert.strictEqual(out,
+    '🔹🔷 <u>NC17</u> 🔷🔹\n' +
+    '🟢 <u>Floor Prices</u> 🟢\n' +
+    '[S] <b>Riot Body</b> (6.5% q) — <b>$78m</b>\n' +
+    '[S] <b>Enfield</b> (Deadeye 29%) — <b>$118m</b>\n' +
+    '<a href="https://www.torn.com/bazaar.php?userId=1171127#/">Bazaar</a>\n' +
+    '<a href="https://www.torn.com/forums.php#/p=threads&f=10&t=15951654&b=0&a=0">Forum</a>');
+});
+
+test('AdvertiseGenerator.toChat abbreviates known item names via ITEM_ABBREV', () => {
+  const { AdvertiseGenerator } = globalThis.__RwthPure;
+  const out = AdvertiseGenerator.toChat([listedEnfield], {});
+  assert.match(out, /<b>Enfield<\/b>/);
+  assert.doesNotMatch(out, /SA-80/);
+});
+
+test('AdvertiseGenerator.toChat defaults parens to the bonus, falls back to quality', () => {
+  const { AdvertiseGenerator } = globalThis.__RwthPure;
+  assert.match(AdvertiseGenerator.toChat([listedEnfield], {}), /\(Deadeye 29%\)/);
+  assert.match(AdvertiseGenerator.toChat([listedRiot], {}), /\(6\.5% q\)/);
+});
+
+test('AdvertiseGenerator.toChat omits links when settings are blank', () => {
+  const { AdvertiseGenerator } = globalThis.__RwthPure;
+  const out = AdvertiseGenerator.toChat([], {});
+  assert.doesNotMatch(out, /Bazaar|Forum/);
+});
+
+test('buildAdvertiseTab default-checks all listed rows with price + image inputs', () => {
+  const { buildAdvertiseTab } = globalThis.__RwthPure;
+  const html = buildAdvertiseTab({
+    advertise: { selectedIds: null, transactions: [] },
+    ledger: { items: [listedEnfield, listedRiot] },
+    settings: {},
+  });
+  assert.strictEqual((html.match(/data-adv-check checked/g) || []).length, 2);
+  assert.match(html, /data-adv-field="listPrice"/);
+  assert.match(html, /data-adv-field="gyazoUrl"/);
+  assert.match(html, /value="118000000"/);
+});
+
+test('buildAdvertiseTab honours an explicit selectedIds list', () => {
+  const { buildAdvertiseTab } = globalThis.__RwthPure;
+  const html = buildAdvertiseTab({
+    advertise: { selectedIds: ['e1'], transactions: [] },
+    ledger: { items: [listedEnfield, listedRiot] },
+    settings: {},
+  });
+  assert.strictEqual((html.match(/data-adv-check checked/g) || []).length, 1);
+});
+
+test('buildAdvertiseTab renders the Recent Transactions editor', () => {
+  const { buildAdvertiseTab } = globalThis.__RwthPure;
+  const html = buildAdvertiseTab({
+    advertise: { selectedIds: null, transactions: [
+      { id: 't1', itemName: 'Riot Body', bonusName: 'Impregnable',
+        buyer: 'Apocolypse_', price: 84150000, origin: 'paste' },
+    ] },
+    ledger: { items: [] },
+    settings: {},
+  });
+  assert.match(html, /data-tx-row="t1"/);
+  assert.match(html, /value="Apocolypse_"/);
+  assert.match(html, /data-action="add-tx"/);
+  assert.match(html, /data-action="remove-tx"/);
+});
+
+test('buildAdvertiseTab renders both output boxes with copy buttons', () => {
+  const { buildAdvertiseTab } = globalThis.__RwthPure;
+  const html = buildAdvertiseTab({
+    advertise: { selectedIds: null, transactions: [] },
+    ledger: { items: [] },
+    settings: {},
+  });
+  assert.match(html, /data-copy-target="rwth-out-title"/);
+  assert.match(html, /data-copy-target="rwth-out-chat"/);
+  assert.match(html, /NC17 Rated/);
+});
+
+test('buildAdvertiseTab tolerates a bare call', () => {
+  const { buildAdvertiseTab } = globalThis.__RwthPure;
+  assert.strictEqual(typeof buildAdvertiseTab(), 'string');
+});
