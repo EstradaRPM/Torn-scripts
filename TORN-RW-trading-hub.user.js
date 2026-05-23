@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.2.0
+// @version      0.2.1
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.2.0';
+  const SCRIPT_VERSION = '0.2.1';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -84,6 +84,18 @@
       viewCounterUrl: '',
       apiKey: '###PDA-APIKEY###',
     },
+    // Intel feature state — persisted to rwth_intel_settings.
+    // bonuses: { [bonusId]: { tolerance: number, ignoreQuality: bool } }
+    // bonusId is the lower-cased bonus name used as a stable key (e.g. "blindfire").
+    intel: {
+      enabled: { auction: true, ledger: true },
+      defaults: { bonusTolerance: 10, qualityTolerance: 10, ignoreQuality: false },
+      bonuses: {},
+      band: 7,
+      mugBuffer: 10,
+      marginTarget: 15,
+      markup: 1.20,
+    },
     fetchError: null,
   };
 
@@ -113,6 +125,17 @@
     const collapsed = Store.get('rwth_collapsed');
     if (collapsed && typeof collapsed === 'object') {
       MEM.ui.collapsed = { ...MEM.ui.collapsed, ...collapsed };
+    }
+
+    const intel = Store.get('rwth_intel_settings');
+    if (intel && typeof intel === 'object') {
+      MEM.intel = {
+        ...MEM.intel,
+        ...intel,
+        enabled:  { ...MEM.intel.enabled,  ...(intel.enabled  || {}) },
+        defaults: { ...MEM.intel.defaults, ...(intel.defaults || {}) },
+        bonuses:  { ...(intel.bonuses || {}) },
+      };
     }
   }
 
@@ -629,6 +652,40 @@
     </div>`;
   }
 
+  // ─── IntelSettings pure helpers (ADR-0002) ──────────────────────────────────
+  // Shape mirrors the Price Checker's settingsManager contract so future slices
+  // can call a single function regardless of which surface is doing the pricing.
+  //
+  //   getEffectiveBonusTolerance(bonusId, intel)
+  //     → per-bonus override tolerance if present, else intel.defaults.bonusTolerance
+  //       (returns 0 when ignoreQuality is set for the bonus — tolerance is moot).
+  //
+  //   getEffectiveQualityTolerance(bonusId, intel)
+  //     → 0 if the per-bonus or global ignoreQuality flag is set, else
+  //       per-bonus override qualityTolerance if present, else
+  //       intel.defaults.qualityTolerance
+  //
+  // `bonusId` is the lower-cased bonus name (stable dict key, e.g. "blindfire").
+  const IntelSettings = {
+    getEffectiveBonusTolerance(bonusId, intel) {
+      const cfg = intel || MEM.intel;
+      const key = (bonusId || '').toLowerCase();
+      const override = cfg.bonuses && cfg.bonuses[key];
+      if (override && override.ignoreQuality) return 0;
+      if (override && override.tolerance != null) return override.tolerance;
+      return cfg.defaults.bonusTolerance;
+    },
+    getEffectiveQualityTolerance(bonusId, intel) {
+      const cfg = intel || MEM.intel;
+      const key = (bonusId || '').toLowerCase();
+      const override = cfg.bonuses && cfg.bonuses[key];
+      if (cfg.defaults.ignoreQuality) return 0;
+      if (override && override.ignoreQuality) return 0;
+      if (override && override.tolerance != null) return override.tolerance;
+      return cfg.defaults.qualityTolerance;
+    },
+  };
+
   // Settings fields — order is the on-screen order.
   const SETTINGS_FIELDS = [
     { key: 'playerId',            label: 'Player ID',            type: 'text', placeholder: 'e.g. 1234567' },
@@ -660,8 +717,31 @@
       + `referrerpolicy="no-referrer">`;
   }
 
+  function buildIntelBonusOverrides(bonuses) {
+    const entries = Object.entries(bonuses || {});
+    if (!entries.length) return '<p class="rwth-intel-empty">No per-bonus overrides yet.</p>';
+    return entries.map(([id, ov]) => `
+      <div class="rwth-intel-bonus-row" data-intel-bonus-id="${escapeAttr(id)}">
+        <span class="rwth-intel-bonus-name">${escapeAttr(id)}</span>
+        <label class="rwth-intel-bonus-field">
+          <span>Tol %</span>
+          <input class="rwth-field-input rwth-intel-bonus-tol" type="number" min="0" max="100" step="1"
+                 data-intel-bonus-tol="${escapeAttr(id)}"
+                 value="${escapeAttr(ov.tolerance != null ? ov.tolerance : '')}">
+        </label>
+        <label class="rwth-intel-bonus-check">
+          <input type="checkbox" data-intel-bonus-iq="${escapeAttr(id)}"
+                 ${ov.ignoreQuality ? 'checked' : ''}>
+          Any quality
+        </label>
+        <button class="rwth-btn rwth-btn-ghost rwth-intel-bonus-rm" type="button"
+                data-action="remove-intel-bonus" data-id="${escapeAttr(id)}">✕</button>
+      </div>`).join('');
+  }
+
   function buildSettingsTab(mem) {
     const s = (mem && mem.settings) || {};
+    const intel = (mem && mem.intel) || MEM.intel;
     const rows = SETTINGS_FIELDS.map(f => `
       <label class="rwth-field">
         <span class="rwth-field-label">${f.label}</span>
@@ -671,6 +751,76 @@
       </label>`).join('');
     return `<div class="rwth-settings">
       ${rows}
+      <hr class="rwth-settings-divider">
+      <p class="rwth-form-title" style="margin:0 0 6px;">Intel</p>
+      <div class="rwth-intel-row">
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-intel="enabled.auction"
+                 ${intel.enabled.auction ? 'checked' : ''}>
+          Enable on Auction scanner
+        </label>
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-intel="enabled.ledger"
+                 ${intel.enabled.ledger ? 'checked' : ''}>
+          Enable on Ledger
+        </label>
+      </div>
+      <div class="rwth-intel-grid">
+        <label class="rwth-field">
+          <span class="rwth-field-label">Default bonus tolerance %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 data-intel="defaults.bonusTolerance"
+                 value="${escapeAttr(intel.defaults.bonusTolerance)}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Default quality tolerance %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 data-intel="defaults.qualityTolerance"
+                 value="${escapeAttr(intel.defaults.qualityTolerance)}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Verdict band %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 data-intel="band"
+                 value="${escapeAttr(intel.band)}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Mug buffer %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 data-intel="mugBuffer"
+                 value="${escapeAttr(intel.mugBuffer)}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Margin target %</span>
+          <input class="rwth-field-input" type="number" min="0" max="200" step="1"
+                 data-intel="marginTarget"
+                 value="${escapeAttr(intel.marginTarget)}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Markup ×</span>
+          <input class="rwth-field-input" type="number" min="1" max="10" step="0.01"
+                 data-intel="markup"
+                 value="${escapeAttr(intel.markup)}">
+        </label>
+      </div>
+      <label class="rwth-intel-check" style="margin-top:4px;">
+        <input type="checkbox" data-intel="defaults.ignoreQuality"
+               ${intel.defaults.ignoreQuality ? 'checked' : ''}>
+        Any Quality (ignore quality for all items by default)
+      </label>
+      <p class="rwth-form-title" style="margin:10px 0 4px;">Per-bonus overrides</p>
+      <div id="rwth-intel-bonuses">${buildIntelBonusOverrides(intel.bonuses)}</div>
+      <div class="rwth-intel-add-row">
+        <input class="rwth-field-input" type="text" id="rwth-intel-add-name"
+               placeholder="Bonus name (e.g. Blindfire)" autocomplete="off" spellcheck="false">
+        <input class="rwth-field-input" type="number" id="rwth-intel-add-tol"
+               placeholder="Tol %" min="0" max="100" step="1">
+        <label class="rwth-intel-check">
+          <input type="checkbox" id="rwth-intel-add-iq">
+          Any quality
+        </label>
+        <button class="rwth-btn" type="button" data-action="add-intel-bonus">+ Add</button>
+      </div>
       <div class="rwth-settings-actions">
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
         <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
@@ -1432,7 +1582,9 @@
         case 'toggle-img':    setState({ advertise: { ...MEM.advertise,
                                 imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
         case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
-        case 'toggle-collapse': toggleCollapse(actionEl.dataset.collapse); break;
+        case 'toggle-collapse':     toggleCollapse(actionEl.dataset.collapse); break;
+        case 'add-intel-bonus':     addIntelBonus(); break;
+        case 'remove-intel-bonus':  removeIntelBonus(id); break;
       }
     });
 
@@ -1509,7 +1661,44 @@
       next[input.dataset.setting] = input.value;
     });
     Store.set('rwth_settings', next);
-    setState({ settings: next });
+
+    // Collect intel settings.
+    const nextIntel = {
+      enabled:  { ...MEM.intel.enabled },
+      defaults: { ...MEM.intel.defaults },
+      bonuses:  { ...MEM.intel.bonuses },
+      band:         MEM.intel.band,
+      mugBuffer:    MEM.intel.mugBuffer,
+      marginTarget: MEM.intel.marginTarget,
+      markup:       MEM.intel.markup,
+    };
+    document.querySelectorAll('#rwth-content [data-intel]').forEach((el) => {
+      const path = el.dataset.intel;
+      const val  = el.type === 'checkbox' ? el.checked : el.value;
+      if (path === 'enabled.auction')           nextIntel.enabled.auction  = Boolean(val);
+      else if (path === 'enabled.ledger')       nextIntel.enabled.ledger   = Boolean(val);
+      else if (path === 'defaults.bonusTolerance') nextIntel.defaults.bonusTolerance = Number(val) || 0;
+      else if (path === 'defaults.qualityTolerance') nextIntel.defaults.qualityTolerance = Number(val) || 0;
+      else if (path === 'defaults.ignoreQuality') nextIntel.defaults.ignoreQuality = Boolean(val);
+      else if (path === 'band')         nextIntel.band         = Number(val) || 0;
+      else if (path === 'mugBuffer')    nextIntel.mugBuffer    = Number(val) || 0;
+      else if (path === 'marginTarget') nextIntel.marginTarget = Number(val) || 0;
+      else if (path === 'markup')       nextIntel.markup       = Number(val) || 1;
+    });
+    // Collect per-bonus override edits made inline.
+    document.querySelectorAll('#rwth-content [data-intel-bonus-tol]').forEach((el) => {
+      const id = el.dataset.intelBonusTol;
+      if (!nextIntel.bonuses[id]) nextIntel.bonuses[id] = {};
+      const v = parseFloat(el.value);
+      nextIntel.bonuses[id].tolerance = Number.isFinite(v) ? v : null;
+    });
+    document.querySelectorAll('#rwth-content [data-intel-bonus-iq]').forEach((el) => {
+      const id = el.dataset.intelBonusIq;
+      if (!nextIntel.bonuses[id]) nextIntel.bonuses[id] = {};
+      nextIntel.bonuses[id].ignoreQuality = el.checked;
+    });
+    Store.set('rwth_intel_settings', nextIntel);
+    setState({ settings: next, intel: nextIntel });
 
     const status = document.getElementById('rwth-settings-status');
     if (!status) return;
@@ -1519,6 +1708,38 @@
       const el = document.getElementById('rwth-settings-status');
       if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
     }, 2200);
+  }
+
+  // Add a per-bonus intel override from the "Add override" row inputs.
+  function addIntelBonus() {
+    const nameEl = document.getElementById('rwth-intel-add-name');
+    const tolEl  = document.getElementById('rwth-intel-add-tol');
+    const iqEl   = document.getElementById('rwth-intel-add-iq');
+    if (!nameEl) return;
+    const raw = (nameEl.value || '').trim();
+    if (!raw) return;
+    const id = raw.toLowerCase();
+    const tol = tolEl ? parseFloat(tolEl.value) : NaN;
+    const nextBonuses = {
+      ...MEM.intel.bonuses,
+      [id]: {
+        tolerance:     Number.isFinite(tol) ? tol : null,
+        ignoreQuality: iqEl ? iqEl.checked : false,
+      },
+    };
+    const nextIntel = { ...MEM.intel, bonuses: nextBonuses };
+    Store.set('rwth_intel_settings', nextIntel);
+    setState({ intel: nextIntel });
+  }
+
+  // Remove a per-bonus intel override by its id (lower-cased bonus name).
+  function removeIntelBonus(id) {
+    if (!id) return;
+    const nextBonuses = { ...MEM.intel.bonuses };
+    delete nextBonuses[id];
+    const nextIntel = { ...MEM.intel, bonuses: nextBonuses };
+    Store.set('rwth_intel_settings', nextIntel);
+    setState({ intel: nextIntel });
   }
 
   // Flip one section's fold state and persist it so it survives a reload.
@@ -2139,6 +2360,27 @@
         opacity: 0; transition: opacity .15s ease-out;
       }
       .rwth-settings-status.rwth-saved-show { opacity: 1; }
+      .rwth-settings-divider { border: none; border-top: 1px solid #00e5ff22; margin: 8px 0; }
+      .rwth-intel-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+      .rwth-intel-check { display: flex; align-items: center; gap: 6px; cursor: pointer;
+        font: 12px Verdana, sans-serif; color: #cfe; }
+      .rwth-intel-check input { accent-color: #39ff14; }
+      .rwth-intel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+      .rwth-intel-empty { font: 11px Consolas, monospace; color: #8aa; margin: 4px 0; }
+      .rwth-intel-bonus-row {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        border: 1px solid #00e5ff22; border-radius: 4px; padding: 6px 8px; margin-bottom: 4px;
+      }
+      .rwth-intel-bonus-name { font: 600 11px Consolas, monospace; color: #00e5ff; min-width: 80px; }
+      .rwth-intel-bonus-field { display: flex; align-items: center; gap: 4px;
+        font: 11px Verdana, sans-serif; color: #8aa; }
+      .rwth-intel-bonus-field .rwth-field-input { width: 60px; }
+      .rwth-intel-bonus-rm { padding: 2px 6px; font-size: 10px; }
+      .rwth-intel-add-row {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px;
+      }
+      .rwth-intel-add-row .rwth-field-input { width: auto; flex: 1; min-width: 120px; }
+      #rwth-intel-add-tol { width: 70px; flex: none; }
 
       .rwth-ledger { display: flex; flex-direction: column; gap: 10px; }
       .rwth-ledger-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -2314,6 +2556,7 @@
     matchSell,
     summarizeSells,
     AdvertiseGenerator,
+    IntelSettings,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
