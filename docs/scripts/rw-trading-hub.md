@@ -18,9 +18,9 @@ A trader's workbench for ranked-war (RW) armor and weapon flipping. Replaces jug
 
 ### Scope — v0.1.0 vs v0.2.0
 
-**v0.1.0 (this build): Ledger + Advertise only.**
+**v0.1.0: Ledger + Advertise.** Frozen — v0.2.0 is purely additive.
 
-**Inline price intel is deferred to v0.2.0** — the per-page price-comparison widget, the third-party APIs (weav3r, Supabase), DOM scanning of auction/market/bazaar rows, similarity scoring, and bonus/quality tolerance settings are all v0.2.0. They drop out of v0.1.0 entirely (`PricingEngine`, `DomScanner`, `InlineRenderer`, `similarity`, the third-party-API ADR).
+**v0.2.0 (in build): inline price intel.** Two surfaces only — the **auction house** (verdict rendered only after the user expands a row) and **personal bazaars** (verdict rendered on the visible listing rows of the loaded page). The item-market inline widget and the bazaar-list inline widget are **out** — see PRD #258 for the locked design. Both surfaces use **mirrored search mechanics**: the same `DomScanner` row shape, the same `PricingEngine` lookup, and the same badge. Reference pricing comes from weav3r + a Supabase-hosted pricelist (see [ADR-0003](../adr/0003-third-party-api-exception.md)). The verdict engine is **median-of-comps + raw slope** — for each listing, take the median price of similar comps (bonus + quality within tolerance), then compare the listing's price-vs-bonus slope against the comp set's slope. No tiered "good/fair/overpriced" buckets; the badge shows the median and the slope delta and lets the user judge. Modules introduced: `DomScanner`, `PricingEngine`, `similarity`, `InlineRenderer`.
 
 ---
 
@@ -32,7 +32,7 @@ A trader's workbench for ranked-war (RW) armor and weapon flipping. Replaces jug
   - Item name (resolved from the dictionary, editable), **bonus name**, bonus *value %* and *quality* are all entered/confirmed by the user in the scan checklist — none come from the API.
 - [x] **User paste** — sells are logged by pasting Torn transaction-log lines into a "Log a sale" box (see Sell logging below). No sell-side API scan.
 
-`@grant none` — no third-party hosts in v0.1.0. (The `GM_xmlhttpRequest` + `@connect` exception belongs to the deferred inline-intel feature.)
+`@grant GM_xmlhttpRequest` from v0.2.0; `@connect weav3r.dev` and `@connect btrmmuuoofbonmuwrkzg.supabase.co` are the only declared third-party hosts. See [ADR-0003](../adr/0003-third-party-api-exception.md) for the request shape, 5-minute LRU cache, and the TOS basis (advisory-only, current-page-only, user-initiated, expand-gated on auction).
 
 See `docs/torn-domain.md` for API rules, rate limits, and compliance checklist.
 
@@ -279,7 +279,7 @@ Brand mark: **`NC17`** (no dash — matches the username; "Rated" carries the fi
 ## ADRs
 
 - [ADR-0002](../adr/0002-rwth-pure-test-seam.md) — pure functions exposed via `globalThis.__RwthPure` for Node testing
-- *(deferred to v0.2.0: ADR on the third-party-API exception to the self-contained rule — only relevant once inline intel is built)*
+- [ADR-0003](../adr/0003-third-party-api-exception.md) — third-party-API exception for v0.2.0 inline price intel (weav3r + Supabase)
 
 ---
 

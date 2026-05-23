@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.1.24
+// @version      0.2.0
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      weav3r.dev
+// @connect      btrmmuuoofbonmuwrkzg.supabase.co
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/TORN-RW-trading-hub.user.js
 // @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/TORN-RW-trading-hub.user.js
 // ==/UserScript==
@@ -13,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.24';
+  const SCRIPT_VERSION = '0.2.0';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -673,7 +675,43 @@
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
         <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
       </div>
+      <div class="rwth-settings-actions" style="margin-top:8px;opacity:0.6;">
+        <button class="rwth-btn rwth-btn-ghost" type="button" data-action="smoke-weav3r"
+                title="v0.2.0 plumbing smoke test — fires one GM_xmlhttpRequest to weav3r and logs the response to the console (ADR-0003).">
+          Smoke: weav3r ping
+        </button>
+      </div>
     </div>`;
+  }
+
+  // v0.2.0 slice 1 — third-party-API plumbing smoke test (ADR-0003).
+  // Fires one GM_xmlhttpRequest to weav3r and logs the response so we can
+  // confirm the @grant/@connect switch actually permits the call before any
+  // PricingEngine code is written. Result is console-only; no UI surface.
+  function smokeWeav3r() {
+    const url = 'https://weav3r.dev/ranked-weapons?tab=armor&armorSet=Riot';
+    /* eslint-disable no-undef */
+    if (typeof GM_xmlhttpRequest !== 'function') {
+      console.error('[RWTH] smoke: GM_xmlhttpRequest unavailable — @grant not honoured');
+      return;
+    }
+    console.log('[RWTH] smoke: GET', url);
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      onload: (res) => {
+        const body = typeof res.responseText === 'string' ? res.responseText : '';
+        console.log('[RWTH] smoke: response', {
+          status: res.status,
+          finalUrl: res.finalUrl,
+          length: body.length,
+          preview: body.slice(0, 400),
+        });
+      },
+      onerror: (err) => console.error('[RWTH] smoke: error', err),
+      ontimeout: () => console.error('[RWTH] smoke: timeout'),
+    });
+    /* eslint-enable no-undef */
   }
 
   // ─── Advertise — outputs + generators (pure) ─────────────────────────────────
@@ -1373,6 +1411,7 @@
         case 'close':         setState({ ui: { ...MEM.ui, open: false } }); break;
         case 'maximize':      setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } }); break;
         case 'save-settings': saveSettings(); break;
+        case 'smoke-weav3r':  smokeWeav3r(); break;
         case 'add-item':      setState({ ledger: { ...MEM.ledger, editingId: 'new' } }); break;
         case 'edit-item':     setState({ ledger: { ...MEM.ledger, editingId: id, expandedId: id } }); break;
         case 'cancel-item':   setState({ ledger: { ...MEM.ledger, editingId: null } }); break;
