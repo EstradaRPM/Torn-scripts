@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.2.2
+// @version      0.2.3
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.2.2';
+  const SCRIPT_VERSION = '0.2.3';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2558,6 +2558,188 @@
     },
   };
 
+  // ─── Third-party search layer (ADR-0003) ─────────────────────────────────────
+  // Impure: Supabase auction history + weav3r live market, with a 5-min LRU
+  // cache around Supabase only (mirrors the Price Checker). Anon-key headers and
+  // BONUS_DATA are copied verbatim from the Price Checker.
+  const RWTH_API = {
+    SUPABASE_URL: 'https://btrmmuuoofbonmuwrkzg.supabase.co',
+    SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY',
+    WEAV3R_API: 'https://weav3r.dev/api/ranked-weapons',
+    CACHE_TTL: 5 * 60 * 1000,
+    CACHE_MAX: 50,
+    CACHE_EVICT: 10,
+    CACHE_PREFIX: 'rwth_cache_',
+  };
+
+  // Bonus id ↔ name dictionary — verbatim from the Price Checker. Stable IDs
+  // backed by the Supabase schema; Weav3r expects the title.
+  const BONUS_DATA = [
+    {id:50,title:"Achilles"},      {id:72,title:"Assassinate"},
+    {id:52,title:"Backstab"},      {id:54,title:"Berserk"},
+    {id:57,title:"Bleed"},         {id:33,title:"Blindfire"},
+    {id:51,title:"Blindside"},     {id:85,title:"Bloodlust"},
+    {id:67,title:"Comeback"},      {id:55,title:"Conserve"},
+    {id:45,title:"Cripple"},       {id:49,title:"Crusher"},
+    {id:47,title:"Cupid"},         {id:63,title:"Deadeye"},
+    {id:62,title:"Deadly"},        {id:36,title:"Demoralize"},
+    {id:86,title:"Disarm"},        {id:105,title:"Double Tap"},
+    {id:74,title:"Double-edged"},  {id:87,title:"Empower"},
+    {id:56,title:"Eviscerate"},    {id:75,title:"Execute"},
+    {id:1,title:"Expose"},         {id:82,title:"Finale"},
+    {id:79,title:"Focus"},         {id:38,title:"Freeze"},
+    {id:80,title:"Frenzy"},        {id:64,title:"Fury"},
+    {id:53,title:"Grace"},         {id:34,title:"Hazardous"},
+    {id:83,title:"Home run"},      {id:115,title:"Immutable"},
+    {id:26,title:"Impassable"},    {id:17,title:"Impenetrable"},
+    {id:22,title:"Imperviable"},   {id:15,title:"Impregnable"},
+    {id:92,title:"Insurmountable"},{id:91,title:"Invulnerable"},
+    {id:102,title:"Irradiate"},    {id:121,title:"Irrepressible"},
+    {id:112,title:"Kinetokinesis"},{id:89,title:"Lacerate"},
+    {id:61,title:"Motivation"},    {id:59,title:"Paralyze"},
+    {id:84,title:"Parry"},         {id:101,title:"Penetrate"},
+    {id:21,title:"Plunder"},       {id:68,title:"Powerful"},
+    {id:14,title:"Proficience"},   {id:66,title:"Puncture"},
+    {id:88,title:"Quicken"},       {id:90,title:"Radiation Protection"},
+    {id:65,title:"Rage"},          {id:41,title:"Revitalize"},
+    {id:43,title:"Roshambo"},      {id:120,title:"Shock"},
+    {id:44,title:"Slow"},          {id:104,title:"Smash"},
+    {id:73,title:"Smurf"},         {id:71,title:"Specialist"},
+    {id:35,title:"Spray"},         {id:37,title:"Storage"},
+    {id:20,title:"Stricken"},      {id:58,title:"Stun"},
+    {id:60,title:"Suppress"},      {id:78,title:"Sure Shot"},
+    {id:48,title:"Throttle"},      {id:103,title:"Toxin"},
+    {id:81,title:"Warlord"},       {id:46,title:"Weaken"},
+    {id:76,title:"Wind-up"},       {id:42,title:"Wither"},
+  ];
+  const BONUS_NAME_TO_ID = (() => {
+    const m = {};
+    for (const b of BONUS_DATA) {
+      const lo = b.title.toLowerCase();
+      m[lo] = b.id;
+      m[lo.replace(/[\s-]/g, '')] = b.id;
+    }
+    return m;
+  })();
+
+  // localStorage-backed LRU. One key per entry (`rwth_cache_<hash>`); eviction
+  // drops the oldest CACHE_EVICT once CACHE_MAX is reached. Quota errors are
+  // swallowed — caching is best-effort, never load-bearing.
+  const Cache = {
+    _keys() {
+      const out = [];
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.indexOf(RWTH_API.CACHE_PREFIX) === 0) out.push(k);
+        }
+      } catch {}
+      return out;
+    },
+    get(key) {
+      const full = RWTH_API.CACHE_PREFIX + key;
+      let entry = null;
+      try { entry = JSON.parse(localStorage.getItem(full)); } catch {}
+      if (entry && (Date.now() - entry.ts) < RWTH_API.CACHE_TTL) return entry.data;
+      if (entry) { try { localStorage.removeItem(full); } catch {} }
+      return null;
+    },
+    set(key, data) {
+      const keys = this._keys();
+      if (keys.length >= RWTH_API.CACHE_MAX) {
+        const sorted = keys.map(k => {
+          let ts = 0;
+          try { ts = (JSON.parse(localStorage.getItem(k)) || {}).ts || 0; } catch {}
+          return { k, ts };
+        }).sort((a, b) => a.ts - b.ts);
+        for (const e of sorted.slice(0, RWTH_API.CACHE_EVICT)) {
+          try { localStorage.removeItem(e.k); } catch {}
+        }
+      }
+      try {
+        localStorage.setItem(RWTH_API.CACHE_PREFIX + key,
+          JSON.stringify({ data, ts: Date.now() }));
+      } catch {}
+    },
+    clear() {
+      for (const k of this._keys()) {
+        try { localStorage.removeItem(k); } catch {}
+      }
+    },
+  };
+
+  // GM_xmlhttpRequest → Promise. Rejects on non-2xx, parse errors, network
+  // errors, and timeouts. The transport can be swapped via globalThis.__RWTH_GM
+  // in the Node test shim (ADR-0002).
+  function gmRequest(opts) {
+    return new Promise((resolve, reject) => {
+      const xhr = (typeof globalThis !== 'undefined' && globalThis.__RWTH_GM)
+        || (typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : null);
+      if (!xhr) { reject(new Error('GM_xmlhttpRequest unavailable')); return; }
+      xhr({
+        method: opts.method,
+        url: opts.url,
+        headers: opts.headers,
+        data: opts.data,
+        timeout: opts.timeout || 15000,
+        onload: (res) => {
+          try {
+            const body = res && typeof res.responseText === 'string' ? res.responseText : '';
+            const data = body ? JSON.parse(body) : null;
+            if (res && res.status >= 200 && res.status < 300) resolve(data);
+            else reject(new Error('HTTP ' + (res && res.status)));
+          } catch { reject(new Error('Parse error')); }
+        },
+        onerror: () => reject(new Error('Network error')),
+        ontimeout: () => reject(new Error('Request timeout')),
+      });
+    });
+  }
+
+  const SupabaseClient = {
+    /** POST search-auctions. Returns { auctions, total }. Cached via Cache. */
+    async search(query) {
+      const cacheKey = JSON.stringify(query || {});
+      const cached = Cache.get(cacheKey);
+      if (cached) return cached;
+      const data = await gmRequest({
+        method: 'POST',
+        url: `${RWTH_API.SUPABASE_URL}/functions/v1/search-auctions`,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': RWTH_API.SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + RWTH_API.SUPABASE_ANON_KEY,
+        },
+        data: JSON.stringify(query || {}),
+      });
+      const result = {
+        auctions: (data && data.auctions) || [],
+        total: (data && data.total) || 0,
+      };
+      Cache.set(cacheKey, result);
+      return result;
+    },
+  };
+
+  const Weav3rClient = {
+    /** GET ranked-weapons. Returns { weapons, total_count }. Uncached
+     *  (mirrors Price Checker — weav3r serves live market). */
+    async search(query) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(query || {})) {
+        if (v != null && v !== '') params.set(k, String(v));
+      }
+      const data = await gmRequest({
+        method: 'GET',
+        url: `${RWTH_API.WEAV3R_API}?${params.toString()}`,
+      });
+      return {
+        weapons: (data && data.weapons) || [],
+        total_count: (data && data.total_count) || 0,
+      };
+    },
+  };
+
   // ─── PricingEngine (pure) ─────────────────────────────────────────────────────
   // Verdict + ledger-suggest engine — pure functions, no GM calls, no DOM.
   // All impure callers (fetch/cache/render) live in later slices.
@@ -2679,6 +2861,80 @@
 
       return { expected, suggestedList, projectedNet, profit, roi };
     },
+
+    /**
+     * fetchComps(item, intelSettings) → Promise<{ history, live }>
+     *
+     * Orchestrates Supabase (auction history) and weav3r (live market) in
+     * parallel. Applies effective per-bonus + quality tolerances via
+     * IntelSettings → similarity.calcRange to derive value/quality ranges.
+     * Network errors degrade to empty arrays — never throws (PRD Story 10).
+     *
+     * item            – { itemName, bonuses: [{name,value},...], quality, category? }
+     * intelSettings   – defaults to MEM.intel
+     */
+    async fetchComps(item, intelSettings) {
+      const intel    = intelSettings || MEM.intel;
+      const bonuses  = ((item && item.bonuses) || []).filter(b => b && b.name);
+      const itemName = (item && item.itemName) || '';
+
+      const supabaseQuery = {
+        limit: 20, offset: 0,
+        sort_by: 'timestamp', sort_order: 'desc',
+      };
+      if (itemName) supabaseQuery.item_name = itemName;
+
+      const weav3rQuery = { sortField: 'price', sortDirection: 'asc' };
+      const cat = itemCategory(item || {});
+      if (cat === 'Armor') {
+        weav3rQuery.tab = 'armor';
+        if (itemName) weav3rQuery.armorPiece = itemName;
+      } else {
+        weav3rQuery.tab = 'weapons';
+        if (itemName) weav3rQuery.weaponName = itemName;
+      }
+
+      bonuses.slice(0, 2).forEach((b, i) => {
+        const lo  = String(b.name).toLowerCase();
+        const id  = BONUS_NAME_TO_ID[lo] != null
+          ? BONUS_NAME_TO_ID[lo]
+          : BONUS_NAME_TO_ID[lo.replace(/[\s-]/g, '')];
+        const tol = IntelSettings.getEffectiveBonusTolerance(lo, intel);
+        const val = Number(b.value);
+        const hasVal = Number.isFinite(val);
+        const range  = hasVal ? similarity.calcRange(val, tol) : null;
+        if (i === 0) {
+          if (id != null) supabaseQuery.bonus1_id = id;
+          if (range)      { supabaseQuery.bonus1_value_min = range.min;
+                            supabaseQuery.bonus1_value_max = range.max; }
+          weav3rQuery.bonus1 = b.name;
+          if (range) { weav3rQuery.minBonus1Value = range.min;
+                       weav3rQuery.maxBonus1Value = range.max; }
+        } else {
+          if (id != null) supabaseQuery.bonus2_id = id;
+          if (range)      { supabaseQuery.bonus2_value_min = range.min;
+                            supabaseQuery.bonus2_value_max = range.max; }
+          weav3rQuery.bonus2 = b.name;
+        }
+      });
+
+      const primaryKey = bonuses[0] ? String(bonuses[0].name).toLowerCase() : '';
+      const qTol = IntelSettings.getEffectiveQualityTolerance(primaryKey, intel);
+      const qv   = Number(item && item.quality);
+      if (Number.isFinite(qv)) {
+        const qr = similarity.calcRange(qv, qTol);
+        supabaseQuery.quality_min = qr.min;
+        supabaseQuery.quality_max = qr.max;
+        weav3rQuery.minQuality    = qr.min;
+        weav3rQuery.maxQuality    = qr.max;
+      }
+
+      const [history, live] = await Promise.all([
+        SupabaseClient.search(supabaseQuery).then(r => r.auctions || []).catch(() => []),
+        Weav3rClient.search(weav3rQuery).then(r => r.weapons || []).catch(() => []),
+      ]);
+      return { history, live };
+    },
   };
 
   // ─── Test seam (ADR-0002) ────────────────────────────────────────────────────
@@ -2701,6 +2957,11 @@
     IntelSettings,
     similarity,
     PricingEngine,
+    Cache,
+    SupabaseClient,
+    Weav3rClient,
+    BONUS_DATA,
+    BONUS_NAME_TO_ID,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
