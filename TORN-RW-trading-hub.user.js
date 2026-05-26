@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.2.4
+// @version      0.2.5
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.2.4';
+  const SCRIPT_VERSION = '0.2.5';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -68,6 +68,8 @@
       lastScan: 0,            // epoch ms of the last completed scan
       sellPreview: null,      // null | { rows, summary, summaryText } — parsed sells awaiting commit
       sellMessage: '',        // transient feedback for the Log-a-sale box
+      priceCheckId: null,     // null | itemId — the row whose Price-check panel is open
+      priceCheckResults: {},  // { [itemId]: { loading?, error?, suggest?, verdict?, listPrice? } }
     },
     advertise: {
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
@@ -362,7 +364,7 @@
     return b.map(x => (x.value != null ? `${x.name} ${x.value}%` : x.name)).join(', ');
   }
 
-  function buildLedgerRow(item, expanded) {
+  function buildLedgerRow(item, expanded, ctx) {
     const bonus = fmtBonuses(item);
     let statusCell;
     if (item.status === 'sold') {
@@ -380,6 +382,9 @@
         ${statusCell}
       </div>`;
     if (!expanded) return `<div class="rwth-row">${head}</div>`;
+    const c = ctx || {};
+    const ledgerIntelOn = c.intelLedger !== false;
+    const panelOpen = ledgerIntelOn && c.priceCheckId === item.id;
     const detail = `<div class="rwth-row-detail">
         <div class="rwth-row-meta">
           <span>Quality: ${item.quality != null ? item.quality + '%' : '—'}</span>
@@ -393,11 +398,53 @@
           ${item.status === 'sold'
             ? `<button class="rwth-btn-sm" type="button" data-action="promote-tx" data-id="${item.id}">+ Recent Transactions</button>`
             : ''}
+          ${ledgerIntelOn
+            ? `<button class="rwth-btn-sm${panelOpen ? ' rwth-btn-on' : ''}" type="button" data-action="price-check" data-id="${item.id}">Price check</button>`
+            : ''}
           <button class="rwth-btn-sm" type="button" data-action="edit-item" data-id="${item.id}">edit</button>
           <button class="rwth-btn-sm rwth-btn-danger" type="button" data-action="delete-item" data-id="${item.id}">delete</button>
         </div>
+        ${panelOpen ? buildPriceCheckPanel(item, (c.priceCheckResults || {})[item.id]) : ''}
       </div>`;
     return `<div class="rwth-row rwth-row-expanded">${head}${detail}</div>`;
+  }
+
+  // Per-row Price-check panel — synchronous from MEM. The runPriceCheck flow
+  // writes loading/result/error into MEM.ledger.priceCheckResults[id] and
+  // triggers a render; this function reads the latest snapshot to draw.
+  function buildPriceCheckPanel(item, state) {
+    const s = state || {};
+    if (s.loading) {
+      return `<div class="rwth-price-panel rwth-tier-loading">⟳ checking comps…</div>`;
+    }
+    if (s.error) {
+      return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}</div>`;
+    }
+    if (!s.suggest) {
+      return `<div class="rwth-price-panel rwth-tier-none">no comp</div>`;
+    }
+    const { expected, suggestedList, projectedNet, profit, roi } = s.suggest;
+    const v = s.verdict || {};
+    const profitCls = profit >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+    const mathParts = [];
+    if (v.reference != null && v.compsUsed != null) {
+      mathParts.push(`${v.compsUsed} comps · ±${v.tolerance}%`);
+      if (v.slopeProjection != null && item.quality != null) {
+        mathParts.push(`slope ${fmtChatPrice(v.slopeProjection)} at ${item.quality}% q`);
+      }
+    }
+    const mathLine = mathParts.length
+      ? `<div class="rwth-price-math">${mathParts.join(' · ')}</div>` : '';
+    return `<div class="rwth-price-panel">
+        <div class="rwth-price-grid">
+          <span>Expected sale</span><span>${fmtMoney(expected)}</span>
+          <span>Suggested list</span><span>${fmtMoney(suggestedList)}</span>
+          <span>Projected net</span><span>${fmtMoney(projectedNet)}</span>
+          <span>Profit</span><span class="${profitCls}">${profit >= 0 ? '+' : ''}${fmtMoney(profit)}</span>
+          <span>ROI</span><span class="${profitCls}">${roi >= 0 ? '+' : ''}${roi}%</span>
+        </div>
+        ${mathLine}
+      </div>`;
   }
 
   function buildLedgerForm(mem) {
@@ -628,8 +675,14 @@
       `<button class="rwth-filter${f === filter ? ' rwth-filter-active' : ''}" type="button"
                data-filter="${f}">${f}</button>`).join('');
 
+    const intel = (mem && mem.intel) || MEM.intel;
+    const rowCtx = {
+      intelLedger: !!(intel.enabled && intel.enabled.ledger),
+      priceCheckId: L.priceCheckId,
+      priceCheckResults: L.priceCheckResults || {},
+    };
     const list = filtered.length
-      ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId)).join('')
+      ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId, rowCtx)).join('')
       : `<div class="rwth-placeholder">No ${filter === 'all' ? '' : filter + ' '}items yet.</div>`;
 
     const scanning = !!L.scanning;
@@ -1539,7 +1592,10 @@
       const rowToggle = e.target.closest('[data-row-toggle]');
       if (rowToggle) {
         const id = rowToggle.dataset.rowToggle;
-        setState({ ledger: { ...MEM.ledger, expandedId: MEM.ledger.expandedId === id ? null : id } });
+        const nextExpanded = MEM.ledger.expandedId === id ? null : id;
+        const nextPriceCheck = nextExpanded === MEM.ledger.priceCheckId
+          ? MEM.ledger.priceCheckId : null;
+        setState({ ledger: { ...MEM.ledger, expandedId: nextExpanded, priceCheckId: nextPriceCheck } });
         return;
       }
       const filterBtn = e.target.closest('[data-filter]');
@@ -1574,6 +1630,7 @@
         case 'commit-sells':  commitSells(); break;
         case 'cancel-sells':  setState({ ledger: { ...MEM.ledger, sellPreview: null, sellMessage: '' } }); break;
         case 'mark-listed':   Ledger.markListed(id); break;
+        case 'price-check':   togglePriceCheck(id); break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
         case 'add-tx':        addTransaction(); break;
         case 'remove-tx':     removeTransaction(id); break;
@@ -1798,6 +1855,63 @@
     },
     markListed(id) { Ledger.update(id, { status: 'listed' }); },
   };
+
+  // Per-row Price-check toggle. Closes if already open; otherwise opens with a
+  // loading panel and kicks off the async fetch. Composite {history, live} comp
+  // result is cached via the shared rwth_cache_ store (key: pricecheck:<sig>)
+  // so a second click within the 5-minute TTL never hits the network.
+  function togglePriceCheck(id) {
+    if (!MEM.intel.enabled.ledger) return;
+    if (MEM.ledger.priceCheckId === id) {
+      setState({ ledger: { ...MEM.ledger, priceCheckId: null } });
+      return;
+    }
+    const item = (MEM.ledger.items || []).find(i => i.id === id);
+    if (!item) return;
+    const results = { ...(MEM.ledger.priceCheckResults || {}) };
+    results[id] = { loading: true };
+    setState({ ledger: { ...MEM.ledger, priceCheckId: id, priceCheckResults: results } });
+    void runPriceCheck(item);
+  }
+
+  async function runPriceCheck(item) {
+    const intel = MEM.intel;
+    const cacheKey = 'pricecheck:' + JSON.stringify({
+      n: item.itemName, b: item.bonuses, q: item.quality, c: itemCategory(item),
+      e: intel.enabled.ledger,
+      d: intel.defaults, ov: intel.bonuses,
+    });
+    let composite = Cache.get(cacheKey);
+    if (!composite) {
+      try {
+        composite = await PricingEngine.fetchComps(item, intel);
+        Cache.set(cacheKey, composite);
+      } catch {
+        writePriceCheckResult(item.id, { error: 'fetch failed' });
+        return;
+      }
+    }
+    const comps = [...(composite.history || []), ...(composite.live || [])]
+      .map(compShape).filter(Boolean);
+    if (!comps.length) {
+      writePriceCheckResult(item.id, { error: 'no comp' });
+      return;
+    }
+    const verdict = PricingEngine.verdict(
+      { price: item.buyPrice || 0, quality: item.quality || 0 }, comps);
+    const suggest = PricingEngine.ledgerSuggest(comps, item.buyPrice || 0, {
+      markup: intel.markup, mugBuffer: intel.mugBuffer,
+    });
+    writePriceCheckResult(item.id, { verdict, suggest });
+  }
+
+  function writePriceCheckResult(id, patch) {
+    // Honour intel-disable / panel-closed races — never resurrect a closed panel.
+    if (!MEM.intel.enabled.ledger) return;
+    if (MEM.ledger.priceCheckId !== id) return;
+    const results = { ...(MEM.ledger.priceCheckResults || {}), [id]: patch };
+    setState({ ledger: { ...MEM.ledger, priceCheckResults: results } });
+  }
 
   // Collect the add/edit form from the DOM on Save — reading on click (not per
   // keystroke) keeps render() from firing mid-typing.
@@ -2553,6 +2667,19 @@
       .rwth-tier-none    { background: #1a1a1a; color: #8aa;    border-color: #444; }
       .rwth-tier-loading { background: #11251a; color: #8aa898; border-color: #2a4738;
                            font-style: italic; }
+
+      /* Ledger per-row Price-check panel. */
+      .rwth-price-panel {
+        margin-top: 4px; padding: 8px 10px;
+        background: #0a1420; color: #cfe;
+        border: 1px solid #00e5ff44; border-radius: 4px;
+        font: 11px Consolas, monospace; line-height: 1.5;
+      }
+      .rwth-price-grid {
+        display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
+      }
+      .rwth-price-grid > span:nth-child(odd) { color: #8aa; }
+      .rwth-price-math { margin-top: 6px; color: #8aa; }
     `;
     document.head.appendChild(style);
   }
