@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.2.5
+// @version      0.2.6
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.2.5';
+  const SCRIPT_VERSION = '0.2.6';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3048,18 +3048,26 @@
         const val = Number(b.value);
         const hasVal = Number.isFinite(val);
         const range  = hasVal ? similarity.calcRange(val, tol) : null;
+        // Value filters without a resolved bonus id collapse the comp set —
+        // drop them when id can't be looked up (mirrors Price Checker).
         if (i === 0) {
-          if (id != null) supabaseQuery.bonus1_id = id;
-          if (range)      { supabaseQuery.bonus1_value_min = range.min;
-                            supabaseQuery.bonus1_value_max = range.max; }
+          if (id != null) {
+            supabaseQuery.bonus1_id = id;
+            if (range) { supabaseQuery.bonus1_value_min = range.min;
+                         supabaseQuery.bonus1_value_max = range.max; }
+          }
           weav3rQuery.bonus1 = b.name;
           if (range) { weav3rQuery.minBonus1Value = range.min;
                        weav3rQuery.maxBonus1Value = range.max; }
         } else {
-          if (id != null) supabaseQuery.bonus2_id = id;
-          if (range)      { supabaseQuery.bonus2_value_min = range.min;
-                            supabaseQuery.bonus2_value_max = range.max; }
+          if (id != null) {
+            supabaseQuery.bonus2_id = id;
+            if (range) { supabaseQuery.bonus2_value_min = range.min;
+                         supabaseQuery.bonus2_value_max = range.max; }
+          }
           weav3rQuery.bonus2 = b.name;
+          if (range) { weav3rQuery.minBonus2Value = range.min;
+                       weav3rQuery.maxBonus2Value = range.max; }
         }
       });
 
@@ -3251,6 +3259,18 @@
         AuctionScanner._sweep();
       }, 80);
     },
+    _isExpanded(info) {
+      if (!info) return false;
+      // Inline display:none rules it out.
+      if (info.style && info.style.display === 'none') return false;
+      // Torn toggles expansion via class/state, not always inline style — fall
+      // back to "has actual property children visible".
+      if (info.offsetParent === null && !(info.getClientRects && info.getClientRects().length))
+        return false;
+      const hasProps = info.querySelector(
+        'li.propertyWrapper___xSOH1, li[class*="propertyWrapper___"]');
+      return !!hasProps;
+    },
     _sweep() {
       if (!MEM.intel.enabled.auction) return;
       if (!AuctionScanner._onAmarket()) return;
@@ -3258,18 +3278,23 @@
       for (const li of lis) {
         if (!li.querySelector || !li.querySelector('.item-cont-wrap')) continue;
         const info = li.querySelector('.show-item-info');
-        if (!info || info.style.display === 'none') continue;
-        if (AuctionScanner._processed.has(info)) continue;
-        AuctionScanner._processed.add(info);
+        if (!info) continue;
+        if (!AuctionScanner._isExpanded(info)) continue;
+        // Track by row li (stable) instead of info node (Torn may re-mount).
+        if (AuctionScanner._processed.has(li)) continue;
+        AuctionScanner._processed.add(li);
         AuctionScanner._handle(li, info);
       }
     },
     async _handle(li, info) {
       InlineRenderer.renderAuctionBadge(info, { loading: true });
       let parsed = null;
-      try { parsed = DomScanner.parseAuctionRow(li); } catch {}
+      try { parsed = DomScanner.parseAuctionRow(li); } catch (e) {
+        console.warn('[rwth] parseAuctionRow threw', e);
+      }
+      console.debug('[rwth] auction parsed', parsed);
       if (!parsed || !parsed.itemName) {
-        InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
+        InlineRenderer.renderAuctionBadge(info, { error: 'no name' });
         return;
       }
       const listingPrice = readAuctionListingPrice(li);
@@ -3279,15 +3304,18 @@
         quality: parsed.quality,
         type: parsed.itemType,
       };
-      let comps = [];
+      let r;
       try {
-        const r = await PricingEngine.fetchComps(item);
-        comps = [...(r.history || []), ...(r.live || [])]
-          .map(compShape).filter(Boolean);
-      } catch {
-        InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
+        r = await PricingEngine.fetchComps(item);
+      } catch (e) {
+        console.warn('[rwth] fetchComps threw', e);
+        InlineRenderer.renderAuctionBadge(info, { error: 'fetch err' });
         return;
       }
+      console.debug('[rwth] auction comps raw',
+        { history: (r.history || []).length, live: (r.live || []).length, sample: (r.history || r.live || [])[0] });
+      const comps = [...(r.history || []), ...(r.live || [])]
+        .map(compShape).filter(Boolean);
       if (!comps.length) {
         InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
         return;
