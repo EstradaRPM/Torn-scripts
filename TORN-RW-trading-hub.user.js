@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.2.3
+// @version      0.2.4
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.2.3';
+  const SCRIPT_VERSION = '0.2.4';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1699,6 +1699,7 @@
     });
     Store.set('rwth_intel_settings', nextIntel);
     setState({ settings: next, intel: nextIntel });
+    AuctionScanner.refresh();
 
     const status = document.getElementById('rwth-settings-status');
     if (!status) return;
@@ -2535,6 +2536,23 @@
       @media (max-width: 480px) {
         #rwth-panel { width: calc(100vw - 24px); right: 12px; }
       }
+
+      /* Inline auction verdict badge — background-filled so it reads on both
+         Torn light and dark themes; tier colour drives bg + text + border. */
+      .rwth-auction-badge {
+        display: block; margin: 6px 0 0;
+        padding: 6px 10px; border-radius: 4px;
+        font: 600 11px Consolas, monospace; line-height: 1.4;
+        background: #0a1420; color: #cfe;
+        border: 1px solid #00e5ff44;
+      }
+      .rwth-tier-good    { background: #103a1d; color: #7ed098; border-color: #2c5e3b; }
+      .rwth-tier-fair    { background: #102232; color: #5dc6f0; border-color: #2a4d70; }
+      .rwth-tier-over    { background: #3a1414; color: #ff8a8a; border-color: #6e2a2a; }
+      .rwth-tier-thin    { background: #2a2410; color: #e8c97e; border-color: #5a4a20; }
+      .rwth-tier-none    { background: #1a1a1a; color: #8aa;    border-color: #444; }
+      .rwth-tier-loading { background: #11251a; color: #8aa898; border-color: #2a4738;
+                           font-style: italic; }
     `;
     document.head.appendChild(style);
   }
@@ -2937,6 +2955,247 @@
     },
   };
 
+  // ─── DomScanner — pure parse of an expanded item-info block ────────────────
+  // Mirrors the Price Checker's parseAuctionRow + parseItemMarketRow, but
+  // normalises bonuses to { name, value } so PricingEngine.fetchComps can
+  // resolve the id via BONUS_NAME_TO_ID. Pure: the impure caller hands in DOM
+  // nodes; exposed via __RwthPure for fixture testing.
+  const DomScanner = {
+    parseItemMarketRow(container) {
+      const out = { itemName: '', parsedBonuses: [], quality: null, itemType: 'weapon' };
+      if (!container || !container.querySelector) return out;
+      const nameEl = container.querySelector('.description___xJ1N5 .bold')
+        || container.querySelector('[class*="description___"] .bold');
+      if (nameEl) out.itemName = nameEl.textContent.trim().replace(/^The\s+/i, '');
+
+      const properties = container.querySelectorAll(
+        'li.propertyWrapper___xSOH1, li[class*="propertyWrapper___"]');
+      for (const prop of properties) {
+        const titleEl = prop.querySelector('[class*="title___"]');
+        if (!titleEl) continue;
+        const title = titleEl.textContent.trim();
+        if (title === 'Damage:') out.itemType = 'weapon';
+        else if (title === 'Armor:') out.itemType = 'armor';
+        if (title === 'Quality:') {
+          const v = prop.querySelector('[aria-label*="Quality"]');
+          const m = v && (v.getAttribute('aria-label') || '').match(/([\d.]+)%?\s*Quality/i);
+          if (m) out.quality = parseFloat(m[1]);
+        }
+        if (title === 'Bonus:') {
+          const v = prop.querySelector('[aria-label*="Bonus"]');
+          const aria = v ? (v.getAttribute('aria-label') || '') : '';
+          const m1 = aria.match(/([\d.]+)\s*(?:%|T)?\s*(.+?)\s*Bonus/i);
+          if (m1) out.parsedBonuses.push({ name: m1[2].trim(), value: parseFloat(m1[1]) });
+          else {
+            const m2 = aria.match(/^\s*(.+?)\s*Bonus/i);
+            if (m2) out.parsedBonuses.push({ name: m2[1].trim(), value: null });
+          }
+        }
+      }
+      return out;
+    },
+    parseAuctionRow(li) {
+      if (!li || !li.querySelector) return null;
+      const titleEl = li.querySelector('.item-name');
+      const titleName = titleEl ? titleEl.textContent.trim() : '';
+      const info = li.querySelector('.show-item-info');
+      if (!info) {
+        return { itemName: titleName, parsedBonuses: [], quality: null, itemType: 'weapon' };
+      }
+      const inner = DomScanner.parseItemMarketRow(info);
+      return {
+        itemName: titleName || inner.itemName,
+        parsedBonuses: inner.parsedBonuses,
+        quality: inner.quality,
+        itemType: inner.itemType,
+      };
+    },
+  };
+
+  // Best-effort current price for an auction li. Scans likely price-bearing
+  // nodes inside the row and returns the largest dollar value found (current
+  // bid / buyout). Null when nothing parseable is on the row.
+  function readAuctionListingPrice(li) {
+    if (!li || !li.querySelectorAll) return null;
+    const nodes = li.querySelectorAll(
+      '[class*="price"], [class*="Price"], [class*="cost"], [class*="Cost"], '
+      + '[class*="bid"], [class*="Bid"], [class*="buyout"], [class*="Buyout"]');
+    let best = null;
+    for (const el of nodes) {
+      const txt = (el.textContent || '').replace(/[,\s]/g, '');
+      const m = txt.match(/\$(\d+)/);
+      if (m) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && (best == null || n > best)) best = n;
+      }
+    }
+    return best;
+  }
+
+  // Flatten a Supabase auction or weav3r weapon record to a verdict-ready
+  // { price, quality } shape. Returns null if no usable price field.
+  function compShape(c) {
+    if (!c || typeof c !== 'object') return null;
+    const p = Number(c.price != null ? c.price
+              : c.final_price != null ? c.final_price
+              : c.cost != null ? c.cost
+              : c.buyout != null ? c.buyout : NaN);
+    if (!Number.isFinite(p)) return null;
+    const q = Number(c.quality != null ? c.quality : NaN);
+    return { price: p, quality: Number.isFinite(q) ? q : 0 };
+  }
+
+  // ─── InlineRenderer (impure) ────────────────────────────────────────────────
+  // Idempotent badge slot inside an expanded item-info block. One badge per
+  // row; subsequent renders overwrite the existing element.
+  const InlineRenderer = {
+    BADGE_CLASS: 'rwth-auction-badge',
+    _slot(infoEl) {
+      if (!infoEl) return null;
+      const anchor = infoEl.querySelector('.descriptionWrapper___Lh0y0') || infoEl;
+      let badge = anchor.querySelector(':scope > .' + InlineRenderer.BADGE_CLASS);
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.className = InlineRenderer.BADGE_CLASS;
+        if (!anchor.style.position) anchor.style.position = 'relative';
+        anchor.appendChild(badge);
+      }
+      return badge;
+    },
+    renderAuctionBadge(infoEl, state) {
+      const badge = InlineRenderer._slot(infoEl);
+      if (!badge) return;
+      const s = state || {};
+      if (s.loading) {
+        badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-loading';
+        badge.textContent = '⟳ checking…';
+        return;
+      }
+      if (s.error) {
+        badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
+        badge.textContent = s.error;
+        return;
+      }
+      const v = s.verdict;
+      if (!v || v.tier === 'none') {
+        badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
+        badge.textContent = 'no comp';
+        return;
+      }
+      const labels = { good: 'Good', fair: 'Fair', over: 'Over', thin: 'Thin' };
+      const tierLabel = labels[v.tier] || v.tier;
+      badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-' + v.tier;
+      const parts = [tierLabel];
+      if (s.listingPrice != null && v.reference != null) {
+        parts.push(`${fmtChatPrice(s.listingPrice)} vs ${fmtChatPrice(v.reference)} median`);
+      } else if (v.reference != null) {
+        parts.push(`${fmtChatPrice(v.reference)} median`);
+      }
+      parts.push(`(${v.compsUsed} comps · ±${v.tolerance}%)`);
+      if (v.slopeProjection != null && s.listingQuality != null) {
+        parts.push(`slope ${fmtChatPrice(v.slopeProjection)} at ${s.listingQuality}% q`);
+      }
+      badge.textContent = parts.join(' · ');
+    },
+    removeAll() {
+      if (typeof document === 'undefined') return;
+      document.querySelectorAll('.' + InlineRenderer.BADGE_CLASS).forEach(b => b.remove());
+    },
+  };
+
+  // ─── AuctionScanner (impure) ────────────────────────────────────────────────
+  // amarket.php only. MutationObserver fires a debounced sweep that walks every
+  // expanded auction row; idempotent via a WeakSet so re-expansion never
+  // refetches or duplicates a badge. Detaches and clears badges when the intel
+  // toggle is off or the user navigates off amarket.
+  const AuctionScanner = {
+    _observer: null,
+    _processed: new WeakSet(),
+    _scheduled: false,
+    _onAmarket() {
+      try { return /amarket\.php/i.test(location.pathname + location.search); }
+      catch { return false; }
+    },
+    _scheduleSweep() {
+      if (AuctionScanner._scheduled) return;
+      AuctionScanner._scheduled = true;
+      setTimeout(() => {
+        AuctionScanner._scheduled = false;
+        AuctionScanner._sweep();
+      }, 80);
+    },
+    _sweep() {
+      if (!MEM.intel.enabled.auction) return;
+      if (!AuctionScanner._onAmarket()) return;
+      const lis = document.querySelectorAll('li');
+      for (const li of lis) {
+        if (!li.querySelector || !li.querySelector('.item-cont-wrap')) continue;
+        const info = li.querySelector('.show-item-info');
+        if (!info || info.style.display === 'none') continue;
+        if (AuctionScanner._processed.has(info)) continue;
+        AuctionScanner._processed.add(info);
+        AuctionScanner._handle(li, info);
+      }
+    },
+    async _handle(li, info) {
+      InlineRenderer.renderAuctionBadge(info, { loading: true });
+      let parsed = null;
+      try { parsed = DomScanner.parseAuctionRow(li); } catch {}
+      if (!parsed || !parsed.itemName) {
+        InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
+        return;
+      }
+      const listingPrice = readAuctionListingPrice(li);
+      const item = {
+        itemName: parsed.itemName,
+        bonuses: parsed.parsedBonuses,
+        quality: parsed.quality,
+        type: parsed.itemType,
+      };
+      let comps = [];
+      try {
+        const r = await PricingEngine.fetchComps(item);
+        comps = [...(r.history || []), ...(r.live || [])]
+          .map(compShape).filter(Boolean);
+      } catch {
+        InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
+        return;
+      }
+      if (!comps.length) {
+        InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
+        return;
+      }
+      const verdict = PricingEngine.verdict(
+        { price: listingPrice || 0, quality: item.quality || 0 }, comps);
+      InlineRenderer.renderAuctionBadge(info, {
+        verdict, listingPrice, listingQuality: item.quality,
+      });
+    },
+    start() {
+      if (!AuctionScanner._onAmarket()) return;
+      if (AuctionScanner._observer) return;
+      if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
+      AuctionScanner._observer = new MutationObserver(() => AuctionScanner._scheduleSweep());
+      AuctionScanner._observer.observe(document.body, {
+        childList: true, subtree: true,
+        attributes: true, attributeFilter: ['style', 'class'],
+      });
+      AuctionScanner._scheduleSweep();
+    },
+    stop() {
+      if (AuctionScanner._observer) {
+        AuctionScanner._observer.disconnect();
+        AuctionScanner._observer = null;
+      }
+      AuctionScanner._processed = new WeakSet();
+      InlineRenderer.removeAll();
+    },
+    refresh() {
+      if (AuctionScanner._onAmarket() && MEM.intel.enabled.auction) AuctionScanner.start();
+      else AuctionScanner.stop();
+    },
+  };
+
   // ─── Test seam (ADR-0002) ────────────────────────────────────────────────────
   // Pure functions exposed for the Node test runner. More are added in later slices.
   globalThis.__RwthPure = {
@@ -2962,6 +3221,8 @@
     Weav3rClient,
     BONUS_DATA,
     BONUS_NAME_TO_ID,
+    DomScanner,
+    compShape,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
@@ -2969,6 +3230,16 @@
     hydrate();
     render();          // builds the shell (hidden until MEM.ui.open)
     startLauncher();
+    AuctionScanner.refresh();
+    // SPA-aware: Torn navigates without full reload, so poll for href changes
+    // and reconcile the scanner's attach state with the new URL.
+    let lastHref = location.href;
+    setInterval(() => {
+      if (location.href !== lastHref) {
+        lastHref = location.href;
+        AuctionScanner.refresh();
+      }
+    }, 800);
   }
 
   if (!TEST) {
