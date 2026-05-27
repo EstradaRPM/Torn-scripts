@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.1
+// @version      0.3.2
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.1';
+  const SCRIPT_VERSION = '0.3.2';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -958,17 +958,7 @@
   // Items split into Primary/Secondary/Melee/Armor for the advertise outputs.
   // The split is driven by Torn's own item `type` field — cached by ItemDict
   // from /v2/torn/items — so every weapon Torn knows is mapped automatically.
-  // WEAPON_CATEGORY is only an offline fallback for common RW items used before
-  // the dictionary has been fetched (first run, pre-scan).
-  const WEAPON_CATEGORY = {
-    'Enfield SA-80': 'Primary',
-    'Sub-Machine Gun': 'Primary',
-    'Heavy Machine Gun': 'Primary',
-    'Light Anti-Tank Weapon': 'Primary',
-    'Rocket-Propelled Grenade Launcher': 'Primary',
-    'Cobra Derringer': 'Secondary',
-    'Diamond Bladed Knife': 'Melee',
-  };
+  // Pre-dictionary first runs fall through to 'Other'.
   const CATEGORY_ORDER = ['Primary', 'Secondary', 'Melee', 'Armor', 'Other'];
 
   // Normalise a Torn item `type` to an advertise category. Weapon classes pass
@@ -993,7 +983,7 @@
     const fromDict = cats && cats[name.toLowerCase()];
     if (fromDict) return fromDict;
     if (item && item.type === 'armor') return 'Armor';
-    return WEAPON_CATEGORY[name] || 'Other';
+    return 'Other';
   }
 
   // The four user-pickable advertise categories (Other is resolved, not picked).
@@ -2005,6 +1995,125 @@
       return (c && c.cats) || {};
     },
   };
+
+  // ─── ItemClassifier — name → { rarity, category, armorSet, weaponBase, isTrash, isBBFloorEligible }
+  // Pure `classify` reads a pre-fetched items dictionary (Torn `/v2/torn/items`),
+  // mapped by item name. Impure `fetchItemsDict` fetches once per 24h to
+  // `rwth_items_dict`. The classifier routes BB-floor eligibility for armor sets
+  // (Riot/Dune) and curated trash weapons; everything else is informational.
+  const ARMOR_SETS = ['Riot', 'Dune', 'Assault', 'Impregnable', 'EOD'];
+  const ITEMS_DICT_TTL_MS = 24 * 60 * 60 * 1000;
+
+  // Maps Torn's weapon_class / sub_type strings to the keys BBEngine.MULTIPLIERS uses.
+  function normWeaponBase(raw) {
+    const s = String(raw || '').toLowerCase().trim();
+    if (!s) return null;
+    if (s === 'pistol' || s === 'pistols') return 'pistol';
+    if (s === 'sub-machine gun' || s === 'smg' || s === 'sub machine gun') return 'smg';
+    if (s === 'shotgun' || s === 'shotguns') return 'shotgun';
+    if (s === 'rifle' || s === 'rifles') return 'rifle';
+    if (s === 'machine gun' || s === 'machine guns') return 'machine gun';
+    if (s === 'heavy artillery' || s === 'heavy artillery weapon') return 'heavy artillery';
+    if (s === 'clubbing' || s === 'club') return 'club';
+    if (s === 'piercing') return 'piercing';
+    if (s === 'slashing') return 'slashing';
+    return s;
+  }
+
+  const ItemClassifier = {
+    ARMOR_SETS,
+    classify(itemName, itemsDict, opts) {
+      const name = String(itemName || '').trim();
+      const dict = itemsDict || {};
+      const meta = dict[name] || dict[name.toLowerCase()] || null;
+      const rarity = meta && meta.rarity
+        ? String(meta.rarity).toLowerCase() : null;
+      const typeRaw = meta ? String(meta.type || '').toLowerCase() : '';
+      let category = 'other';
+      if (typeRaw === 'defensive' || typeRaw === 'armor') category = 'armor';
+      else if (typeRaw === 'primary' || typeRaw === 'secondary' || typeRaw === 'melee') category = 'weapon';
+
+      let armorSet = null;
+      if (category === 'armor') {
+        for (const s of ARMOR_SETS) {
+          if (name === s || name.startsWith(s + ' ')) { armorSet = s; break; }
+        }
+      }
+
+      let weaponBase = null;
+      if (category === 'weapon') {
+        const raw = meta && (meta.weapon_class || meta.sub_type || meta.subType);
+        weaponBase = normWeaponBase(raw);
+      }
+
+      const trashSet = opts && opts.trashSet;
+      const isTrash = category === 'weapon' && !!(trashSet && (
+        (trashSet.has && trashSet.has(name)) ||
+        (Array.isArray(trashSet) && trashSet.indexOf(name) !== -1)
+      ));
+
+      const isBBFloorEligible =
+        (category === 'armor' && (armorSet === 'Riot' || armorSet === 'Dune'))
+        || isTrash;
+
+      return { rarity, category, armorSet, weaponBase, isTrash, isBBFloorEligible };
+    },
+    // Sync read of the cached dict — null until fetchItemsDict has populated it.
+    getDict() {
+      const c = Store.get('rwth_items_dict');
+      if (!c || !c.byName) return null;
+      return c.byName;
+    },
+    async fetchItemsDict(opts) {
+      const force = !!(opts && opts.force);
+      const cached = Store.get('rwth_items_dict');
+      if (!force && cached && cached.ts && cached.byName
+          && Date.now() - cached.ts < ITEMS_DICT_TTL_MS) {
+        return cached.byName;
+      }
+      const key = (MEM.settings && MEM.settings.apiKey || '').trim();
+      if (!key || /^#+PDA-APIKEY#+$/.test(key)) return null;
+      const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
+      const d = await res.json();
+      if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+      const byName = {};
+      const record = (it) => {
+        if (!it || !it.name) return;
+        byName[it.name] = {
+          id: it.id,
+          name: it.name,
+          type: it.type || null,
+          sub_type: it.sub_type || null,
+          weapon_class: it.weapon_class || null,
+          rarity: it.rarity || null,
+        };
+      };
+      const items = d && d.items;
+      if (Array.isArray(items)) items.forEach(record);
+      else if (items && typeof items === 'object') {
+        for (const id of Object.keys(items)) record(items[id]);
+      }
+      Store.set('rwth_items_dict', { ts: Date.now(), byName });
+      return byName;
+    },
+  };
+
+  // Pretty short-form class tag for the inline badge: `[Riot · yellow]` for
+  // recognised armor sets, `[Yellow weapon]` for plain weapons, `[trash · yellow]`
+  // when the curated trash flag is set. Empty when nothing classifies.
+  function formatClassTag(cls) {
+    if (!cls) return '';
+    const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
+    if (cls.category === 'armor') {
+      const parts = [cls.armorSet, cls.rarity].filter(Boolean);
+      return parts.length ? `[${parts.join(' · ')}]` : '';
+    }
+    if (cls.category === 'weapon') {
+      if (cls.isTrash) return `[trash${cls.rarity ? ' · ' + cls.rarity : ''}]`;
+      return cls.rarity ? `[${cap(cls.rarity)} weapon]` : '[weapon]';
+    }
+    return '';
+  }
 
   // ─── ItemDetails — uid → real stats/bonuses/rarity for one won item ──────────
   // The auction-win log carries the won item's unique id (data.item[0].uid).
@@ -3380,7 +3489,9 @@
       const labels = { good: 'Good', fair: 'Fair', over: 'Over', thin: 'Thin' };
       const tierLabel = labels[v.tier] || v.tier;
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-' + v.tier;
-      const parts = [tierLabel];
+      const parts = [];
+      if (s.classTag) parts.push(s.classTag);
+      parts.push(tierLabel);
       if (s.listingPrice != null && v.reference != null) {
         parts.push(`${fmtChatPrice(s.listingPrice)} vs ${fmtChatPrice(v.reference)} median`);
       } else if (v.reference != null) {
@@ -3496,18 +3607,26 @@
       }
       const verdict = PricingEngine.verdict(
         { price: listingPrice || 0, quality: item.quality || 0 }, comps);
-      // BB floor — informational only. Armor takes rarity directly; weapon
-      // class lookup arrives in the ItemClassifier slice, so weapon floors
-      // stay null until then.
+      // Resolve item class from the cached items dict. Falls back to DOM-parsed
+      // type/rarity when the dict has not been fetched yet.
+      const dict = ItemClassifier.getDict();
+      const cls = dict ? ItemClassifier.classify(parsed.itemName, dict) : null;
+      const category = (cls && cls.category) || (parsed.itemType === 'armor' ? 'armor' : 'weapon');
+      const rarity = (cls && cls.rarity) || parsed.rarity || null;
+      const classTag = cls
+        ? formatClassTag({ ...cls, rarity })
+        : formatClassTag({ category, rarity });
+      // BB floor — informational only. Armor takes 'armor' as the class key;
+      // weapons use the resolved weaponBase (pistol/rifle/etc).
       const bbRate = MEM.bbRate && MEM.bbRate.rate;
-      const itemClass = parsed.itemType === 'armor' ? 'armor' : null;
-      const bbFloor = itemClass && parsed.rarity && bbRate
-        ? BBEngine.calculateFloor(itemClass, parsed.rarity, bbRate,
+      const bbClassKey = category === 'armor' ? 'armor' : (cls && cls.weaponBase) || null;
+      const bbFloor = bbClassKey && rarity && bbRate
+        ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
             { bonusCount: (parsed.parsedBonuses || []).length })
         : null;
       InlineRenderer.renderAuctionBadge(info, {
         verdict, listingPrice, listingQuality: item.quality, bbFloor,
-        askingMedian, askingCount,
+        askingMedian, askingCount, classTag,
       });
     },
     start() {
@@ -3556,6 +3675,8 @@
     similarity,
     PricingEngine,
     BBEngine,
+    ItemClassifier,
+    formatClassTag,
     Cache,
     SupabaseClient,
     Weav3rClient,
@@ -3573,6 +3694,7 @@
     // Warm the BB rate in the background — 1h TTL means at most one fetch per
     // hour and the cached value drives the badge until then.
     BBEngine.fetchBBRate().catch(() => {});
+    ItemClassifier.fetchItemsDict().catch(() => {});
     AuctionScanner.refresh();
     // SPA-aware: Torn navigates without full reload, so poll for href changes
     // and reconcile the scanner's attach state with the new URL.

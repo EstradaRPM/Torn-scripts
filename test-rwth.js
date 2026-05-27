@@ -551,3 +551,71 @@ test('buildAdvertiseTab renders a per-item IMG button and opens its popover', ()
   assert.match(open, /data-adv-field="gyazoUrl"/);
   assert.match(open, /data-action="close-img"/);
 });
+
+test('ItemClassifier.classify — Riot Helmet (armor / Riot / yellow / BB-eligible)', () => {
+  const { ItemClassifier } = globalThis.__RwthPure;
+  const dict = {
+    'Riot Helmet': { name: 'Riot Helmet', type: 'Defensive', rarity: 'Yellow' },
+  };
+  const c = ItemClassifier.classify('Riot Helmet', dict);
+  assert.strictEqual(c.category, 'armor');
+  assert.strictEqual(c.armorSet, 'Riot');
+  assert.strictEqual(c.rarity, 'yellow');
+  assert.strictEqual(c.isBBFloorEligible, true);
+  assert.strictEqual(c.isTrash, false);
+});
+
+test('ItemClassifier.classify — Jackhammer (weapon / yellow / shotgun)', () => {
+  const { ItemClassifier } = globalThis.__RwthPure;
+  const dict = {
+    Jackhammer: { name: 'Jackhammer', type: 'Primary', rarity: 'Yellow', weapon_class: 'Shotgun' },
+  };
+  const c = ItemClassifier.classify('Jackhammer', dict);
+  assert.strictEqual(c.category, 'weapon');
+  assert.strictEqual(c.rarity, 'yellow');
+  assert.strictEqual(c.weaponBase, 'shotgun');
+  assert.strictEqual(c.isTrash, false);
+  assert.strictEqual(c.isBBFloorEligible, false);
+});
+
+test('ItemClassifier.classify — trash weapon (Lorcin L380 / yellow / isTrash + BB-eligible)', () => {
+  const { ItemClassifier } = globalThis.__RwthPure;
+  const dict = {
+    'Lorcin L380': { name: 'Lorcin L380', type: 'Secondary', rarity: 'Yellow', weapon_class: 'Pistol' },
+  };
+  const trashSet = new Set(['Lorcin L380']);
+  const c = ItemClassifier.classify('Lorcin L380', dict, { trashSet });
+  assert.strictEqual(c.category, 'weapon');
+  assert.strictEqual(c.rarity, 'yellow');
+  assert.strictEqual(c.isTrash, true);
+  assert.strictEqual(c.isBBFloorEligible, true);
+});
+
+test('ItemClassifier.classify — orange & red weapon samples carry through rarity', () => {
+  const { ItemClassifier } = globalThis.__RwthPure;
+  const dict = {
+    'ArmaLite M-15': { name: 'ArmaLite M-15', type: 'Primary', rarity: 'Orange', weapon_class: 'Rifle' },
+    'Nail Bomb':     { name: 'Nail Bomb',     type: 'Primary', rarity: 'Red',    weapon_class: 'Heavy Artillery' },
+  };
+  const o = ItemClassifier.classify('ArmaLite M-15', dict);
+  assert.strictEqual(o.rarity, 'orange');
+  assert.strictEqual(o.weaponBase, 'rifle');
+  const r = ItemClassifier.classify('Nail Bomb', dict);
+  assert.strictEqual(r.rarity, 'red');
+  assert.strictEqual(r.weaponBase, 'heavy artillery');
+});
+
+test('formatClassTag — armor with set, plain weapon, trash', () => {
+  const { formatClassTag } = globalThis.__RwthPure;
+  assert.strictEqual(formatClassTag({ category: 'armor', armorSet: 'Riot', rarity: 'yellow' }),
+                     '[Riot · yellow]');
+  assert.strictEqual(formatClassTag({ category: 'weapon', rarity: 'yellow' }), '[Yellow weapon]');
+  assert.strictEqual(formatClassTag({ category: 'weapon', rarity: 'yellow', isTrash: true }),
+                     '[trash · yellow]');
+});
+
+test('WEAPON_CATEGORY constant is removed', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, 'TORN-RW-trading-hub.user.js'), 'utf8');
+  assert.ok(!/\bWEAPON_CATEGORY\b/.test(src), 'WEAPON_CATEGORY references must be gone');
+});
