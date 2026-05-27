@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.0
+// @version      0.3.1
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.0';
+  const SCRIPT_VERSION = '0.3.1';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -423,11 +423,14 @@
     if (s.loading) {
       return `<div class="rwth-price-panel rwth-tier-loading">⟳ checking comps…</div>`;
     }
+    const askingLine = (s.askingCount && s.askingMedian != null)
+      ? `<div class="rwth-price-math">Asking: ${fmtMoney(s.askingMedian)} (${s.askingCount} listed)</div>`
+      : '';
     if (s.error) {
-      return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}${askingLine}</div>`;
     }
     if (!s.suggest) {
-      return `<div class="rwth-price-panel rwth-tier-none">no comp</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">no comp${askingLine}</div>`;
     }
     const { expected, suggestedList, projectedNet, profit, roi } = s.suggest;
     const v = s.verdict || {};
@@ -450,6 +453,7 @@
           <span>ROI</span><span class="${profitCls}">${roi >= 0 ? '+' : ''}${roi}%</span>
         </div>
         ${mathLine}
+        ${askingLine}
       </div>`;
   }
 
@@ -1882,7 +1886,9 @@
 
   async function runPriceCheck(item) {
     const intel = MEM.intel;
-    const cacheKey = 'pricecheck:' + JSON.stringify({
+    // v2: cache shape changed to { cleared, asking } (issue #267). Prefix bump
+    // avoids reading pre-v0.3.1 entries that still carry { history, live }.
+    const cacheKey = 'pricecheck:v2:' + JSON.stringify({
       n: item.itemName, b: item.bonuses, q: item.quality, c: itemCategory(item),
       e: intel.enabled.ledger,
       d: intel.defaults, ov: intel.bonuses,
@@ -1897,10 +1903,13 @@
         return;
       }
     }
-    const comps = [...(composite.history || []), ...(composite.live || [])]
-      .map(compShape).filter(Boolean);
+    // Action math uses cleared sales only — asking is shown as a spread line.
+    const comps        = (composite.cleared || []).map(compShape).filter(Boolean);
+    const askingShaped = (composite.asking  || []).map(compShape).filter(Boolean);
+    const askingMedian = _median(askingShaped.map(c => c.price));
+    const askingCount  = askingShaped.length;
     if (!comps.length) {
-      writePriceCheckResult(item.id, { error: 'no comp' });
+      writePriceCheckResult(item.id, { error: 'no comp', askingMedian, askingCount });
       return;
     }
     const verdict = PricingEngine.verdict(
@@ -1908,7 +1917,7 @@
     const suggest = PricingEngine.ledgerSuggest(comps, item.buyPrice || 0, {
       markup: intel.markup, mugBuffer: intel.mugBuffer,
     });
-    writePriceCheckResult(item.id, { verdict, suggest });
+    writePriceCheckResult(item.id, { verdict, suggest, askingMedian, askingCount });
   }
 
   function writePriceCheckResult(id, patch) {
@@ -3014,11 +3023,14 @@
     },
 
     /**
-     * fetchComps(item, intelSettings) → Promise<{ history, live }>
+     * fetchComps(item, intelSettings) → Promise<{ cleared, asking }>
      *
-     * Orchestrates Supabase (auction history) and weav3r (live market) in
-     * parallel. Applies effective per-bonus + quality tolerances via
-     * IntelSettings → similarity.calcRange to derive value/quality ranges.
+     * Orchestrates Supabase (auction-cleared sales) and weav3r (live item-market
+     * listings) in parallel and returns them as two distinct arrays — never
+     * blended (PRD Story 5/6, issue #267). `cleared` drives action math;
+     * `asking` is shown as an informational spread line.
+     * Applies effective per-bonus + quality tolerances via IntelSettings →
+     * similarity.calcRange to derive value/quality ranges.
      * Network errors degrade to empty arrays — never throws (PRD Story 10).
      *
      * item            – { itemName, bonuses: [{name,value},...], quality, category? }
@@ -3088,11 +3100,11 @@
         weav3rQuery.maxQuality    = qr.max;
       }
 
-      const [history, live] = await Promise.all([
+      const [cleared, asking] = await Promise.all([
         SupabaseClient.search(supabaseQuery).then(r => r.auctions || []).catch(() => []),
         Weav3rClient.search(weav3rQuery).then(r => r.weapons || []).catch(() => []),
       ]);
-      return { history, live };
+      return { cleared, asking };
     },
   };
 
@@ -3352,13 +3364,17 @@
       }
       if (s.error) {
         badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
-        badge.textContent = s.error;
+        const askPart = (s.askingCount && s.askingMedian != null)
+          ? ` · Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)` : '';
+        badge.textContent = s.error + askPart;
         return;
       }
       const v = s.verdict;
       if (!v || v.tier === 'none') {
         badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
-        badge.textContent = 'no comp';
+        const askPart = (s.askingCount && s.askingMedian != null)
+          ? ` · Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)` : '';
+        badge.textContent = 'no comp' + askPart;
         return;
       }
       const labels = { good: 'Good', fair: 'Fair', over: 'Over', thin: 'Thin' };
@@ -3376,6 +3392,9 @@
       }
       if (s.bbFloor != null) {
         parts.push(`BB floor ${fmtChatPrice(s.bbFloor)}`);
+      }
+      if (s.askingCount && s.askingMedian != null) {
+        parts.push(`Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)`);
       }
       badge.textContent = parts.join(' · ');
     },
@@ -3459,12 +3478,20 @@
         InlineRenderer.renderAuctionBadge(info, { error: 'fetch err' });
         return;
       }
+      const clearedRaw = r.cleared || [];
+      const askingRaw  = r.asking  || [];
       console.debug('[rwth] auction comps raw',
-        { history: (r.history || []).length, live: (r.live || []).length, sample: (r.history || r.live || [])[0] });
-      const comps = [...(r.history || []), ...(r.live || [])]
-        .map(compShape).filter(Boolean);
+        { cleared: clearedRaw.length, asking: askingRaw.length, sample: (clearedRaw[0] || askingRaw[0]) });
+      // Action math uses cleared sales only — asking prices are surfaced
+      // separately as a spread line (issue #267).
+      const comps        = clearedRaw.map(compShape).filter(Boolean);
+      const askingShaped = askingRaw.map(compShape).filter(Boolean);
+      const askingMedian = _median(askingShaped.map(c => c.price));
+      const askingCount  = askingShaped.length;
       if (!comps.length) {
-        InlineRenderer.renderAuctionBadge(info, { error: 'no comp' });
+        InlineRenderer.renderAuctionBadge(info, {
+          error: 'no comp', askingMedian, askingCount,
+        });
         return;
       }
       const verdict = PricingEngine.verdict(
@@ -3480,6 +3507,7 @@
         : null;
       InlineRenderer.renderAuctionBadge(info, {
         verdict, listingPrice, listingQuality: item.quality, bbFloor,
+        askingMedian, askingCount,
       });
     },
     start() {
