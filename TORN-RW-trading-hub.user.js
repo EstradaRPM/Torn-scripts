@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.2
+// @version      0.3.3
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.2';
+  const SCRIPT_VERSION = '0.3.3';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2792,6 +2792,24 @@
       .rwth-tier-loading { background: #11251a; color: #8aa898; border-color: #2a4738;
                            font-style: italic; }
 
+      /* v0.3.0 two-tier card — auction yellow-weapon path. Same anchor and
+         base look as the v0.2.x verdict badge; adds a headline + ladder grid. */
+      .rwth-card-headline {
+        display: flex; flex-wrap: wrap; align-items: baseline;
+        gap: 6px 12px; margin-bottom: 4px;
+      }
+      .rwth-card-buymax  { color: #7ed098; font-weight: 700; }
+      .rwth-card-room    { color: #7ed098; }
+      .rwth-card-over    { color: #ff8a8a; }
+      .rwth-card-classtag { color: #5dc6f0; }
+      .rwth-card-ladder {
+        display: flex; flex-wrap: wrap; gap: 2px 10px;
+        margin-top: 4px; padding-top: 4px;
+        border-top: 1px dashed #00e5ff22;
+        font-size: 10px;
+      }
+      .rwth-card-ladder b { color: #8aa; font-weight: 400; margin-right: 2px; }
+
       /* Ledger per-row Price-check panel. */
       .rwth-price-panel {
         margin-top: 4px; padding: 8px 10px;
@@ -3132,6 +3150,65 @@
     },
 
     /**
+     * buyTarget({ itemClass, comps, currentBid, settings }) →
+     *   { max, floor, currentBidDelta }
+     *
+     * Yellow-weapon path (v0.3.0 slice 4). Base formula:
+     *   max = median(comps.price) × (1 − tax − mug − margin)
+     * Defaults: tax 0.05, mug 0.10, margin 0.05 (King's framework).
+     *
+     * `floor` is null on this path — BB-floor routing applies to Riot/Dune/trash
+     * only and lands in later slices. `currentBidDelta = max − currentBid`;
+     * positive ⇒ headroom, negative ⇒ already over.
+     */
+    buyTarget(args) {
+      const a = args || {};
+      const s = a.settings || {};
+      const tax    = s.tax    != null ? s.tax    : 0.05;
+      const mug    = s.mug    != null ? s.mug    : 0.10;
+      const margin = s.margin != null ? s.margin : 0.05;
+      const prices = ((a.comps) || [])
+        .map(c => Number(c && c.price))
+        .filter(p => Number.isFinite(p) && p > 0);
+      const med = _median(prices);
+      if (med == null) return { max: null, floor: null, currentBidDelta: null };
+      const max = Math.round(med * (1 - tax - mug - margin));
+      const cb  = Number(a.currentBid);
+      const currentBidDelta = Number.isFinite(cb) ? max - cb : null;
+      return { max, floor: null, currentBidDelta };
+    },
+
+    /**
+     * sellLadder({ itemClass, comps, marketCheapest, buyCost }) →
+     *   { auctionSafe, bazaar, market, forum, floor }
+     *
+     * Venue spread (PRD): bazaar < market = bazaar × 1.05 < forum.
+     * Anchor: `marketCheapest` when supplied, else comp median (the price
+     * column on cleared auctions). Forum heuristic: market × 1.10 (PRD —
+     * not fetched). Auction safe-bid: market × 0.85 (King: list-target
+     * minus 10–20%). Floor enforced ≥ buyCost so it never proposes a loss.
+     */
+    sellLadder(args) {
+      const a = args || {};
+      const prices = ((a.comps) || [])
+        .map(c => Number(c && c.price))
+        .filter(p => Number.isFinite(p) && p > 0);
+      const med = _median(prices);
+      const mc  = Number(a.marketCheapest);
+      const anchor = Number.isFinite(mc) && mc > 0 ? mc : med;
+      if (anchor == null) {
+        return { auctionSafe: null, bazaar: null, market: null, forum: null, floor: null };
+      }
+      const market = Math.round(anchor);
+      const bazaar = Math.round(market / 1.05);
+      const forum  = Math.round(market * 1.10);
+      const auctionSafe = Math.round(market * 0.85);
+      const buyCost = Number(a.buyCost);
+      const floor = Math.max(bazaar, Number.isFinite(buyCost) ? Math.round(buyCost) : 0);
+      return { auctionSafe, bazaar, market, forum, floor };
+    },
+
+    /**
      * fetchComps(item, intelSettings) → Promise<{ cleared, asking }>
      *
      * Orchestrates Supabase (auction-cleared sales) and weav3r (live item-market
@@ -3397,9 +3474,10 @@
           }
         }
       } catch {}
+      const currentBid = readAuctionListingPrice(li);
       const info = li.querySelector('.show-item-info');
       if (!info) {
-        return { itemName: titleName, parsedBonuses: [], quality: null, itemType: 'weapon', rarity };
+        return { itemName: titleName, parsedBonuses: [], quality: null, itemType: 'weapon', rarity, currentBid };
       }
       const inner = DomScanner.parseItemMarketRow(info);
       return {
@@ -3408,6 +3486,7 @@
         quality: inner.quality,
         itemType: inner.itemType,
         rarity,
+        currentBid,
       };
     },
   };
@@ -3509,6 +3588,76 @@
       }
       badge.textContent = parts.join(' · ');
     },
+    /**
+     * renderTwoTierCard(infoEl, state) — v0.3.0 yellow-weapon path.
+     * state: { buy:{max,currentBidDelta}, ladder:{auctionSafe,bazaar,market,forum,floor},
+     *          classTag, askingMedian, askingCount }
+     * Replaces the v0.2.x verdict line on auction-on-expand for yellow weapons
+     * (PRD #265 user stories 1–4, 19, 24).
+     */
+    renderTwoTierCard(infoEl, state) {
+      const badge = InlineRenderer._slot(infoEl);
+      if (!badge) return;
+      const s = state || {};
+      const buy = s.buy || {};
+      const ladder = s.ladder || {};
+      badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
+      badge.textContent = '';
+
+      const head = document.createElement('div');
+      head.className = 'rwth-card-headline';
+      if (s.classTag) {
+        const tag = document.createElement('span');
+        tag.className = 'rwth-card-classtag';
+        tag.textContent = s.classTag;
+        head.appendChild(tag);
+      }
+      const buyEl = document.createElement('span');
+      buyEl.className = 'rwth-card-buymax';
+      buyEl.textContent = buy.max != null ? `Buy max ${fmtChatPrice(buy.max)}` : 'Buy max —';
+      head.appendChild(buyEl);
+      if (buy.currentBidDelta != null) {
+        const d = buy.currentBidDelta;
+        const delta = document.createElement('span');
+        if (d >= 0) {
+          delta.className = 'rwth-card-room';
+          delta.textContent = `room ${fmtChatPrice(d)}`;
+        } else {
+          delta.className = 'rwth-card-over';
+          delta.textContent = `over by ${fmtChatPrice(-d)}`;
+        }
+        head.appendChild(delta);
+      }
+      badge.appendChild(head);
+
+      const ladderEl = document.createElement('div');
+      ladderEl.className = 'rwth-card-ladder';
+      const rungs = [
+        ['Auction safe', ladder.auctionSafe],
+        ['Bazaar',       ladder.bazaar],
+        ['Market',       ladder.market],
+        ['Forum',        ladder.forum],
+        ['Floor',        ladder.floor],
+      ];
+      for (const [label, value] of rungs) {
+        if (value == null) continue;
+        const span = document.createElement('span');
+        const b = document.createElement('b');
+        b.textContent = label;
+        span.appendChild(b);
+        span.appendChild(document.createTextNode(fmtChatPrice(value)));
+        ladderEl.appendChild(span);
+      }
+      if (s.askingCount && s.askingMedian != null) {
+        const span = document.createElement('span');
+        const b = document.createElement('b');
+        b.textContent = `Asking (${s.askingCount})`;
+        span.appendChild(b);
+        span.appendChild(document.createTextNode(fmtChatPrice(s.askingMedian)));
+        ladderEl.appendChild(span);
+      }
+      badge.appendChild(ladderEl);
+    },
     removeAll() {
       if (typeof document === 'undefined') return;
       document.querySelectorAll('.' + InlineRenderer.BADGE_CLASS).forEach(b => b.remove());
@@ -3574,7 +3723,8 @@
         InlineRenderer.renderAuctionBadge(info, { error: 'no name' });
         return;
       }
-      const listingPrice = readAuctionListingPrice(li);
+      const listingPrice = parsed.currentBid != null
+        ? parsed.currentBid : readAuctionListingPrice(li);
       const item = {
         itemName: parsed.itemName,
         bonuses: parsed.parsedBonuses,
@@ -3605,8 +3755,6 @@
         });
         return;
       }
-      const verdict = PricingEngine.verdict(
-        { price: listingPrice || 0, quality: item.quality || 0 }, comps);
       // Resolve item class from the cached items dict. Falls back to DOM-parsed
       // type/rarity when the dict has not been fetched yet.
       const dict = ItemClassifier.getDict();
@@ -3616,6 +3764,33 @@
       const classTag = cls
         ? formatClassTag({ ...cls, rarity })
         : formatClassTag({ category, rarity });
+
+      // Yellow-weapon path (v0.3.0 slice 4): two-tier card replaces the v0.2.x
+      // verdict line. Every other class still falls through to the legacy badge
+      // until later slices port them.
+      const isYellowWeapon = category === 'weapon' && rarity === 'yellow';
+      if (isYellowWeapon) {
+        const buy = PricingEngine.buyTarget({
+          itemClass: 'yellowWeapon',
+          comps,
+          currentBid: listingPrice,
+        });
+        const marketCheapest = askingShaped.length
+          ? Math.min(...askingShaped.map(c => c.price)) : null;
+        const ladder = PricingEngine.sellLadder({
+          itemClass: 'yellowWeapon',
+          comps,
+          marketCheapest,
+          buyCost: listingPrice || 0,
+        });
+        InlineRenderer.renderTwoTierCard(info, {
+          buy, ladder, classTag, askingMedian, askingCount,
+        });
+        return;
+      }
+
+      const verdict = PricingEngine.verdict(
+        { price: listingPrice || 0, quality: item.quality || 0 }, comps);
       // BB floor — informational only. Armor takes 'armor' as the class key;
       // weapons use the resolved weaponBase (pistol/rifle/etc).
       const bbRate = MEM.bbRate && MEM.bbRate.rate;
