@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.9
+// @version      0.3.10
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.9';
+  const SCRIPT_VERSION = '0.3.10';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2977,6 +2977,18 @@
       .rwth-card-drill-table tr.rwth-card-ladder-own td { color: #00e5ff; font-weight: 700; }
       .rwth-card-drill-empty { color: #8aa; font-style: italic; }
 
+      /* v0.3.0 slice 14 — SOLD vs LISTED ladders, side-by-side. */
+      .rwth-card-ladders {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        margin-top: 4px;
+      }
+      .rwth-card-ladder-col { min-width: 0; }
+      .rwth-card-ladder-title {
+        color: #8aa; font-size: 10px; letter-spacing: 0.5px;
+        margin-bottom: 2px; text-transform: uppercase;
+      }
+      .rwth-card-ladder-cheapest { color: #7ed098; }
+
       /* Ledger per-row Price-check panel. */
       .rwth-price-panel {
         margin-top: 4px; padding: 8px 10px;
@@ -3192,6 +3204,102 @@
         total_count: (data && data.total_count) || 0,
       };
     },
+  };
+
+  // ─── ListingsFetcher (impure) ────────────────────────────────────────────────
+  // Live item-market listings, kept *separate* from the auction-cleared comp
+  // pool. Verdict math never touches these (PRD #265 Story 5/6; King: item
+  // market typically 15–25% above sellable). Slice 14 (#280).
+  //
+  // Returns { market, bazaar } arrays of normalised listings:
+  //   { price, bonusPct, qualityPct, sellerId, listingId, source }
+  //
+  // Cache: in-memory Map, 5-min TTL keyed by item id + bonus/quality criteria.
+  // Listings move fast, so the long-TTL `Cache` (sold-comp store) is wrong here.
+  //
+  // No new @connect hosts: market via existing weav3r; bazaar deferred until a
+  // permitted endpoint exists (returned as []).
+  const LISTINGS_TTL_MS = 5 * 60 * 1000;
+  const ListingsFetcher = {
+    _cache: new Map(),
+    _ttl: LISTINGS_TTL_MS,
+    _shapeWeav3r(w) {
+      if (!w || typeof w !== 'object') return null;
+      const price = Number(w.price != null ? w.price : NaN);
+      if (!Number.isFinite(price)) return null;
+      const bonusPct = Number(w.bonus1Value != null ? w.bonus1Value
+                       : w.bonusValue != null ? w.bonusValue : NaN);
+      const qualityPct = Number(w.quality != null ? w.quality : NaN);
+      return {
+        price,
+        bonusPct: Number.isFinite(bonusPct) ? bonusPct : null,
+        qualityPct: Number.isFinite(qualityPct) ? qualityPct : null,
+        sellerId: w.sellerId != null ? w.sellerId
+                : w.seller != null ? w.seller : null,
+        listingId: w.listingId != null ? w.listingId
+                 : w.id != null ? w.id : null,
+        source: 'market',
+      };
+    },
+    _buildQuery(item, intelSettings) {
+      const intel    = intelSettings || MEM.intel;
+      const bonuses  = ((item && item.bonuses) || []).filter(b => b && b.name);
+      const itemName = (item && item.itemName) || '';
+      const q = { sortField: 'price', sortDirection: 'asc' };
+      const cat = itemCategory(item || {});
+      if (cat === 'Armor') {
+        q.tab = 'armor';
+        if (itemName) q.armorPiece = itemName;
+      } else {
+        q.tab = 'weapons';
+        if (itemName) q.weaponName = itemName;
+      }
+      bonuses.slice(0, 2).forEach((b, i) => {
+        const lo  = String(b.name).toLowerCase();
+        const tol = IntelSettings.getEffectiveBonusTolerance(lo, intel);
+        const val = Number(b.value);
+        const range = Number.isFinite(val) ? similarity.calcRange(val, tol) : null;
+        if (i === 0) {
+          q.bonus1 = b.name;
+          if (range) { q.minBonus1Value = range.min; q.maxBonus1Value = range.max; }
+        } else {
+          q.bonus2 = b.name;
+          if (range) { q.minBonus2Value = range.min; q.maxBonus2Value = range.max; }
+        }
+      });
+      const primaryKey = bonuses[0] ? String(bonuses[0].name).toLowerCase() : '';
+      const qTol = IntelSettings.getEffectiveQualityTolerance(primaryKey, intel);
+      const qv = Number(item && item.quality);
+      if (Number.isFinite(qv)) {
+        const qr = similarity.calcRange(qv, qTol);
+        q.minQuality = qr.min;
+        q.maxQuality = qr.max;
+      }
+      return q;
+    },
+    /**
+     * fetch(item, intelSettings) → Promise<{ market, bazaar }>
+     * Cached 5 min by item+criteria. Errors degrade to empty arrays.
+     */
+    async fetch(item, intelSettings) {
+      const query = ListingsFetcher._buildQuery(item, intelSettings);
+      const key   = JSON.stringify(query);
+      const now   = Date.now();
+      const hit   = ListingsFetcher._cache.get(key);
+      if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
+      let market = [];
+      try {
+        const r = await Weav3rClient.search(query);
+        market = (r.weapons || []).map(ListingsFetcher._shapeWeav3r).filter(Boolean);
+      } catch { market = []; }
+      // Bazaar listings: no permitted bonus-searchable endpoint yet — see #280.
+      const bazaar = [];
+      const data = { market, bazaar };
+      ListingsFetcher._cache.set(key, { ts: now, data });
+      return data;
+    },
+    /** Test/utility — drop cached entries. */
+    clear() { ListingsFetcher._cache.clear(); },
   };
 
   // ─── PricingEngine (pure) ─────────────────────────────────────────────────────
@@ -3542,16 +3650,6 @@
       };
       if (itemName) supabaseQuery.item_name = itemName;
 
-      const weav3rQuery = { sortField: 'price', sortDirection: 'asc' };
-      const cat = itemCategory(item || {});
-      if (cat === 'Armor') {
-        weav3rQuery.tab = 'armor';
-        if (itemName) weav3rQuery.armorPiece = itemName;
-      } else {
-        weav3rQuery.tab = 'weapons';
-        if (itemName) weav3rQuery.weaponName = itemName;
-      }
-
       bonuses.slice(0, 2).forEach((b, i) => {
         const lo  = String(b.name).toLowerCase();
         const id  = BONUS_NAME_TO_ID[lo] != null
@@ -3569,18 +3667,12 @@
             if (range) { supabaseQuery.bonus1_value_min = range.min;
                          supabaseQuery.bonus1_value_max = range.max; }
           }
-          weav3rQuery.bonus1 = b.name;
-          if (range) { weav3rQuery.minBonus1Value = range.min;
-                       weav3rQuery.maxBonus1Value = range.max; }
         } else {
           if (id != null) {
             supabaseQuery.bonus2_id = id;
             if (range) { supabaseQuery.bonus2_value_min = range.min;
                          supabaseQuery.bonus2_value_max = range.max; }
           }
-          weav3rQuery.bonus2 = b.name;
-          if (range) { weav3rQuery.minBonus2Value = range.min;
-                       weav3rQuery.maxBonus2Value = range.max; }
         }
       });
 
@@ -3591,15 +3683,16 @@
         const qr = similarity.calcRange(qv, qTol);
         supabaseQuery.quality_min = qr.min;
         supabaseQuery.quality_max = qr.max;
-        weav3rQuery.minQuality    = qr.min;
-        weav3rQuery.maxQuality    = qr.max;
       }
 
-      const [cleared, asking] = await Promise.all([
+      const [cleared, listings] = await Promise.all([
         SupabaseClient.search(supabaseQuery).then(r => r.auctions || []).catch(() => []),
-        Weav3rClient.search(weav3rQuery).then(r => r.weapons || []).catch(() => []),
+        ListingsFetcher.fetch(item, intel).catch(() => ({ market: [], bazaar: [] })),
       ]);
-      return { cleared, asking };
+      // `asking` keeps its legacy combined shape for callers that haven't moved
+      // to the listings object yet. Listings stay split for the LISTED ladder.
+      const asking = (listings.market || []).concat(listings.bazaar || []);
+      return { cleared, asking, listings };
     },
   };
 
@@ -4172,61 +4265,92 @@
       math.textContent = InlineRenderer._deductionMath(ctx, buy, reference, filtered);
       wrap.appendChild(math);
 
-      // bonus-% ladder — one row per distinct bonus % observed in the
-      // comp set; each row carries median/min/max/n for that %. Card's own
-      // bonus % is marked. Replaces the "5 most recent comps" table.
-      if (!filtered.length) {
-        const empty = document.createElement('div');
-        empty.className = 'rwth-card-drill-empty';
-        empty.textContent = 'no comps match these filters';
-        wrap.appendChild(empty);
-      } else {
-        const groups = new Map();
-        for (const c of filtered) {
-          if (!c || c.bonusValue == null) continue;
-          const k = Number(c.bonusValue);
-          if (!Number.isFinite(k)) continue;
-          if (!groups.has(k)) groups.set(k, []);
-          groups.get(k).push(Number(c.price));
-        }
-        if (!groups.size) {
-          const empty = document.createElement('div');
-          empty.className = 'rwth-card-drill-empty';
-          empty.textContent = 'no comps carry a bonus %';
-          wrap.appendChild(empty);
-        } else {
-          const ownBv = Number(ctx.primaryBonusValue);
-          const ownK  = Number.isFinite(ownBv) ? ownBv : null;
-          const keys = Array.from(groups.keys()).sort((a, b) => b - a);
-          const table = document.createElement('table');
-          table.className = 'rwth-card-drill-table rwth-card-ladder-table';
-          const thead = document.createElement('thead');
-          thead.innerHTML = '<tr><th>bonus%</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>';
-          table.appendChild(thead);
-          const tbody = document.createElement('tbody');
-          for (const k of keys) {
-            const prices = groups.get(k).filter(p => Number.isFinite(p) && p > 0);
-            if (!prices.length) continue;
-            const med = _median(prices);
-            const mn  = Math.min(...prices);
-            const mx  = Math.max(...prices);
-            const tr = document.createElement('tr');
-            const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
-            const isOwn = ownK != null && k === ownK;
-            if (isOwn) tr.classList.add('rwth-card-ladder-own');
-            tr.appendChild(td(isOwn ? `${k}% ← you` : `${k}%`));
-            tr.appendChild(td(fmtChatPrice(med)));
-            tr.appendChild(td(fmtChatPrice(mn)));
-            tr.appendChild(td(fmtChatPrice(mx)));
-            tr.appendChild(td(String(prices.length)));
-            tbody.appendChild(tr);
-          }
-          table.appendChild(tbody);
-          wrap.appendChild(table);
-        }
-      }
+      // bonus-% ladders — SOLD (cleared) and LISTED (asking) side-by-side.
+      // Verdict math uses SOLD only; LISTED informs spread (PRD #265 Story 5/6,
+      // slice 14 issue #280). King: item-market asks run 15–25% above sellable.
+      const ownBv = Number(ctx.primaryBonusValue);
+      const ownK  = Number.isFinite(ownBv) ? ownBv : null;
+      const askingArr = Array.isArray(ctx.askingComps) ? ctx.askingComps : [];
+      const cheapest = askingArr.reduce((m, c) => {
+        const p = Number(c && c.price);
+        if (!Number.isFinite(p) || p <= 0) return m;
+        return m == null || p < m ? p : m;
+      }, null);
+      const ladders = document.createElement('div');
+      ladders.className = 'rwth-card-ladders';
+      ladders.appendChild(InlineRenderer._buildBonusLadder({
+        title: 'SOLD (cleared)',
+        comps: filtered,
+        ownK,
+        cheapestPrice: null,
+        emptyText: filtered.length ? 'no comps carry a bonus %' : 'no comps match these filters',
+      }));
+      ladders.appendChild(InlineRenderer._buildBonusLadder({
+        title: 'LISTED (asking)',
+        comps: askingArr,
+        ownK,
+        cheapestPrice: cheapest,
+        emptyText: 'no live listings',
+      }));
+      wrap.appendChild(ladders);
 
       return wrap;
+    },
+    _buildBonusLadder({ title, comps, ownK, cheapestPrice, emptyText }) {
+      const col = document.createElement('div');
+      col.className = 'rwth-card-ladder-col';
+      const h = document.createElement('div');
+      h.className = 'rwth-card-ladder-title';
+      h.textContent = title;
+      col.appendChild(h);
+
+      const arr = Array.isArray(comps) ? comps : [];
+      const groups = new Map();
+      for (const c of arr) {
+        if (!c || c.bonusValue == null) continue;
+        const k = Number(c.bonusValue);
+        if (!Number.isFinite(k)) continue;
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(Number(c.price));
+      }
+      if (!groups.size) {
+        const empty = document.createElement('div');
+        empty.className = 'rwth-card-drill-empty';
+        empty.textContent = emptyText;
+        col.appendChild(empty);
+        return col;
+      }
+      const keys = Array.from(groups.keys()).sort((a, b) => b - a);
+      const table = document.createElement('table');
+      table.className = 'rwth-card-drill-table rwth-card-ladder-table';
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th>bonus%</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>';
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const k of keys) {
+        const prices = groups.get(k).filter(p => Number.isFinite(p) && p > 0);
+        if (!prices.length) continue;
+        const med = _median(prices);
+        const mn  = Math.min(...prices);
+        const mx  = Math.max(...prices);
+        const tr = document.createElement('tr');
+        const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
+        const isOwn = ownK != null && k === ownK;
+        if (isOwn) tr.classList.add('rwth-card-ladder-own');
+        const hasCheapest = cheapestPrice != null && mn === cheapestPrice;
+        const tag = isOwn ? ' ← you' : '';
+        tr.appendChild(td(`${k}%${tag}`));
+        tr.appendChild(td(fmtChatPrice(med)));
+        const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest live' : ''));
+        if (hasCheapest) minCell.classList.add('rwth-card-ladder-cheapest');
+        tr.appendChild(minCell);
+        tr.appendChild(td(fmtChatPrice(mx)));
+        tr.appendChild(td(String(prices.length)));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      col.appendChild(table);
+      return col;
     },
     _fmtDate(ts) {
       const n = Number(ts);
@@ -4371,9 +4495,17 @@
       console.debug('[rwth] auction comps raw',
         { cleared: clearedRaw.length, asking: askingRaw.length, sample: (clearedRaw[0] || askingRaw[0]) });
       // Action math uses cleared sales only — asking prices are surfaced
-      // separately as a spread line (issue #267).
+      // separately as a spread line (issue #267) plus a LISTED ladder (#280).
       const comps        = clearedRaw.map(compShape).filter(Boolean);
       const askingShaped = askingRaw.map(compShape).filter(Boolean);
+      const askingComps  = askingShaped.map((c, i) => {
+        const raw = askingRaw[i] || {};
+        return {
+          ...c,
+          listingId: raw.listingId != null ? raw.listingId : null,
+          source: raw.source || 'market',
+        };
+      });
       const askingMedian = _median(askingShaped.map(c => c.price));
       const askingCount  = askingShaped.length;
       if (!comps.length) {
@@ -4424,6 +4556,7 @@
           primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
           strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
           comps,
+          askingComps,
           marketCheapest,
           askingMedian,
           askingCount,
@@ -4491,6 +4624,7 @@
     Cache,
     SupabaseClient,
     Weav3rClient,
+    ListingsFetcher,
     BONUS_DATA,
     BONUS_NAME_TO_ID,
     DomScanner,
