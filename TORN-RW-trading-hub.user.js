@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.6
+// @version      0.3.7
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.6';
+  const SCRIPT_VERSION = '0.3.7';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -416,8 +416,10 @@
   }
 
   // Per-row Price-check panel — synchronous from MEM. The runPriceCheck flow
-  // writes loading/result/error into MEM.ledger.priceCheckResults[id] and
-  // triggers a render; this function reads the latest snapshot to draw.
+  // writes loading/error/ctx into MEM.ledger.priceCheckResults[id] and
+  // triggers a render; loading/error states render as HTML here, while the
+  // ready (`ctx`) state emits an empty anchor div that render() mounts the
+  // shared BadgeRenderer v2 two-tier card into post-innerHTML.
   function buildPriceCheckPanel(item, state) {
     const s = state || {};
     if (s.loading) {
@@ -429,32 +431,10 @@
     if (s.error) {
       return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}${askingLine}</div>`;
     }
-    if (!s.suggest) {
+    if (!s.ctx) {
       return `<div class="rwth-price-panel rwth-tier-none">no comp${askingLine}</div>`;
     }
-    const { expected, suggestedList, projectedNet, profit, roi } = s.suggest;
-    const v = s.verdict || {};
-    const profitCls = profit >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-    const mathParts = [];
-    if (v.reference != null && v.compsUsed != null) {
-      mathParts.push(`${v.compsUsed} comps · ±${v.tolerance}%`);
-      if (v.slopeProjection != null && item.quality != null) {
-        mathParts.push(`slope ${fmtChatPrice(v.slopeProjection)} at ${item.quality}% q`);
-      }
-    }
-    const mathLine = mathParts.length
-      ? `<div class="rwth-price-math">${mathParts.join(' · ')}</div>` : '';
-    return `<div class="rwth-price-panel">
-        <div class="rwth-price-grid">
-          <span>Expected sale</span><span>${fmtMoney(expected)}</span>
-          <span>Suggested list</span><span>${fmtMoney(suggestedList)}</span>
-          <span>Projected net</span><span>${fmtMoney(projectedNet)}</span>
-          <span>Profit</span><span class="${profitCls}">${profit >= 0 ? '+' : ''}${fmtMoney(profit)}</span>
-          <span>ROI</span><span class="${profitCls}">${roi >= 0 ? '+' : ''}${roi}%</span>
-        </div>
-        ${mathLine}
-        ${askingLine}
-      </div>`;
+    return `<div class="rwth-price-panel rwth-pc-anchor" data-pc-id="${escapeAttr(item.id)}"></div>`;
   }
 
   function buildLedgerForm(mem) {
@@ -1876,9 +1856,9 @@
 
   async function runPriceCheck(item) {
     const intel = MEM.intel;
-    // v2: cache shape changed to { cleared, asking } (issue #267). Prefix bump
-    // avoids reading pre-v0.3.1 entries that still carry { history, live }.
-    const cacheKey = 'pricecheck:v2:' + JSON.stringify({
+    // v3: ctx-shape result (BadgeRenderer v2). Prefix bump so pre-v0.3.7
+    // cached pricecheck:v2 entries (verdict/suggest) are ignored.
+    const cacheKey = 'pricecheck:v3:' + JSON.stringify({
       n: item.itemName, b: item.bonuses, q: item.quality, c: itemCategory(item),
       e: intel.enabled.ledger,
       d: intel.defaults, ov: intel.bonuses,
@@ -1902,12 +1882,58 @@
       writePriceCheckResult(item.id, { error: 'no comp', askingMedian, askingCount });
       return;
     }
-    const verdict = PricingEngine.verdict(
-      { price: item.buyPrice || 0, quality: item.quality || 0 }, comps);
-    const suggest = PricingEngine.ledgerSuggest(comps, item.buyPrice || 0, {
-      markup: intel.markup, mugBuffer: intel.mugBuffer,
+
+    // Resolve item class from the cached items dict; fall back to ledger-row
+    // metadata when the dict has not been fetched yet so the panel stays
+    // actionable (the auction surface has a v0.2.x legacy fallback — the
+    // ledger v0.2.x panel is gone, so we always emit a two-tier ctx).
+    const dict = ItemClassifier.getDict();
+    const cls  = dict ? ItemClassifier.classify(item.itemName, dict) : null;
+    const category = (cls && cls.category)
+      || (item.type === 'armor' ? 'armor' : 'weapon');
+    const rarity = (cls && cls.rarity) || item.rarity || null;
+    const classTag = cls
+      ? formatClassTag({ ...cls, rarity })
+      : formatClassTag({ category, rarity });
+
+    const bbRate = MEM.bbRate && MEM.bbRate.rate;
+    const bbClassKey = category === 'armor' ? 'armor' : (cls && cls.weaponBase) || null;
+    const bbFloor = bbClassKey && rarity && bbRate
+      ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
+          { bonusCount: (item.bonuses || []).length })
+      : null;
+
+    let itemClassKey = resolveItemClass(cls);
+    if (!itemClassKey) {
+      itemClassKey = category === 'armor' ? 'assaultArmor' : 'yellowWeapon';
+    }
+
+    const marketCheapest = askingShaped.length
+      ? Math.min(...askingShaped.map(c => c.price)) : null;
+    const primaryBonus = (item.bonuses || [])[0] || null;
+    const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
+    const strictTol = primaryBonus
+      ? IntelSettings.getEffectiveBonusTolerance(String(primaryBonus.name).toLowerCase(), MEM.intel)
+      : null;
+
+    writePriceCheckResult(item.id, {
+      ctx: {
+        itemClass: itemClassKey,
+        classTag,
+        bbFloor,
+        currentBid: null,
+        buyCost: item.buyPrice || 0,
+        listingQuality: item.quality,
+        primaryBonusName: primaryBonus ? primaryBonus.name : null,
+        primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
+        strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
+        comps,
+        marketCheapest,
+        askingMedian,
+        askingCount,
+        margins: null,
+      },
     });
-    writePriceCheckResult(item.id, { verdict, suggest, askingMedian, askingCount });
   }
 
   function writePriceCheckResult(id, patch) {
@@ -2424,6 +2450,25 @@
       t.classList.toggle('rwth-tab-active', t.dataset.tab === MEM.ui.activeTab);
     });
     document.getElementById('rwth-content').innerHTML = buildContent(MEM);
+    mountLedgerPriceCheckCards();
+  }
+
+  // Ledger Price-check panels render an empty anchor (`.rwth-pc-anchor`) when
+  // a two-tier ctx is ready; mount the shared BadgeRenderer v2 card into each
+  // anchor after every render so the card survives unrelated setState calls.
+  function mountLedgerPriceCheckCards() {
+    const root = document.getElementById('rwth-content');
+    if (!root) return;
+    const anchors = root.querySelectorAll('.rwth-pc-anchor');
+    if (!anchors.length) return;
+    const results = (MEM.ledger && MEM.ledger.priceCheckResults) || {};
+    anchors.forEach(anchor => {
+      const id  = anchor.getAttribute('data-pc-id');
+      const r   = results[id];
+      const ctx = r && r.ctx;
+      if (!ctx) return;
+      InlineRenderer.renderTwoTierCard(anchor, ctx);
+    });
   }
 
   // ─── Launcher ────────────────────────────────────────────────────────────────
@@ -3867,7 +3912,8 @@
       });
       const ladder = PricingEngine.sellLadder({
         itemClass: s.itemClass, comps: filtered,
-        marketCheapest: s.marketCheapest, buyCost: s.currentBid || 0,
+        marketCheapest: s.marketCheapest,
+        buyCost: s.buyCost != null ? s.buyCost : (s.currentBid || 0),
       });
       const reference = PricingEngine.compReference(filtered, {
         itemClass: s.itemClass,
