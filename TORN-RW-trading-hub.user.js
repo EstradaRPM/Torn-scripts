@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.4
+// @version      0.3.5
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.4';
+  const SCRIPT_VERSION = '0.3.5';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3054,6 +3054,20 @@
   // Verdict + ledger-suggest engine — pure functions, no GM calls, no DOM.
   // All impure callers (fetch/cache/render) live in later slices.
 
+  // Default recency window (days) per item class for compReference (v0.3.0
+  // slice 6): yellow 6mo, orange 18mo, red 3yr. Armor classes that route to
+  // BB floor (Dune/Riot/trash) have no recency dependency.
+  const RECENCY_DEFAULTS = {
+    yellowWeapon:  180,
+    orangeWeapon:  548,
+    redWeapon:    1095,
+    assaultArmor:  180,
+    orangeArmor:   548,
+    redArmor:     1095,
+    duneRiotArmor: null,
+    trashBB:       null,
+  };
+
   /** Internal: median of a numeric array. Returns null for empty input. */
   function _median(values) {
     if (!values.length) return null;
@@ -3265,6 +3279,97 @@
       const buyCost = Number(a.buyCost);
       const floor = Math.max(bazaar, Number.isFinite(buyCost) ? Math.round(buyCost) : 0);
       return { auctionSafe, bazaar, market, forum, floor };
+    },
+
+    /**
+     * compReference(comps, settings) →
+     *   { median, count, recencyDays, tolerance, widened }
+     *
+     * Tiered recency window per item class (v0.3.0 slice 6): yellow 6mo,
+     * orange 18mo, red 3yr. Default table below; override via
+     * `settings.recencyByClass`.
+     *
+     * Auto-widen-with-provenance: when the strict-bonus-tolerance subset
+     * pulls fewer than 3 comps, widen to the next band and flag it in
+     * `widened: { strictCount, widenedCount, widenedTolerance }` so the
+     * card can surface "3 strict + 4 widened to ±N%" instead of silently
+     * stretching. `widenedCount` is the *additional* comps the wider band
+     * pulled in.
+     *
+     * Inputs:
+     *   comps    – Array<{ price, timestamp?, bonusValue? }> (compShape output)
+     *   settings – {
+     *     itemClass?:        recency lookup key (default 'yellowWeapon')
+     *     targetBonusValue?: bonus % we're scoring against; null skips bonus filter
+     *     strictTolerance?:  ± window around targetBonusValue; null skips bonus filter
+     *     widenTolerances?:  ordered list of wider ±% bands to try
+     *     recencyByClass?:   override the default class→days map
+     *     now?:              epoch ms (for tests)
+     *   }
+     */
+    compReference(comps, settings) {
+      const s = settings || {};
+      const cls = String(s.itemClass || 'yellowWeapon');
+      const recencyMap = s.recencyByClass || RECENCY_DEFAULTS;
+      const recencyDays = recencyMap[cls] != null ? recencyMap[cls] : null;
+      const now = Number.isFinite(Number(s.now)) ? Number(s.now) : Date.now();
+
+      const list = (comps || []).filter(c => c && Number.isFinite(Number(c.price)) && Number(c.price) > 0);
+
+      // Recency filter: only applied when we have both a window and a timestamp;
+      // undated comps fall through so legacy/asking rows aren't silently dropped.
+      const recencyMs = recencyDays != null ? recencyDays * 86400000 : null;
+      const inRecency = recencyMs == null
+        ? list
+        : list.filter(c => !Number.isFinite(Number(c.timestamp))
+                            || (now - Number(c.timestamp)) <= recencyMs);
+
+      const strictTol = Number.isFinite(Number(s.strictTolerance)) ? Number(s.strictTolerance) : null;
+      const target    = Number.isFinite(Number(s.targetBonusValue)) ? Number(s.targetBonusValue) : null;
+      const applyTol = (arr, tol) => {
+        if (tol == null || target == null) return arr;
+        return arr.filter(c => c.bonusValue != null
+                                && Math.abs(Number(c.bonusValue) - target) <= tol);
+      };
+
+      const strict = applyTol(inRecency, strictTol);
+
+      // No auto-widen when strict already has ≥3, or when caller didn't give
+      // us bonus filter inputs to widen on.
+      if (strict.length >= 3 || target == null || strictTol == null) {
+        return {
+          median: _median(strict.map(c => Number(c.price))),
+          count: strict.length,
+          recencyDays,
+          tolerance: strictTol,
+          widened: null,
+        };
+      }
+
+      const widenBands = Array.isArray(s.widenTolerances) && s.widenTolerances.length
+        ? s.widenTolerances.slice().sort((a, b) => a - b)
+        : [strictTol * 2, strictTol * 3];
+      let widenedSet = strict;
+      let widenedTolerance = strictTol;
+      for (const tol of widenBands) {
+        if (tol <= strictTol) continue;
+        const w = applyTol(inRecency, tol);
+        if (w.length > widenedSet.length) {
+          widenedSet = w;
+          widenedTolerance = tol;
+        }
+        if (widenedSet.length >= 3) break;
+      }
+      const widenedExtra = Math.max(0, widenedSet.length - strict.length);
+      return {
+        median: _median(widenedSet.map(c => Number(c.price))),
+        count: widenedSet.length,
+        recencyDays,
+        tolerance: widenedTolerance,
+        widened: widenedExtra > 0
+          ? { strictCount: strict.length, widenedCount: widenedExtra, widenedTolerance }
+          : null,
+      };
     },
 
     /**
@@ -3580,7 +3685,24 @@
               : c.buyout != null ? c.buyout : NaN);
     if (!Number.isFinite(p)) return null;
     const q = Number(c.quality != null ? c.quality : NaN);
-    return { price: p, quality: Number.isFinite(q) ? q : 0 };
+    const tsRaw = c.timestamp != null ? c.timestamp
+                : c.sold_at != null ? c.sold_at
+                : c.created_at != null ? c.created_at : null;
+    let timestamp = null;
+    if (tsRaw != null) {
+      const n = Number(tsRaw);
+      if (Number.isFinite(n) && n > 0) timestamp = n < 1e12 ? n * 1000 : n;
+      else { const d = Date.parse(tsRaw); if (Number.isFinite(d)) timestamp = d; }
+    }
+    const bvRaw = c.bonusValue != null ? c.bonusValue
+                : c.bonus1_value != null ? c.bonus1_value : null;
+    const bv = bvRaw != null ? Number(bvRaw) : NaN;
+    return {
+      price: p,
+      quality: Number.isFinite(q) ? q : 0,
+      timestamp,
+      bonusValue: Number.isFinite(bv) ? bv : null,
+    };
   }
 
   // ─── InlineRenderer (impure) ────────────────────────────────────────────────
@@ -3706,6 +3828,27 @@
         head.appendChild(delta);
       }
       badge.appendChild(head);
+
+      const ref = s.reference;
+      if (ref && (ref.count > 0 || ref.widened)) {
+        const refEl = document.createElement('div');
+        refEl.className = 'rwth-card-ref';
+        const parts = [];
+        if (ref.widened) {
+          parts.push(`${ref.widened.strictCount} strict + ${ref.widened.widenedCount} widened to ±${ref.widened.widenedTolerance}%`);
+        } else {
+          let head2 = `${ref.count} comp${ref.count === 1 ? '' : 's'}`;
+          if (ref.tolerance != null) head2 += ` · ±${ref.tolerance}%`;
+          parts.push(head2);
+        }
+        if (ref.recencyDays != null) {
+          parts.push(ref.recencyDays >= 365
+            ? `${Math.round(ref.recencyDays / 365)}yr`
+            : `${Math.round(ref.recencyDays / 30)}mo`);
+        }
+        refEl.textContent = parts.join(' · ');
+        badge.appendChild(refEl);
+      }
 
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
@@ -3871,8 +4014,18 @@
           marketCheapest,
           buyCost: listingPrice || 0,
         });
+        const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
+        const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
+        const strictTol = primaryBonus
+          ? IntelSettings.getEffectiveBonusTolerance(String(primaryBonus.name).toLowerCase(), MEM.intel)
+          : null;
+        const reference = PricingEngine.compReference(comps, {
+          itemClass: itemClassKey,
+          targetBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
+          strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
+        });
         InlineRenderer.renderTwoTierCard(info, {
-          buy, ladder, classTag, askingMedian, askingCount,
+          buy, ladder, reference, classTag, askingMedian, askingCount,
           itemClass: itemClassKey, bbFloor,
         });
         return;
