@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.3
+// @version      0.3.4
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.3';
+  const SCRIPT_VERSION = '0.3.4';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2098,6 +2098,29 @@
     },
   };
 
+  // resolveItemClass(cls) — collapse a classify() result into a PricingEngine
+  // routing key. Returns null when the result isn't actionable (unknown rarity
+  // or off-axis category). Trash overrides rarity since trashBB hard-floors.
+  function resolveItemClass(cls) {
+    if (!cls) return null;
+    if (cls.isTrash) return 'trashBB';
+    if (cls.category === 'armor') {
+      if (cls.armorSet === 'Riot' || cls.armorSet === 'Dune') return 'duneRiotArmor';
+      if (cls.armorSet === 'Assault') return 'assaultArmor';
+      if (cls.rarity === 'orange') return 'orangeArmor';
+      if (cls.rarity === 'red')    return 'redArmor';
+      if (cls.rarity === 'yellow') return 'assaultArmor';
+      return null;
+    }
+    if (cls.category === 'weapon') {
+      if (cls.rarity === 'yellow') return 'yellowWeapon';
+      if (cls.rarity === 'orange') return 'orangeWeapon';
+      if (cls.rarity === 'red')    return 'redWeapon';
+      return null;
+    }
+    return null;
+  }
+
   // Pretty short-form class tag for the inline badge: `[Riot · yellow]` for
   // recognised armor sets, `[Yellow weapon]` for plain weapons, `[trash · yellow]`
   // when the curated trash flag is set. Empty when nothing classifies.
@@ -3150,32 +3173,68 @@
     },
 
     /**
-     * buyTarget({ itemClass, comps, currentBid, settings }) →
-     *   { max, floor, currentBidDelta }
+     * buyTarget({ itemClass, comps, currentBid, settings, bbFloor }) →
+     *   { max, floor, range?, tolerance?, currentBidDelta }
      *
-     * Yellow-weapon path (v0.3.0 slice 4). Base formula:
-     *   max = median(comps.price) × (1 − tax − mug − margin)
-     * Defaults: tax 0.05, mug 0.10, margin 0.05 (King's framework).
+     * Per-class routing (v0.3.0 slice 5):
+     *   yellowWeapon          — median × (1 − tax − mug − margin); floor informational
+     *   duneRiotArmor         — bbFloor + tolerance ($25m default); hard floor
+     *   trashBB               — bbFloor only; hard floor
+     *   assaultArmor          — median × 0.85 with range [×0.80, ×0.90]
+     *   orange/redWeapon      — { max: null, range: [minComp, maxComp] }
+     *   orange/redArmor       — { max: null, range: [minComp, maxComp] }
      *
-     * `floor` is null on this path — BB-floor routing applies to Riot/Dune/trash
-     * only and lands in later slices. `currentBidDelta = max − currentBid`;
-     * positive ⇒ headroom, negative ⇒ already over.
+     * `currentBidDelta = max − currentBid`; positive ⇒ headroom, negative ⇒ over.
+     * Range-only classes leave `currentBidDelta` null.
      */
     buyTarget(args) {
       const a = args || {};
       const s = a.settings || {};
-      const tax    = s.tax    != null ? s.tax    : 0.05;
-      const mug    = s.mug    != null ? s.mug    : 0.10;
-      const margin = s.margin != null ? s.margin : 0.05;
+      const cls = String(a.itemClass || 'yellowWeapon').trim();
+      const bbFloorRaw = Number(a.bbFloor);
+      const hasBBFloor = Number.isFinite(bbFloorRaw) && bbFloorRaw > 0;
+      const bbFloor = hasBBFloor ? Math.round(bbFloorRaw) : null;
       const prices = ((a.comps) || [])
         .map(c => Number(c && c.price))
         .filter(p => Number.isFinite(p) && p > 0);
       const med = _median(prices);
-      if (med == null) return { max: null, floor: null, currentBidDelta: null };
-      const max = Math.round(med * (1 - tax - mug - margin));
       const cb  = Number(a.currentBid);
-      const currentBidDelta = Number.isFinite(cb) ? max - cb : null;
-      return { max, floor: null, currentBidDelta };
+      const deltaOf = (m) => (Number.isFinite(cb) && m != null) ? m - cb : null;
+      const empty = { max: null, floor: null, currentBidDelta: null };
+
+      if (cls === 'duneRiotArmor') {
+        if (!hasBBFloor) return empty;
+        const tolerance = s.duneRiotTolerance != null ? s.duneRiotTolerance : 25_000_000;
+        const max = bbFloor + Math.round(tolerance);
+        return { max, floor: bbFloor, tolerance: Math.round(tolerance), currentBidDelta: deltaOf(max) };
+      }
+      if (cls === 'trashBB') {
+        if (!hasBBFloor) return empty;
+        return { max: bbFloor, floor: bbFloor, currentBidDelta: deltaOf(bbFloor) };
+      }
+      if (cls === 'assaultArmor') {
+        if (med == null) return empty;
+        const dMin = s.assaultDiscountMin != null ? s.assaultDiscountMin : 0.10;
+        const dMax = s.assaultDiscountMax != null ? s.assaultDiscountMax : 0.20;
+        const hi  = Math.round(med * (1 - dMin));
+        const lo  = Math.round(med * (1 - dMax));
+        const mid = Math.round((lo + hi) / 2);
+        return { max: mid, floor: null, range: [lo, hi], currentBidDelta: deltaOf(mid) };
+      }
+      if (cls === 'orangeWeapon' || cls === 'redWeapon'
+          || cls === 'orangeArmor'  || cls === 'redArmor') {
+        if (!prices.length) return { max: null, floor: null, range: null, currentBidDelta: null };
+        const lo = Math.round(Math.min(...prices));
+        const hi = Math.round(Math.max(...prices));
+        return { max: null, floor: null, range: [lo, hi], currentBidDelta: null };
+      }
+      // yellowWeapon (default)
+      if (med == null) return { max: null, floor: bbFloor, currentBidDelta: null };
+      const tax    = s.tax    != null ? s.tax    : 0.05;
+      const mug    = s.mug    != null ? s.mug    : 0.10;
+      const margin = s.margin != null ? s.margin : 0.05;
+      const max = Math.round(med * (1 - tax - mug - margin));
+      return { max, floor: bbFloor, currentBidDelta: deltaOf(max) };
     },
 
     /**
@@ -3614,8 +3673,26 @@
       }
       const buyEl = document.createElement('span');
       buyEl.className = 'rwth-card-buymax';
-      buyEl.textContent = buy.max != null ? `Buy max ${fmtChatPrice(buy.max)}` : 'Buy max —';
+      if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
+        const tol = buy.tolerance != null ? buy.tolerance : 0;
+        buyEl.textContent = `BB floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} tolerance`;
+      } else if (buy.max == null && Array.isArray(buy.range)) {
+        buyEl.textContent = `Buy range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
+      } else if (buy.max != null) {
+        buyEl.textContent = `Buy max ${fmtChatPrice(buy.max)}`;
+        if (Array.isArray(buy.range)) {
+          buyEl.textContent += ` (${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])})`;
+        }
+      } else {
+        buyEl.textContent = 'Buy max —';
+      }
       head.appendChild(buyEl);
+      if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && buy.max != null) {
+        const fl = document.createElement('span');
+        fl.className = 'rwth-card-bbfloor';
+        fl.textContent = `BB floor ${fmtChatPrice(s.bbFloor)}`;
+        head.appendChild(fl);
+      }
       if (buy.currentBidDelta != null) {
         const d = buy.currentBidDelta;
         const delta = document.createElement('span');
@@ -3765,40 +3842,44 @@
         ? formatClassTag({ ...cls, rarity })
         : formatClassTag({ category, rarity });
 
-      // Yellow-weapon path (v0.3.0 slice 4): two-tier card replaces the v0.2.x
-      // verdict line. Every other class still falls through to the legacy badge
-      // until later slices port them.
-      const isYellowWeapon = category === 'weapon' && rarity === 'yellow';
-      if (isYellowWeapon) {
-        const buy = PricingEngine.buyTarget({
-          itemClass: 'yellowWeapon',
-          comps,
-          currentBid: listingPrice,
-        });
-        const marketCheapest = askingShaped.length
-          ? Math.min(...askingShaped.map(c => c.price)) : null;
-        const ladder = PricingEngine.sellLadder({
-          itemClass: 'yellowWeapon',
-          comps,
-          marketCheapest,
-          buyCost: listingPrice || 0,
-        });
-        InlineRenderer.renderTwoTierCard(info, {
-          buy, ladder, classTag, askingMedian, askingCount,
-        });
-        return;
-      }
-
-      const verdict = PricingEngine.verdict(
-        { price: listingPrice || 0, quality: item.quality || 0 }, comps);
-      // BB floor — informational only. Armor takes 'armor' as the class key;
-      // weapons use the resolved weaponBase (pistol/rifle/etc).
+      // BB floor — used as hard guard on Riot/Dune/trash and informational
+      // elsewhere. Armor takes 'armor' as the class key; weapons use the
+      // resolved weaponBase (pistol/rifle/etc).
       const bbRate = MEM.bbRate && MEM.bbRate.rate;
       const bbClassKey = category === 'armor' ? 'armor' : (cls && cls.weaponBase) || null;
       const bbFloor = bbClassKey && rarity && bbRate
         ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
             { bonusCount: (parsed.parsedBonuses || []).length })
         : null;
+
+      // Per-class routing (v0.3.0 slice 5). Classes that resolve to a
+      // PricingEngine key get the two-tier card; anything we can't route
+      // falls through to the legacy verdict badge.
+      const itemClassKey = resolveItemClass(cls);
+      if (itemClassKey) {
+        const buy = PricingEngine.buyTarget({
+          itemClass: itemClassKey,
+          comps,
+          currentBid: listingPrice,
+          bbFloor,
+        });
+        const marketCheapest = askingShaped.length
+          ? Math.min(...askingShaped.map(c => c.price)) : null;
+        const ladder = PricingEngine.sellLadder({
+          itemClass: itemClassKey,
+          comps,
+          marketCheapest,
+          buyCost: listingPrice || 0,
+        });
+        InlineRenderer.renderTwoTierCard(info, {
+          buy, ladder, classTag, askingMedian, askingCount,
+          itemClass: itemClassKey, bbFloor,
+        });
+        return;
+      }
+
+      const verdict = PricingEngine.verdict(
+        { price: listingPrice || 0, quality: item.quality || 0 }, comps);
       InlineRenderer.renderAuctionBadge(info, {
         verdict, listingPrice, listingQuality: item.quality, bbFloor,
         askingMedian, askingCount, classTag,
