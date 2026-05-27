@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.5
+// @version      0.3.6
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.5';
+  const SCRIPT_VERSION = '0.3.6';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2832,6 +2832,41 @@
         font-size: 10px;
       }
       .rwth-card-ladder b { color: #8aa; font-weight: 400; margin-right: 2px; }
+      .rwth-card-bbfloor { color: #8aa; font-size: 10px; }
+      .rwth-card-ref     { color: #8aa; font-size: 10px; }
+
+      /* v0.3.0 slice 7 — drilldown panel */
+      .rwth-card-drill-toggle {
+        background: none; border: none; color: #5dc6f0;
+        cursor: pointer; font: inherit; padding: 0; margin-left: auto;
+      }
+      .rwth-card-drill-toggle:hover { color: #8ad8f5; }
+      .rwth-card-drill {
+        margin-top: 6px; padding-top: 6px;
+        border-top: 1px dashed #00e5ff44;
+        font-size: 10px; color: #cfe;
+      }
+      .rwth-card-drill-knobs { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 6px; }
+      .rwth-card-drill-knobs > div { display: flex; align-items: center; gap: 4px; }
+      .rwth-card-drill-knobs label { color: #8aa; }
+      .rwth-card-drill-knobs button {
+        background: #0a1420; color: #cfe; border: 1px solid #00e5ff44;
+        font: 10px Consolas, monospace; padding: 1px 6px; cursor: pointer;
+        border-radius: 2px;
+      }
+      .rwth-card-drill-knobs button.active {
+        background: #103a1d; color: #7ed098; border-color: #2c5e3b;
+      }
+      .rwth-card-drill-knobs button:disabled {
+        opacity: 0.4; cursor: not-allowed;
+      }
+      .rwth-card-drill-math { color: #8aa; margin-bottom: 6px; white-space: pre-wrap; }
+      .rwth-card-drill-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+      .rwth-card-drill-table th,
+      .rwth-card-drill-table td { padding: 2px 6px; text-align: left; }
+      .rwth-card-drill-table th { color: #8aa; font-weight: 400; border-bottom: 1px dashed #00e5ff44; }
+      .rwth-card-drill-table tr.dim td { color: #667; }
+      .rwth-card-drill-empty { color: #8aa; font-style: italic; }
 
       /* Ledger per-row Price-check panel. */
       .rwth-price-panel {
@@ -3770,21 +3805,80 @@
       badge.textContent = parts.join(' · ');
     },
     /**
-     * renderTwoTierCard(infoEl, state) — v0.3.0 yellow-weapon path.
-     * state: { buy:{max,currentBidDelta}, ladder:{auctionSafe,bazaar,market,forum,floor},
-     *          classTag, askingMedian, askingCount }
-     * Replaces the v0.2.x verdict line on auction-on-expand for yellow weapons
-     * (PRD #265 user stories 1–4, 19, 24).
+     * renderTwoTierCard(infoEl, ctx) — v0.3.0 two-tier card.
+     * ctx is the recompute context (PRD #265 user stories 21–23, issue #272):
+     *   { itemClass, classTag, bbFloor, currentBid, listingQuality,
+     *     primaryBonusName, primaryBonusValue, strictTolerance,
+     *     comps, marketCheapest, askingMedian, askingCount, margins }
+     * The card stores ctx on the badge so the drilldown knobs can recompute
+     * `buy / ladder / reference` client-side with no refetch.
      */
-    renderTwoTierCard(infoEl, state) {
+    renderTwoTierCard(infoEl, ctx) {
       const badge = InlineRenderer._slot(infoEl);
       if (!badge) return;
-      const s = state || {};
-      const buy = s.buy || {};
-      const ladder = s.ladder || {};
+      badge._rwthCtx = ctx || {};
+      let drill = InlineRenderer._drillState.get(badge);
+      if (!drill) {
+        drill = { bonus: 'auto', quality: 'auto', expanded: false };
+        InlineRenderer._drillState.set(badge, drill);
+      }
+      InlineRenderer._paintCard(badge, drill);
+    },
+    _drillState: new WeakMap(),
+    _applyDrillFilters(comps, drill, ctx) {
+      let arr = (comps || []).slice();
+      const bv = Number(ctx.primaryBonusValue);
+      const hasBonus = Number.isFinite(bv);
+      if (drill.bonus !== 'auto' && drill.bonus !== 'all' && hasBonus) {
+        let tol = null;
+        if (drill.bonus === 'strict') {
+          tol = Number.isFinite(Number(ctx.strictTolerance)) ? Number(ctx.strictTolerance) : 0;
+        } else if (drill.bonus === 'pm1') tol = 1;
+        else if (drill.bonus === 'pm3') tol = 3;
+        if (tol != null) {
+          arr = arr.filter(c => c.bonusValue != null && Math.abs(Number(c.bonusValue) - bv) <= tol);
+        }
+      }
+      const lq = Number(ctx.listingQuality);
+      const hasQ = Number.isFinite(lq) && lq > 0;
+      if (drill.quality !== 'auto' && drill.quality !== 'all' && hasQ) {
+        if (drill.quality === 'exact') {
+          const bucket = Math.floor(lq / 10) * 10;
+          arr = arr.filter(c => c.quality != null && Math.floor(Number(c.quality) / 10) * 10 === bucket);
+        } else if (drill.quality === 'pm10') {
+          const w = lq * 0.10;
+          arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
+        } else if (drill.quality === 'pm25') {
+          const w = lq * 0.25;
+          arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
+        }
+      }
+      return arr;
+    },
+    _paintCard(badge, drill) {
+      const s = badge._rwthCtx || {};
+      const rawComps = Array.isArray(s.comps) ? s.comps : [];
+      const filtered = InlineRenderer._applyDrillFilters(rawComps, drill, s);
+      const useAutoRef = drill.bonus === 'auto';
+
+      const buy = PricingEngine.buyTarget({
+        itemClass: s.itemClass, comps: filtered,
+        currentBid: s.currentBid, bbFloor: s.bbFloor,
+      });
+      const ladder = PricingEngine.sellLadder({
+        itemClass: s.itemClass, comps: filtered,
+        marketCheapest: s.marketCheapest, buyCost: s.currentBid || 0,
+      });
+      const reference = PricingEngine.compReference(filtered, {
+        itemClass: s.itemClass,
+        targetBonusValue: useAutoRef ? s.primaryBonusValue : null,
+        strictTolerance: useAutoRef ? s.strictTolerance : null,
+      });
+
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
       badge.textContent = '';
 
+      // ── headline ───────────────────────────────────────────────────────
       const head = document.createElement('div');
       head.className = 'rwth-card-headline';
       if (s.classTag) {
@@ -3827,29 +3921,42 @@
         }
         head.appendChild(delta);
       }
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'rwth-card-drill-toggle';
+      toggleBtn.textContent = drill.expanded ? '▲ hide' : '▼ details';
+      toggleBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        drill.expanded = !drill.expanded;
+        InlineRenderer._paintCard(badge, drill);
+      });
+      head.appendChild(toggleBtn);
       badge.appendChild(head);
 
-      const ref = s.reference;
-      if (ref && (ref.count > 0 || ref.widened)) {
+      // ── reference summary ─────────────────────────────────────────────
+      if (reference && (reference.count > 0 || reference.widened)) {
         const refEl = document.createElement('div');
         refEl.className = 'rwth-card-ref';
         const parts = [];
-        if (ref.widened) {
-          parts.push(`${ref.widened.strictCount} strict + ${ref.widened.widenedCount} widened to ±${ref.widened.widenedTolerance}%`);
+        if (reference.widened) {
+          parts.push(`${reference.widened.strictCount} strict + ${reference.widened.widenedCount} widened to ±${reference.widened.widenedTolerance}%`);
         } else {
-          let head2 = `${ref.count} comp${ref.count === 1 ? '' : 's'}`;
-          if (ref.tolerance != null) head2 += ` · ±${ref.tolerance}%`;
+          let head2 = `${reference.count} comp${reference.count === 1 ? '' : 's'}`;
+          if (reference.tolerance != null) head2 += ` · ±${reference.tolerance}%`;
           parts.push(head2);
         }
-        if (ref.recencyDays != null) {
-          parts.push(ref.recencyDays >= 365
-            ? `${Math.round(ref.recencyDays / 365)}yr`
-            : `${Math.round(ref.recencyDays / 30)}mo`);
+        if (reference.recencyDays != null) {
+          parts.push(reference.recencyDays >= 365
+            ? `${Math.round(reference.recencyDays / 365)}yr`
+            : `${Math.round(reference.recencyDays / 30)}mo`);
         }
+        if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('filtered');
         refEl.textContent = parts.join(' · ');
         badge.appendChild(refEl);
       }
 
+      // ── ladder ────────────────────────────────────────────────────────
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
       const rungs = [
@@ -3877,6 +3984,144 @@
         ladderEl.appendChild(span);
       }
       badge.appendChild(ladderEl);
+
+      // ── drilldown ─────────────────────────────────────────────────────
+      if (drill.expanded) {
+        badge.appendChild(InlineRenderer._buildDrilldown(badge, drill, s, filtered, buy, reference));
+      }
+    },
+    _buildDrilldown(badge, drill, ctx, filtered, buy, reference) {
+      const wrap = document.createElement('div');
+      wrap.className = 'rwth-card-drill';
+
+      // knobs
+      const knobs = document.createElement('div');
+      knobs.className = 'rwth-card-drill-knobs';
+      const hasBonus = Number.isFinite(Number(ctx.primaryBonusValue));
+      const hasQ     = Number.isFinite(Number(ctx.listingQuality)) && Number(ctx.listingQuality) > 0;
+      const strictLabel = hasBonus && Number.isFinite(Number(ctx.strictTolerance))
+        ? `strict ±${Number(ctx.strictTolerance)}%` : 'strict';
+      const bonusOpts = [
+        ['auto',   'auto',     true],
+        ['strict', strictLabel, hasBonus],
+        ['pm1',    '±1%',      hasBonus],
+        ['pm3',    '±3%',      hasBonus],
+        ['all',    'all',      true],
+      ];
+      const qualOpts = [
+        ['auto',  'auto',  true],
+        ['exact', 'exact', hasQ],
+        ['pm10',  '±10%',  hasQ],
+        ['pm25',  '±25%',  hasQ],
+        ['all',   'all',   true],
+      ];
+      const makeGroup = (key, label, opts) => {
+        const g = document.createElement('div');
+        const lbl = document.createElement('label');
+        lbl.textContent = label;
+        g.appendChild(lbl);
+        for (const [val, txt, enabled] of opts) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = txt;
+          if (drill[key] === val) b.classList.add('active');
+          if (!enabled) b.disabled = true;
+          else b.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            drill[key] = val;
+            InlineRenderer._paintCard(badge, drill);
+          });
+          g.appendChild(b);
+        }
+        return g;
+      };
+      knobs.appendChild(makeGroup('bonus',   'bonus',   bonusOpts));
+      knobs.appendChild(makeGroup('quality', 'quality', qualOpts));
+      wrap.appendChild(knobs);
+
+      // deduction math
+      const math = document.createElement('div');
+      math.className = 'rwth-card-drill-math';
+      math.textContent = InlineRenderer._deductionMath(ctx, buy, reference, filtered);
+      wrap.appendChild(math);
+
+      // top 5 most-recent comps
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.className = 'rwth-card-drill-empty';
+        empty.textContent = 'no comps match these filters';
+        wrap.appendChild(empty);
+      } else {
+        const sorted = filtered.slice().sort((a, b) => {
+          const ta = Number(a.timestamp) || 0;
+          const tb = Number(b.timestamp) || 0;
+          return tb - ta;
+        }).slice(0, 5);
+        const table = document.createElement('table');
+        table.className = 'rwth-card-drill-table';
+        const thead = document.createElement('thead');
+        thead.innerHTML = '<tr><th>date</th><th>price</th><th>bonus%</th><th>quality</th></tr>';
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        for (const c of sorted) {
+          const tr = document.createElement('tr');
+          const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
+          tr.appendChild(td(InlineRenderer._fmtDate(c.timestamp)));
+          tr.appendChild(td(fmtChatPrice(c.price)));
+          tr.appendChild(td(c.bonusValue != null ? `${c.bonusValue}%` : '—'));
+          tr.appendChild(td(c.quality != null && c.quality !== 0 ? `${Number(c.quality).toFixed(2)}%` : '—'));
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+      }
+
+      return wrap;
+    },
+    _fmtDate(ts) {
+      const n = Number(ts);
+      if (!Number.isFinite(n) || n <= 0) return '—';
+      const d = new Date(n);
+      if (isNaN(d.getTime())) return '—';
+      const mo = d.toLocaleString('en-US', { month: 'short' });
+      return `${mo} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`;
+    },
+    _deductionMath(ctx, buy, reference, filtered) {
+      const cls = ctx.itemClass;
+      const med = reference && reference.median != null
+        ? reference.median
+        : (function () {
+            const ps = filtered.map(c => Number(c.price)).filter(p => Number.isFinite(p) && p > 0).sort((a, b) => a - b);
+            if (!ps.length) return null;
+            const m = Math.floor(ps.length / 2);
+            return ps.length % 2 ? ps[m] : (ps[m - 1] + ps[m]) / 2;
+          })();
+      if (cls === 'duneRiotArmor') {
+        if (buy.floor == null) return 'BB floor unavailable — set API key + wait for rate fetch.';
+        const tol = buy.tolerance != null ? buy.tolerance : 0;
+        return `BB floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} tolerance → ${fmtChatPrice(buy.max)}`;
+      }
+      if (cls === 'trashBB') {
+        if (buy.floor == null) return 'BB floor unavailable.';
+        return `BB floor ${fmtChatPrice(buy.floor)} (hard) → ${fmtChatPrice(buy.max)}`;
+      }
+      if (cls === 'assaultArmor') {
+        if (med == null || !Array.isArray(buy.range)) return 'no comps to derive range.';
+        return `median ${fmtChatPrice(med)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (mid ${fmtChatPrice(buy.max)})`;
+      }
+      if (cls === 'orangeWeapon' || cls === 'redWeapon' || cls === 'orangeArmor' || cls === 'redArmor') {
+        if (!Array.isArray(buy.range)) return 'no comps to derive range.';
+        return `comp range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — no single max for ${cls}`;
+      }
+      // yellowWeapon (default)
+      if (med == null || buy.max == null) return 'no comps to derive median.';
+      const m = ctx.margins || {};
+      const tax    = m.tax    != null ? m.tax    : 0.05;
+      const mug    = m.mug    != null ? m.mug    : 0.10;
+      const margin = m.margin != null ? m.margin : 0.05;
+      const pct = (x) => `${Math.round(x * 100)}%`;
+      return `median ${fmtChatPrice(med)} − ${pct(tax)} tax − ${pct(mug)} mug − ${pct(margin)} margin → ${fmtChatPrice(buy.max)}`;
     },
     removeAll() {
       if (typeof document === 'undefined') return;
@@ -4000,33 +4245,27 @@
       // falls through to the legacy verdict badge.
       const itemClassKey = resolveItemClass(cls);
       if (itemClassKey) {
-        const buy = PricingEngine.buyTarget({
-          itemClass: itemClassKey,
-          comps,
-          currentBid: listingPrice,
-          bbFloor,
-        });
         const marketCheapest = askingShaped.length
           ? Math.min(...askingShaped.map(c => c.price)) : null;
-        const ladder = PricingEngine.sellLadder({
-          itemClass: itemClassKey,
-          comps,
-          marketCheapest,
-          buyCost: listingPrice || 0,
-        });
         const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
         const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
         const strictTol = primaryBonus
           ? IntelSettings.getEffectiveBonusTolerance(String(primaryBonus.name).toLowerCase(), MEM.intel)
           : null;
-        const reference = PricingEngine.compReference(comps, {
-          itemClass: itemClassKey,
-          targetBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
-          strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
-        });
         InlineRenderer.renderTwoTierCard(info, {
-          buy, ladder, reference, classTag, askingMedian, askingCount,
-          itemClass: itemClassKey, bbFloor,
+          itemClass: itemClassKey,
+          classTag,
+          bbFloor,
+          currentBid: listingPrice,
+          listingQuality: item.quality,
+          primaryBonusName: primaryBonus ? primaryBonus.name : null,
+          primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
+          strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
+          comps,
+          marketCheapest,
+          askingMedian,
+          askingCount,
+          margins: null,
         });
         return;
       }
