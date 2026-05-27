@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.7
+// @version      0.3.8
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.7';
+  const SCRIPT_VERSION = '0.3.8';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -97,6 +97,13 @@
       mugBuffer: 10,
       marginTarget: 15,
       markup: 1.20,
+      // v0.3.0 slice 9 — user-curated seed data. Empty by design: PRD #265
+      // ships the mechanism only, the user supplies the lists in Settings.
+      // Empty → fall through to defaults.bonusTolerance (current behavior).
+      excludedBonuses: [],                                  // ["cupid", "achilles", …]
+      bonusBand: { narrow: null, medium: null, wide: null, // widths (%) per band
+                   bonuses: {} },                           // { warlord: 'narrow', … }
+      breakpoints: {},                                      // { warlord: [18, 19], … }
     },
     bbRate: null,           // { rate, cachePrices, fetchedAt } — hydrated from rwth_bb_rate
     fetchError: null,
@@ -137,12 +144,21 @@
 
     const intel = Store.get('rwth_intel_settings');
     if (intel && typeof intel === 'object') {
+      const band = intel.bonusBand || {};
       MEM.intel = {
         ...MEM.intel,
         ...intel,
         enabled:  { ...MEM.intel.enabled,  ...(intel.enabled  || {}) },
         defaults: { ...MEM.intel.defaults, ...(intel.defaults || {}) },
         bonuses:  { ...(intel.bonuses || {}) },
+        excludedBonuses: Array.isArray(intel.excludedBonuses) ? intel.excludedBonuses.slice() : [],
+        bonusBand: {
+          narrow: band.narrow != null ? Number(band.narrow) : null,
+          medium: band.medium != null ? Number(band.medium) : null,
+          wide:   band.wide   != null ? Number(band.wide)   : null,
+          bonuses: { ...(band.bonuses || {}) },
+        },
+        breakpoints: { ...(intel.breakpoints || {}) },
       };
     }
   }
@@ -428,6 +444,10 @@
     const askingLine = (s.askingCount && s.askingMedian != null)
       ? `<div class="rwth-price-math">Asking: ${fmtMoney(s.askingMedian)} (${s.askingCount} listed)</div>`
       : '';
+    if (s.skipped === 'trash') {
+      const which = s.bonusName ? ` (${escapeAttr(s.bonusName)})` : '';
+      return `<div class="rwth-price-panel rwth-tier-none">skipped: trash bonus${which}</div>`;
+    }
     if (s.error) {
       return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}${askingLine}</div>`;
     }
@@ -716,6 +736,15 @@
       const override = cfg.bonuses && cfg.bonuses[key];
       if (override && override.ignoreQuality) return 0;
       if (override && override.tolerance != null) return override.tolerance;
+      // v0.3.0 slice 9 — per-bonus band lookup (user-curated). When a band
+      // is assigned for this bonus and the band has a width set, that wins
+      // over the global default. Empty band map → defaults (current behavior).
+      const band = cfg.bonusBand;
+      if (band && band.bonuses) {
+        const bandKey = band.bonuses[key];
+        const width = bandKey ? band[bandKey] : null;
+        if (Number.isFinite(Number(width))) return Number(width);
+      }
       return cfg.defaults.bonusTolerance;
     },
     getEffectiveQualityTolerance(bonusId, intel) {
@@ -726,6 +755,58 @@
       if (override && override.ignoreQuality) return 0;
       if (override && override.tolerance != null) return override.tolerance;
       return cfg.defaults.qualityTolerance;
+    },
+  };
+
+  // ─── BonusTrashGuard (pure, ADR-0002) ───────────────────────────────────────
+  // Curated trash-bonus exclusion list. `isExcluded` is consulted before any
+  // Supabase/weav3r fetch so excluded items short-circuit with no API spend.
+  // `excluded` may be an Array<string> or a Set<string>; names are matched
+  // case-insensitively against the lower-cased bonus id.
+  const BonusTrashGuard = {
+    isExcluded(bonusName, excluded) {
+      if (!bonusName || !excluded) return false;
+      const key = String(bonusName).trim().toLowerCase();
+      if (!key) return false;
+      if (excluded instanceof Set) return excluded.has(key);
+      if (Array.isArray(excluded)) {
+        for (const e of excluded) {
+          if (String(e || '').trim().toLowerCase() === key) return true;
+        }
+      }
+      return false;
+    },
+  };
+
+  // ─── BreakpointFlagger (pure, ADR-0002) ─────────────────────────────────────
+  // Surfaces a "near a price kink" warning on the card. `flag` returns the
+  // matched breakpoint and its delta when |value − breakpoint| ≤ 1, else null.
+  // `table` shape: { [bonusName]: number[] } — empty/missing → no warning.
+  const BreakpointFlagger = {
+    flag(bonusName, bonusValue, table) {
+      if (!bonusName || !table) return null;
+      const key = String(bonusName).trim().toLowerCase();
+      const value = Number(bonusValue);
+      if (!key || !Number.isFinite(value)) return null;
+      // Try direct key, then case-insensitive scan (table may be authored
+      // with mixed-case keys from the Settings editor).
+      let bps = table[key];
+      if (!bps) {
+        for (const k of Object.keys(table)) {
+          if (String(k).trim().toLowerCase() === key) { bps = table[k]; break; }
+        }
+      }
+      if (!Array.isArray(bps) || !bps.length) return null;
+      let best = null;
+      for (const bp of bps) {
+        const n = Number(bp);
+        if (!Number.isFinite(n)) continue;
+        const d = Math.abs(value - n);
+        if (d <= 1 && (best == null || d < best.delta)) {
+          best = { breakpoint: n, delta: d, side: value < n ? 'below' : (value > n ? 'above' : 'at') };
+        }
+      }
+      return best;
     },
   };
 
@@ -780,6 +861,53 @@
         <button class="rwth-btn rwth-btn-ghost rwth-intel-bonus-rm" type="button"
                 data-action="remove-intel-bonus" data-id="${escapeAttr(id)}">✕</button>
       </div>`).join('');
+  }
+
+  // v0.3.0 slice 9 — Settings serializers for the seed-data editors.
+  // Plain text shapes so users can paste forum-curated lists straight in;
+  // no defaults are seeded in code (PRD #265).
+  function fmtTrashList(arr) {
+    return Array.isArray(arr) ? arr.join(', ') : '';
+  }
+  function parseTrashList(text) {
+    return String(text || '')
+      .split(/[\s,;\n]+/)
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean)
+      .filter((v, i, a) => a.indexOf(v) === i);
+  }
+  function fmtBandBonuses(bandKey, bonuses) {
+    const out = [];
+    for (const k of Object.keys(bonuses || {})) {
+      if (bonuses[k] === bandKey) out.push(k);
+    }
+    return out.join(', ');
+  }
+  function fmtBreakpoints(table) {
+    const lines = [];
+    for (const k of Object.keys(table || {})) {
+      const vals = Array.isArray(table[k]) ? table[k] : [];
+      if (!vals.length) continue;
+      lines.push(`${k}: ${vals.join(', ')}`);
+    }
+    return lines.join('\n');
+  }
+  function parseBreakpoints(text) {
+    const table = {};
+    for (const raw of String(text || '').split(/\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      const idx = line.indexOf(':');
+      if (idx === -1) continue;
+      const name = line.slice(0, idx).trim().toLowerCase();
+      if (!name) continue;
+      const vals = line.slice(idx + 1)
+        .split(/[\s,;]+/)
+        .map(s => Number(s))
+        .filter(n => Number.isFinite(n));
+      if (vals.length) table[name] = vals;
+    }
+    return table;
   }
 
   function buildSettingsTab(mem) {
@@ -864,6 +992,60 @@
         </label>
         <button class="rwth-btn" type="button" data-action="add-intel-bonus">+ Add</button>
       </div>
+
+      <p class="rwth-form-title" style="margin:14px 0 4px;">Trash bonus list</p>
+      <p class="rwth-intel-empty" style="margin:0 0 4px;">Bonuses to skip entirely — comma- or newline-separated. Items carrying any of these short-circuit before any comp fetch.</p>
+      <textarea class="rwth-field-input" id="rwth-intel-trash" rows="2"
+                style="width:100%;font-family:inherit;"
+                placeholder="cupid, achilles, …">${escapeAttr(fmtTrashList(intel.excludedBonuses))}</textarea>
+
+      <p class="rwth-form-title" style="margin:14px 0 4px;">Per-bonus tolerance bands</p>
+      <p class="rwth-intel-empty" style="margin:0 0 4px;">Set a width (%) per band, then list the bonuses that route to each band. Unlisted bonuses fall through to the default tolerance.</p>
+      <div class="rwth-intel-grid">
+        <label class="rwth-field">
+          <span class="rwth-field-label">Narrow width %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 id="rwth-intel-band-narrow-w"
+                 value="${escapeAttr(intel.bonusBand.narrow != null ? intel.bonusBand.narrow : '')}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Medium width %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 id="rwth-intel-band-medium-w"
+                 value="${escapeAttr(intel.bonusBand.medium != null ? intel.bonusBand.medium : '')}">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Wide width %</span>
+          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
+                 id="rwth-intel-band-wide-w"
+                 value="${escapeAttr(intel.bonusBand.wide != null ? intel.bonusBand.wide : '')}">
+        </label>
+      </div>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Narrow bonuses</span>
+        <textarea class="rwth-field-input" id="rwth-intel-band-narrow-b" rows="1"
+                  style="width:100%;font-family:inherit;"
+                  placeholder="warlord, empower, …">${escapeAttr(fmtBandBonuses('narrow', intel.bonusBand.bonuses))}</textarea>
+      </label>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Medium bonuses</span>
+        <textarea class="rwth-field-input" id="rwth-intel-band-medium-b" rows="1"
+                  style="width:100%;font-family:inherit;"
+                  placeholder="">${escapeAttr(fmtBandBonuses('medium', intel.bonusBand.bonuses))}</textarea>
+      </label>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Wide bonuses</span>
+        <textarea class="rwth-field-input" id="rwth-intel-band-wide-b" rows="1"
+                  style="width:100%;font-family:inherit;"
+                  placeholder="quicken, …">${escapeAttr(fmtBandBonuses('wide', intel.bonusBand.bonuses))}</textarea>
+      </label>
+
+      <p class="rwth-form-title" style="margin:14px 0 4px;">Breakpoints</p>
+      <p class="rwth-intel-empty" style="margin:0 0 4px;">One bonus per line — <code>name: value, value</code>. Cards flag a warning when current bonus is within ±1 of any listed value.</p>
+      <textarea class="rwth-field-input" id="rwth-intel-breakpoints" rows="4"
+                style="width:100%;font-family:inherit;"
+                placeholder="warlord: 18, 19&#10;empower: 80&#10;plunder: 20, 21&#10;deadeye: 25, 30">${escapeAttr(fmtBreakpoints(intel.breakpoints))}</textarea>
+
       <div class="rwth-settings-actions">
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
         <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
@@ -1708,6 +1890,9 @@
       mugBuffer:    MEM.intel.mugBuffer,
       marginTarget: MEM.intel.marginTarget,
       markup:       MEM.intel.markup,
+      excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
+      bonusBand:    { ...MEM.intel.bonusBand, bonuses: { ...(MEM.intel.bonusBand && MEM.intel.bonusBand.bonuses || {}) } },
+      breakpoints:  { ...MEM.intel.breakpoints },
     };
     document.querySelectorAll('#rwth-content [data-intel]').forEach((el) => {
       const path = el.dataset.intel;
@@ -1734,6 +1919,36 @@
       if (!nextIntel.bonuses[id]) nextIntel.bonuses[id] = {};
       nextIntel.bonuses[id].ignoreQuality = el.checked;
     });
+
+    // v0.3.0 slice 9 — trash list, per-bonus bands, breakpoints.
+    const trashEl = document.getElementById('rwth-intel-trash');
+    if (trashEl) nextIntel.excludedBonuses = parseTrashList(trashEl.value);
+
+    const bandWidth = (id) => {
+      const el = document.getElementById(id);
+      if (!el) return null;
+      const v = parseFloat(el.value);
+      return Number.isFinite(v) ? v : null;
+    };
+    const bandBonuses = {};
+    const bandBonusesFor = (id, key) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      for (const name of parseTrashList(el.value)) bandBonuses[name] = key;
+    };
+    bandBonusesFor('rwth-intel-band-narrow-b', 'narrow');
+    bandBonusesFor('rwth-intel-band-medium-b', 'medium');
+    bandBonusesFor('rwth-intel-band-wide-b',   'wide');
+    nextIntel.bonusBand = {
+      narrow: bandWidth('rwth-intel-band-narrow-w'),
+      medium: bandWidth('rwth-intel-band-medium-w'),
+      wide:   bandWidth('rwth-intel-band-wide-w'),
+      bonuses: bandBonuses,
+    };
+
+    const bpEl = document.getElementById('rwth-intel-breakpoints');
+    if (bpEl) nextIntel.breakpoints = parseBreakpoints(bpEl.value);
+
     Store.set('rwth_intel_settings', nextIntel);
     setState({ settings: next, intel: nextIntel });
     AuctionScanner.refresh();
@@ -1856,6 +2071,13 @@
 
   async function runPriceCheck(item) {
     const intel = MEM.intel;
+    // v0.3.0 slice 9 — BonusTrashGuard short-circuit before any fetch.
+    const trashHit = (item.bonuses || []).find(
+      b => b && BonusTrashGuard.isExcluded(b.name, intel.excludedBonuses));
+    if (trashHit) {
+      writePriceCheckResult(item.id, { skipped: 'trash', bonusName: trashHit.name });
+      return;
+    }
     // v3: ctx-shape result (BadgeRenderer v2). Prefix bump so pre-v0.3.7
     // cached pricecheck:v2 entries (verdict/suggest) are ignored.
     const cacheKey = 'pricecheck:v3:' + JSON.stringify({
@@ -3811,6 +4033,14 @@
         badge.textContent = '⟳ checking…';
         return;
       }
+      // v0.3.0 slice 9 — BonusTrashGuard short-circuit. No fetch happened;
+      // the card just states the curated exclusion so the row is not silent.
+      if (s.skipped === 'trash') {
+        badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
+        const which = s.bonusName ? ` (${s.bonusName})` : '';
+        badge.textContent = `skipped: trash bonus${which}`;
+        return;
+      }
       if (s.error) {
         badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
         const askPart = (s.askingCount && s.askingMedian != null)
@@ -4000,6 +4230,19 @@
         if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('filtered');
         refEl.textContent = parts.join(' · ');
         badge.appendChild(refEl);
+      }
+
+      // ── breakpoint warning (v0.3.0 slice 9) ────────────────────────────
+      // BreakpointFlagger reads the user-curated breakpoint table. Empty
+      // table → no flag, no warning line.
+      const bpTable = (MEM.intel && MEM.intel.breakpoints) || null;
+      const bpFlag  = BreakpointFlagger.flag(s.primaryBonusName, s.primaryBonusValue, bpTable);
+      if (bpFlag) {
+        const warnEl = document.createElement('div');
+        warnEl.className = 'rwth-card-breakpoint';
+        const sideTxt = bpFlag.side === 'at' ? 'at' : `${bpFlag.delta}% ${bpFlag.side}`;
+        warnEl.textContent = `⚠ near breakpoint ${bpFlag.breakpoint}% (${sideTxt}) — comps may not be representative`;
+        badge.appendChild(warnEl);
       }
 
       // ── ladder ────────────────────────────────────────────────────────
@@ -4242,6 +4485,15 @@
         quality: parsed.quality,
         type: parsed.itemType,
       };
+      // v0.3.0 slice 9 — BonusTrashGuard short-circuit before any fetch.
+      const trashHit = (parsed.parsedBonuses || []).find(
+        b => b && BonusTrashGuard.isExcluded(b.name, MEM.intel.excludedBonuses));
+      if (trashHit) {
+        InlineRenderer.renderAuctionBadge(info, {
+          skipped: 'trash', bonusName: trashHit.name,
+        });
+        return;
+      }
       let r;
       try {
         r = await PricingEngine.fetchComps(item);
@@ -4366,6 +4618,8 @@
     summarizeSells,
     AdvertiseGenerator,
     IntelSettings,
+    BonusTrashGuard,
+    BreakpointFlagger,
     similarity,
     PricingEngine,
     BBEngine,
