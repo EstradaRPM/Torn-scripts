@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.2.6
+// @version      0.3.0
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.2.6';
+  const SCRIPT_VERSION = '0.3.0';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -98,6 +98,7 @@
       marginTarget: 15,
       markup: 1.20,
     },
+    bbRate: null,           // { rate, cachePrices, fetchedAt } — hydrated from rwth_bb_rate
     fetchError: null,
   };
 
@@ -127,6 +128,11 @@
     const collapsed = Store.get('rwth_collapsed');
     if (collapsed && typeof collapsed === 'object') {
       MEM.ui.collapsed = { ...MEM.ui.collapsed, ...collapsed };
+    }
+
+    const bbRate = Store.get('rwth_bb_rate');
+    if (bbRate && typeof bbRate === 'object' && typeof bbRate.rate === 'number') {
+      MEM.bbRate = bbRate;
     }
 
     const intel = Store.get('rwth_intel_settings');
@@ -3090,6 +3096,131 @@
     },
   };
 
+  // ─── BBEngine — Bunker Bucks floor pricing ──────────────────────────────────
+  // Pure `calculateFloor` + table; impure `fetchBBRate` ports the harmonic-mean
+  // 5-cache rate from torn-rw-auction-advisor-v1.user.js. Floor is informational
+  // in v0.3.0 slice 1 — verdict math is untouched.
+  //
+  // BB_MULTIPLIERS: rows = item class, cols = rarity. Orange/red weapons take a
+  // 1.5× multiplier when the piece carries 2 bonuses (`orange2` / `red2`). The
+  // weapon-tier table is sourced from the Big Al's Bunker wiki; armor is
+  // rarity-only per the Step 2 pricing doc.
+  const BB_MULTIPLIERS = {
+    armor:             { yellow: 12, orange: 26, red: 108 },
+    pistol:            { yellow: 4,  orange: 12, orange2: 18, red: 36,  red2: 54  },
+    smg:               { yellow: 4,  orange: 12, orange2: 18, red: 36,  red2: 54  },
+    club:              { yellow: 6,  orange: 18, orange2: 27, red: 54,  red2: 81  },
+    piercing:          { yellow: 6,  orange: 18, orange2: 27, red: 54,  red2: 81  },
+    slashing:          { yellow: 6,  orange: 18, orange2: 27, red: 54,  red2: 81  },
+    shotgun:           { yellow: 10, orange: 30, orange2: 45, red: 90,  red2: 135 },
+    rifle:             { yellow: 10, orange: 30, orange2: 45, red: 90,  red2: 135 },
+    'machine gun':     { yellow: 14, orange: 42, orange2: 63, red: 126, red2: 189 },
+    'heavy artillery': { yellow: 14, orange: 42, orange2: 63, red: 126, red2: 189 },
+  };
+
+  // All 5 combat caches with their BB yields. Per-cache $/BB = price / bb;
+  // medium/heavy caches typically beat Small Arms on $/BB and pull the
+  // harmonic-mean rate below the small-arms-only number.
+  const COMBAT_CACHES = [
+    { name: 'Small Arms Cache',  bb: 20 },
+    { name: 'Melee Cache',       bb: 30 },
+    { name: 'Medium Arms Cache', bb: 50 },
+    { name: 'Armor Cache',       bb: 60 },
+    { name: 'Heavy Arms Cache',  bb: 70 },
+  ];
+
+  const BB_RATE_TTL_MS = 60 * 60 * 1000; // 1h
+
+  const BBEngine = {
+    MULTIPLIERS: BB_MULTIPLIERS,
+    COMBAT_CACHES,
+    /**
+     * calculateFloor(itemClass, rarity, bbRate, opts?) → number|null
+     * itemClass — 'armor' | 'pistol' | 'smg' | 'club' | 'piercing' | 'slashing'
+     *             | 'shotgun' | 'rifle' | 'machine gun' | 'heavy artillery'
+     * rarity    — 'yellow' | 'orange' | 'red'
+     * bbRate    — $/BB (cache price ÷ bb count)
+     * opts.bonusCount — 1 (default) | 2 (orange/red weapons only)
+     * Returns null on missing/invalid rate, unknown class, or unknown rarity.
+     */
+    calculateFloor(itemClass, rarity, bbRate, opts) {
+      if (!bbRate || bbRate <= 0) return null;
+      const cls = String(itemClass == null ? '' : itemClass).toLowerCase().trim();
+      const r   = String(rarity == null ? '' : rarity).toLowerCase().trim();
+      const table = BB_MULTIPLIERS[cls];
+      if (!table) return null;
+      const twoBonus = opts && opts.bonusCount === 2 && (r === 'orange' || r === 'red');
+      const key = twoBonus ? r + '2' : r;
+      const mult = table[key];
+      if (!mult) return null;
+      return mult * bbRate;
+    },
+    /**
+     * fetchBBRate({ force }?) → Promise<{ rate, cachePrices, fetchedAt } | null>
+     * Harmonic-mean weighted across all 5 combat caches. Result persisted to
+     * `rwth_bb_rate` with 1h TTL. Returns cached value when fresh unless
+     * force=true. Failures return null and set MEM.fetchError.
+     */
+    async fetchBBRate(opts) {
+      const force = !!(opts && opts.force);
+      const cached = Store.get('rwth_bb_rate');
+      if (!force && cached && cached.fetchedAt
+          && Date.now() - cached.fetchedAt < BB_RATE_TTL_MS) {
+        MEM.bbRate = cached;
+        return cached;
+      }
+      const key = (MEM.settings && MEM.settings.apiKey) || '';
+      if (!key || /^#+PDA-APIKEY#+$/.test(key)) {
+        MEM.fetchError = 'No API key — enter one in Settings';
+        return null;
+      }
+      try {
+        // Resolve cache item IDs once via the Torn items dictionary.
+        const cacheNames = COMBAT_CACHES.map(c => c.name);
+        let cacheIds = Store.get('rwth_cache_item_ids') || {};
+        const missing = cacheNames.filter(n => !cacheIds[n]);
+        if (missing.length) {
+          const r = await fetch(`${API_BASE}/torn/?selections=items&key=${encodeURIComponent(key)}&comment=rwth-bb`);
+          const d = await r.json();
+          if (d && d.error) { MEM.fetchError = `BB items: ${d.error.error}`; return null; }
+          const items = (d && d.items) || {};
+          for (const id of Object.keys(items)) {
+            const it = items[id];
+            if (it && cacheNames.includes(it.name)) cacheIds[it.name] = parseInt(id, 10);
+          }
+          const stillMissing = cacheNames.filter(n => !cacheIds[n]);
+          if (stillMissing.length) {
+            MEM.fetchError = `Cache IDs not found: ${stillMissing.join(', ')}`;
+            return null;
+          }
+          Store.set('rwth_cache_item_ids', cacheIds);
+        }
+        const results = await Promise.all(COMBAT_CACHES.map(async ({ name, bb }) => {
+          const id = cacheIds[name];
+          const r = await fetch(`${API_BASE}/v2/market/${id}/itemmarket?limit=1&key=${encodeURIComponent(key)}&comment=rwth-bb`);
+          const d = await r.json();
+          if (d && d.error) return null;
+          const price = d && d.itemmarket && d.itemmarket.listings && d.itemmarket.listings[0]
+            ? d.itemmarket.listings[0].price : null;
+          return price != null && price > 0 ? { name, price, bb, rate: price / bb } : null;
+        }));
+        const valid = results.filter(Boolean);
+        if (!valid.length) { MEM.fetchError = 'No cache listings for BB rate'; return null; }
+        // Harmonic mean — cheapest $/BB cache pulls the rate down.
+        const invSum = valid.reduce((s, x) => s + 1 / x.rate, 0);
+        const rate   = valid.length / invSum;
+        const cachePrices = Object.fromEntries(valid.map(x => [x.name, x.price]));
+        const out = { rate, cachePrices, fetchedAt: Date.now() };
+        MEM.bbRate = out;
+        Store.set('rwth_bb_rate', out);
+        return out;
+      } catch (err) {
+        MEM.fetchError = `fetchBBRate error: ${err && err.message}`;
+        return null;
+      }
+    },
+  };
+
   // ─── DomScanner — pure parse of an expanded item-info block ────────────────
   // Mirrors the Price Checker's parseAuctionRow + parseItemMarketRow, but
   // normalises bonuses to { name, value } so PricingEngine.fetchComps can
@@ -3133,9 +3264,21 @@
       if (!li || !li.querySelector) return null;
       const titleEl = li.querySelector('.item-name');
       const titleName = titleEl ? titleEl.textContent.trim() : '';
+      // Rarity from glow class on the li or any descendant; ports
+      // torn-rw-auction-advisor-v1.user.js's RARITY_GLOWS detection.
+      let rarity = null;
+      try {
+        const glowTarget = li.matches && li.matches('[class*="glow-"]')
+          ? li : li.querySelector('[class*="glow-"]');
+        if (glowTarget && glowTarget.classList) {
+          for (const r of ['red', 'orange', 'yellow']) {
+            if (glowTarget.classList.contains('glow-' + r)) { rarity = r; break; }
+          }
+        }
+      } catch {}
       const info = li.querySelector('.show-item-info');
       if (!info) {
-        return { itemName: titleName, parsedBonuses: [], quality: null, itemType: 'weapon' };
+        return { itemName: titleName, parsedBonuses: [], quality: null, itemType: 'weapon', rarity };
       }
       const inner = DomScanner.parseItemMarketRow(info);
       return {
@@ -3143,6 +3286,7 @@
         parsedBonuses: inner.parsedBonuses,
         quality: inner.quality,
         itemType: inner.itemType,
+        rarity,
       };
     },
   };
@@ -3229,6 +3373,9 @@
       parts.push(`(${v.compsUsed} comps · ±${v.tolerance}%)`);
       if (v.slopeProjection != null && s.listingQuality != null) {
         parts.push(`slope ${fmtChatPrice(v.slopeProjection)} at ${s.listingQuality}% q`);
+      }
+      if (s.bbFloor != null) {
+        parts.push(`BB floor ${fmtChatPrice(s.bbFloor)}`);
       }
       badge.textContent = parts.join(' · ');
     },
@@ -3322,8 +3469,17 @@
       }
       const verdict = PricingEngine.verdict(
         { price: listingPrice || 0, quality: item.quality || 0 }, comps);
+      // BB floor — informational only. Armor takes rarity directly; weapon
+      // class lookup arrives in the ItemClassifier slice, so weapon floors
+      // stay null until then.
+      const bbRate = MEM.bbRate && MEM.bbRate.rate;
+      const itemClass = parsed.itemType === 'armor' ? 'armor' : null;
+      const bbFloor = itemClass && parsed.rarity && bbRate
+        ? BBEngine.calculateFloor(itemClass, parsed.rarity, bbRate,
+            { bonusCount: (parsed.parsedBonuses || []).length })
+        : null;
       InlineRenderer.renderAuctionBadge(info, {
-        verdict, listingPrice, listingQuality: item.quality,
+        verdict, listingPrice, listingQuality: item.quality, bbFloor,
       });
     },
     start() {
@@ -3371,6 +3527,7 @@
     IntelSettings,
     similarity,
     PricingEngine,
+    BBEngine,
     Cache,
     SupabaseClient,
     Weav3rClient,
@@ -3385,6 +3542,9 @@
     hydrate();
     render();          // builds the shell (hidden until MEM.ui.open)
     startLauncher();
+    // Warm the BB rate in the background — 1h TTL means at most one fetch per
+    // hour and the cached value drives the badge until then.
+    BBEngine.fetchBBRate().catch(() => {});
     AuctionScanner.refresh();
     // SPA-aware: Torn navigates without full reload, so poll for href changes
     // and reconcile the scanner's attach state with the new URL.
