@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.8
+// @version      0.3.9
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.8';
+  const SCRIPT_VERSION = '0.3.9';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -101,9 +101,6 @@
       // ships the mechanism only, the user supplies the lists in Settings.
       // Empty → fall through to defaults.bonusTolerance (current behavior).
       excludedBonuses: [],                                  // ["cupid", "achilles", …]
-      bonusBand: { narrow: null, medium: null, wide: null, // widths (%) per band
-                   bonuses: {} },                           // { warlord: 'narrow', … }
-      breakpoints: {},                                      // { warlord: [18, 19], … }
     },
     bbRate: null,           // { rate, cachePrices, fetchedAt } — hydrated from rwth_bb_rate
     fetchError: null,
@@ -144,7 +141,6 @@
 
     const intel = Store.get('rwth_intel_settings');
     if (intel && typeof intel === 'object') {
-      const band = intel.bonusBand || {};
       MEM.intel = {
         ...MEM.intel,
         ...intel,
@@ -152,13 +148,6 @@
         defaults: { ...MEM.intel.defaults, ...(intel.defaults || {}) },
         bonuses:  { ...(intel.bonuses || {}) },
         excludedBonuses: Array.isArray(intel.excludedBonuses) ? intel.excludedBonuses.slice() : [],
-        bonusBand: {
-          narrow: band.narrow != null ? Number(band.narrow) : null,
-          medium: band.medium != null ? Number(band.medium) : null,
-          wide:   band.wide   != null ? Number(band.wide)   : null,
-          bonuses: { ...(band.bonuses || {}) },
-        },
-        breakpoints: { ...(intel.breakpoints || {}) },
       };
     }
   }
@@ -736,15 +725,6 @@
       const override = cfg.bonuses && cfg.bonuses[key];
       if (override && override.ignoreQuality) return 0;
       if (override && override.tolerance != null) return override.tolerance;
-      // v0.3.0 slice 9 — per-bonus band lookup (user-curated). When a band
-      // is assigned for this bonus and the band has a width set, that wins
-      // over the global default. Empty band map → defaults (current behavior).
-      const band = cfg.bonusBand;
-      if (band && band.bonuses) {
-        const bandKey = band.bonuses[key];
-        const width = bandKey ? band[bandKey] : null;
-        if (Number.isFinite(Number(width))) return Number(width);
-      }
       return cfg.defaults.bonusTolerance;
     },
     getEffectiveQualityTolerance(bonusId, intel) {
@@ -775,38 +755,6 @@
         }
       }
       return false;
-    },
-  };
-
-  // ─── BreakpointFlagger (pure, ADR-0002) ─────────────────────────────────────
-  // Surfaces a "near a price kink" warning on the card. `flag` returns the
-  // matched breakpoint and its delta when |value − breakpoint| ≤ 1, else null.
-  // `table` shape: { [bonusName]: number[] } — empty/missing → no warning.
-  const BreakpointFlagger = {
-    flag(bonusName, bonusValue, table) {
-      if (!bonusName || !table) return null;
-      const key = String(bonusName).trim().toLowerCase();
-      const value = Number(bonusValue);
-      if (!key || !Number.isFinite(value)) return null;
-      // Try direct key, then case-insensitive scan (table may be authored
-      // with mixed-case keys from the Settings editor).
-      let bps = table[key];
-      if (!bps) {
-        for (const k of Object.keys(table)) {
-          if (String(k).trim().toLowerCase() === key) { bps = table[k]; break; }
-        }
-      }
-      if (!Array.isArray(bps) || !bps.length) return null;
-      let best = null;
-      for (const bp of bps) {
-        const n = Number(bp);
-        if (!Number.isFinite(n)) continue;
-        const d = Math.abs(value - n);
-        if (d <= 1 && (best == null || d < best.delta)) {
-          best = { breakpoint: n, delta: d, side: value < n ? 'below' : (value > n ? 'above' : 'at') };
-        }
-      }
-      return best;
     },
   };
 
@@ -876,40 +824,6 @@
       .filter(Boolean)
       .filter((v, i, a) => a.indexOf(v) === i);
   }
-  function fmtBandBonuses(bandKey, bonuses) {
-    const out = [];
-    for (const k of Object.keys(bonuses || {})) {
-      if (bonuses[k] === bandKey) out.push(k);
-    }
-    return out.join(', ');
-  }
-  function fmtBreakpoints(table) {
-    const lines = [];
-    for (const k of Object.keys(table || {})) {
-      const vals = Array.isArray(table[k]) ? table[k] : [];
-      if (!vals.length) continue;
-      lines.push(`${k}: ${vals.join(', ')}`);
-    }
-    return lines.join('\n');
-  }
-  function parseBreakpoints(text) {
-    const table = {};
-    for (const raw of String(text || '').split(/\n/)) {
-      const line = raw.trim();
-      if (!line) continue;
-      const idx = line.indexOf(':');
-      if (idx === -1) continue;
-      const name = line.slice(0, idx).trim().toLowerCase();
-      if (!name) continue;
-      const vals = line.slice(idx + 1)
-        .split(/[\s,;]+/)
-        .map(s => Number(s))
-        .filter(n => Number.isFinite(n));
-      if (vals.length) table[name] = vals;
-    }
-    return table;
-  }
-
   function buildSettingsTab(mem) {
     const s = (mem && mem.settings) || {};
     const intel = (mem && mem.intel) || MEM.intel;
@@ -998,53 +912,6 @@
       <textarea class="rwth-field-input" id="rwth-intel-trash" rows="2"
                 style="width:100%;font-family:inherit;"
                 placeholder="cupid, achilles, …">${escapeAttr(fmtTrashList(intel.excludedBonuses))}</textarea>
-
-      <p class="rwth-form-title" style="margin:14px 0 4px;">Per-bonus tolerance bands</p>
-      <p class="rwth-intel-empty" style="margin:0 0 4px;">Set a width (%) per band, then list the bonuses that route to each band. Unlisted bonuses fall through to the default tolerance.</p>
-      <div class="rwth-intel-grid">
-        <label class="rwth-field">
-          <span class="rwth-field-label">Narrow width %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 id="rwth-intel-band-narrow-w"
-                 value="${escapeAttr(intel.bonusBand.narrow != null ? intel.bonusBand.narrow : '')}">
-        </label>
-        <label class="rwth-field">
-          <span class="rwth-field-label">Medium width %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 id="rwth-intel-band-medium-w"
-                 value="${escapeAttr(intel.bonusBand.medium != null ? intel.bonusBand.medium : '')}">
-        </label>
-        <label class="rwth-field">
-          <span class="rwth-field-label">Wide width %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 id="rwth-intel-band-wide-w"
-                 value="${escapeAttr(intel.bonusBand.wide != null ? intel.bonusBand.wide : '')}">
-        </label>
-      </div>
-      <label class="rwth-field">
-        <span class="rwth-field-label">Narrow bonuses</span>
-        <textarea class="rwth-field-input" id="rwth-intel-band-narrow-b" rows="1"
-                  style="width:100%;font-family:inherit;"
-                  placeholder="warlord, empower, …">${escapeAttr(fmtBandBonuses('narrow', intel.bonusBand.bonuses))}</textarea>
-      </label>
-      <label class="rwth-field">
-        <span class="rwth-field-label">Medium bonuses</span>
-        <textarea class="rwth-field-input" id="rwth-intel-band-medium-b" rows="1"
-                  style="width:100%;font-family:inherit;"
-                  placeholder="">${escapeAttr(fmtBandBonuses('medium', intel.bonusBand.bonuses))}</textarea>
-      </label>
-      <label class="rwth-field">
-        <span class="rwth-field-label">Wide bonuses</span>
-        <textarea class="rwth-field-input" id="rwth-intel-band-wide-b" rows="1"
-                  style="width:100%;font-family:inherit;"
-                  placeholder="quicken, …">${escapeAttr(fmtBandBonuses('wide', intel.bonusBand.bonuses))}</textarea>
-      </label>
-
-      <p class="rwth-form-title" style="margin:14px 0 4px;">Breakpoints</p>
-      <p class="rwth-intel-empty" style="margin:0 0 4px;">One bonus per line — <code>name: value, value</code>. Cards flag a warning when current bonus is within ±1 of any listed value.</p>
-      <textarea class="rwth-field-input" id="rwth-intel-breakpoints" rows="4"
-                style="width:100%;font-family:inherit;"
-                placeholder="warlord: 18, 19&#10;empower: 80&#10;plunder: 20, 21&#10;deadeye: 25, 30">${escapeAttr(fmtBreakpoints(intel.breakpoints))}</textarea>
 
       <div class="rwth-settings-actions">
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
@@ -1891,8 +1758,6 @@
       marginTarget: MEM.intel.marginTarget,
       markup:       MEM.intel.markup,
       excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
-      bonusBand:    { ...MEM.intel.bonusBand, bonuses: { ...(MEM.intel.bonusBand && MEM.intel.bonusBand.bonuses || {}) } },
-      breakpoints:  { ...MEM.intel.breakpoints },
     };
     document.querySelectorAll('#rwth-content [data-intel]').forEach((el) => {
       const path = el.dataset.intel;
@@ -1920,34 +1785,9 @@
       nextIntel.bonuses[id].ignoreQuality = el.checked;
     });
 
-    // v0.3.0 slice 9 — trash list, per-bonus bands, breakpoints.
+    // Trash list — hard "don't fetch" filter.
     const trashEl = document.getElementById('rwth-intel-trash');
     if (trashEl) nextIntel.excludedBonuses = parseTrashList(trashEl.value);
-
-    const bandWidth = (id) => {
-      const el = document.getElementById(id);
-      if (!el) return null;
-      const v = parseFloat(el.value);
-      return Number.isFinite(v) ? v : null;
-    };
-    const bandBonuses = {};
-    const bandBonusesFor = (id, key) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      for (const name of parseTrashList(el.value)) bandBonuses[name] = key;
-    };
-    bandBonusesFor('rwth-intel-band-narrow-b', 'narrow');
-    bandBonusesFor('rwth-intel-band-medium-b', 'medium');
-    bandBonusesFor('rwth-intel-band-wide-b',   'wide');
-    nextIntel.bonusBand = {
-      narrow: bandWidth('rwth-intel-band-narrow-w'),
-      medium: bandWidth('rwth-intel-band-medium-w'),
-      wide:   bandWidth('rwth-intel-band-wide-w'),
-      bonuses: bandBonuses,
-    };
-
-    const bpEl = document.getElementById('rwth-intel-breakpoints');
-    if (bpEl) nextIntel.breakpoints = parseBreakpoints(bpEl.value);
 
     Store.set('rwth_intel_settings', nextIntel);
     setState({ settings: next, intel: nextIntel });
@@ -3089,6 +2929,7 @@
         gap: 6px 12px; margin-bottom: 4px;
       }
       .rwth-card-buymax  { color: #7ed098; font-weight: 700; }
+      .rwth-card-buymed  { color: #8aa; font-weight: 400; }
       .rwth-card-room    { color: #7ed098; }
       .rwth-card-over    { color: #ff8a8a; }
       .rwth-card-classtag { color: #5dc6f0; }
@@ -3133,6 +2974,7 @@
       .rwth-card-drill-table td { padding: 2px 6px; text-align: left; }
       .rwth-card-drill-table th { color: #8aa; font-weight: 400; border-bottom: 1px dashed #00e5ff44; }
       .rwth-card-drill-table tr.dim td { color: #667; }
+      .rwth-card-drill-table tr.rwth-card-ladder-own td { color: #00e5ff; font-weight: 700; }
       .rwth-card-drill-empty { color: #8aa; font-style: italic; }
 
       /* Ledger per-row Price-check panel. */
@@ -3490,18 +3332,11 @@
 
     /**
      * buyTarget({ itemClass, comps, currentBid, settings, bbFloor }) →
-     *   { max, floor, range?, tolerance?, currentBidDelta }
+     *   { max, floor, median?, medianTarget?, range?, tolerance?, currentBidDelta }
      *
-     * Per-class routing (v0.3.0 slice 5):
-     *   yellowWeapon          — median × (1 − tax − mug − margin); floor informational
-     *   duneRiotArmor         — bbFloor + tolerance ($25m default); hard floor
-     *   trashBB               — bbFloor only; hard floor
-     *   assaultArmor          — median × 0.85 with range [×0.80, ×0.90]
-     *   orange/redWeapon      — { max: null, range: [minComp, maxComp] }
-     *   orange/redArmor       — { max: null, range: [minComp, maxComp] }
-     *
-     * `currentBidDelta = max − currentBid`; positive ⇒ headroom, negative ⇒ over.
-     * Range-only classes leave `currentBidDelta` null.
+     * v0.3.0 slice 13: yellowWeapon + assaultArmor anchor the headline buy
+     * number on min(comps) (floor-anchored, worst-case) instead of median.
+     * `medianTarget` carries the median-anchored figure for secondary display.
      */
     buyTarget(args) {
       const a = args || {};
@@ -3514,6 +3349,7 @@
         .map(c => Number(c && c.price))
         .filter(p => Number.isFinite(p) && p > 0);
       const med = _median(prices);
+      const mn  = prices.length ? Math.min(...prices) : null;
       const cb  = Number(a.currentBid);
       const deltaOf = (m) => (Number.isFinite(cb) && m != null) ? m - cb : null;
       const empty = { max: null, floor: null, currentBidDelta: null };
@@ -3529,28 +3365,35 @@
         return { max: bbFloor, floor: bbFloor, currentBidDelta: deltaOf(bbFloor) };
       }
       if (cls === 'assaultArmor') {
-        if (med == null) return empty;
+        if (mn == null) return empty;
         const dMin = s.assaultDiscountMin != null ? s.assaultDiscountMin : 0.10;
         const dMax = s.assaultDiscountMax != null ? s.assaultDiscountMax : 0.20;
-        const hi  = Math.round(med * (1 - dMin));
-        const lo  = Math.round(med * (1 - dMax));
+        const hi  = Math.round(mn * (1 - dMin));
+        const lo  = Math.round(mn * (1 - dMax));
         const mid = Math.round((lo + hi) / 2);
-        return { max: mid, floor: null, range: [lo, hi], currentBidDelta: deltaOf(mid) };
+        const medianTarget = med != null
+          ? Math.round(med * (1 - (dMin + dMax) / 2)) : null;
+        return { max: mid, floor: null, range: [lo, hi],
+                 median: med, medianTarget, anchor: 'min',
+                 currentBidDelta: deltaOf(mid) };
       }
       if (cls === 'orangeWeapon' || cls === 'redWeapon'
           || cls === 'orangeArmor'  || cls === 'redArmor') {
         if (!prices.length) return { max: null, floor: null, range: null, currentBidDelta: null };
         const lo = Math.round(Math.min(...prices));
         const hi = Math.round(Math.max(...prices));
-        return { max: null, floor: null, range: [lo, hi], currentBidDelta: null };
+        return { max: null, floor: null, range: [lo, hi], median: med, currentBidDelta: null };
       }
-      // yellowWeapon (default)
-      if (med == null) return { max: null, floor: bbFloor, currentBidDelta: null };
+      // yellowWeapon (default) — floor-anchored on min.
+      if (mn == null) return { max: null, floor: bbFloor, currentBidDelta: null };
       const tax    = s.tax    != null ? s.tax    : 0.05;
       const mug    = s.mug    != null ? s.mug    : 0.10;
       const margin = s.margin != null ? s.margin : 0.05;
-      const max = Math.round(med * (1 - tax - mug - margin));
-      return { max, floor: bbFloor, currentBidDelta: deltaOf(max) };
+      const ded = 1 - tax - mug - margin;
+      const max = Math.round(mn * ded);
+      const medianTarget = med != null ? Math.round(med * ded) : null;
+      return { max, floor: bbFloor, median: med, medianTarget, anchor: 'min',
+               currentBidDelta: deltaOf(max) };
     },
 
     /**
@@ -4171,7 +4014,8 @@
       } else if (buy.max == null && Array.isArray(buy.range)) {
         buyEl.textContent = `Buy range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
       } else if (buy.max != null) {
-        buyEl.textContent = `Buy max ${fmtChatPrice(buy.max)}`;
+        const anchorLabel = buy.anchor === 'min' ? 'Buy floor' : 'Buy max';
+        buyEl.textContent = `${anchorLabel} ${fmtChatPrice(buy.max)}`;
         if (Array.isArray(buy.range)) {
           buyEl.textContent += ` (${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])})`;
         }
@@ -4179,6 +4023,12 @@
         buyEl.textContent = 'Buy max —';
       }
       head.appendChild(buyEl);
+      if (buy.medianTarget != null) {
+        const medEl = document.createElement('span');
+        medEl.className = 'rwth-card-buymed';
+        medEl.textContent = `median ${fmtChatPrice(buy.medianTarget)}`;
+        head.appendChild(medEl);
+      }
       if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && buy.max != null) {
         const fl = document.createElement('span');
         fl.className = 'rwth-card-bbfloor';
@@ -4230,19 +4080,6 @@
         if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('filtered');
         refEl.textContent = parts.join(' · ');
         badge.appendChild(refEl);
-      }
-
-      // ── breakpoint warning (v0.3.0 slice 9) ────────────────────────────
-      // BreakpointFlagger reads the user-curated breakpoint table. Empty
-      // table → no flag, no warning line.
-      const bpTable = (MEM.intel && MEM.intel.breakpoints) || null;
-      const bpFlag  = BreakpointFlagger.flag(s.primaryBonusName, s.primaryBonusValue, bpTable);
-      if (bpFlag) {
-        const warnEl = document.createElement('div');
-        warnEl.className = 'rwth-card-breakpoint';
-        const sideTxt = bpFlag.side === 'at' ? 'at' : `${bpFlag.delta}% ${bpFlag.side}`;
-        warnEl.textContent = `⚠ near breakpoint ${bpFlag.breakpoint}% (${sideTxt}) — comps may not be representative`;
-        badge.appendChild(warnEl);
       }
 
       // ── ladder ────────────────────────────────────────────────────────
@@ -4335,35 +4172,58 @@
       math.textContent = InlineRenderer._deductionMath(ctx, buy, reference, filtered);
       wrap.appendChild(math);
 
-      // top 5 most-recent comps
+      // bonus-% ladder — one row per distinct bonus % observed in the
+      // comp set; each row carries median/min/max/n for that %. Card's own
+      // bonus % is marked. Replaces the "5 most recent comps" table.
       if (!filtered.length) {
         const empty = document.createElement('div');
         empty.className = 'rwth-card-drill-empty';
         empty.textContent = 'no comps match these filters';
         wrap.appendChild(empty);
       } else {
-        const sorted = filtered.slice().sort((a, b) => {
-          const ta = Number(a.timestamp) || 0;
-          const tb = Number(b.timestamp) || 0;
-          return tb - ta;
-        }).slice(0, 5);
-        const table = document.createElement('table');
-        table.className = 'rwth-card-drill-table';
-        const thead = document.createElement('thead');
-        thead.innerHTML = '<tr><th>date</th><th>price</th><th>bonus%</th><th>quality</th></tr>';
-        table.appendChild(thead);
-        const tbody = document.createElement('tbody');
-        for (const c of sorted) {
-          const tr = document.createElement('tr');
-          const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
-          tr.appendChild(td(InlineRenderer._fmtDate(c.timestamp)));
-          tr.appendChild(td(fmtChatPrice(c.price)));
-          tr.appendChild(td(c.bonusValue != null ? `${c.bonusValue}%` : '—'));
-          tr.appendChild(td(c.quality != null && c.quality !== 0 ? `${Number(c.quality).toFixed(2)}%` : '—'));
-          tbody.appendChild(tr);
+        const groups = new Map();
+        for (const c of filtered) {
+          if (!c || c.bonusValue == null) continue;
+          const k = Number(c.bonusValue);
+          if (!Number.isFinite(k)) continue;
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(Number(c.price));
         }
-        table.appendChild(tbody);
-        wrap.appendChild(table);
+        if (!groups.size) {
+          const empty = document.createElement('div');
+          empty.className = 'rwth-card-drill-empty';
+          empty.textContent = 'no comps carry a bonus %';
+          wrap.appendChild(empty);
+        } else {
+          const ownBv = Number(ctx.primaryBonusValue);
+          const ownK  = Number.isFinite(ownBv) ? ownBv : null;
+          const keys = Array.from(groups.keys()).sort((a, b) => b - a);
+          const table = document.createElement('table');
+          table.className = 'rwth-card-drill-table rwth-card-ladder-table';
+          const thead = document.createElement('thead');
+          thead.innerHTML = '<tr><th>bonus%</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>';
+          table.appendChild(thead);
+          const tbody = document.createElement('tbody');
+          for (const k of keys) {
+            const prices = groups.get(k).filter(p => Number.isFinite(p) && p > 0);
+            if (!prices.length) continue;
+            const med = _median(prices);
+            const mn  = Math.min(...prices);
+            const mx  = Math.max(...prices);
+            const tr = document.createElement('tr');
+            const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
+            const isOwn = ownK != null && k === ownK;
+            if (isOwn) tr.classList.add('rwth-card-ladder-own');
+            tr.appendChild(td(isOwn ? `${k}% ← you` : `${k}%`));
+            tr.appendChild(td(fmtChatPrice(med)));
+            tr.appendChild(td(fmtChatPrice(mn)));
+            tr.appendChild(td(fmtChatPrice(mx)));
+            tr.appendChild(td(String(prices.length)));
+            tbody.appendChild(tr);
+          }
+          table.appendChild(tbody);
+          wrap.appendChild(table);
+        }
       }
 
       return wrap;
@@ -4395,22 +4255,26 @@
         if (buy.floor == null) return 'BB floor unavailable.';
         return `BB floor ${fmtChatPrice(buy.floor)} (hard) → ${fmtChatPrice(buy.max)}`;
       }
+      const prices = (filtered || []).map(c => Number(c && c.price))
+        .filter(p => Number.isFinite(p) && p > 0);
+      const mn = prices.length ? Math.min(...prices) : null;
       if (cls === 'assaultArmor') {
-        if (med == null || !Array.isArray(buy.range)) return 'no comps to derive range.';
-        return `median ${fmtChatPrice(med)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (mid ${fmtChatPrice(buy.max)})`;
+        if (mn == null || !Array.isArray(buy.range)) return 'no comps to derive range.';
+        return `min ${fmtChatPrice(mn)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (mid ${fmtChatPrice(buy.max)}; median ${fmtChatPrice(med)})`;
       }
       if (cls === 'orangeWeapon' || cls === 'redWeapon' || cls === 'orangeArmor' || cls === 'redArmor') {
         if (!Array.isArray(buy.range)) return 'no comps to derive range.';
         return `comp range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — no single max for ${cls}`;
       }
-      // yellowWeapon (default)
-      if (med == null || buy.max == null) return 'no comps to derive median.';
+      // yellowWeapon (default) — floor-anchored on min.
+      if (mn == null || buy.max == null) return 'no comps to derive min.';
       const m = ctx.margins || {};
       const tax    = m.tax    != null ? m.tax    : 0.05;
       const mug    = m.mug    != null ? m.mug    : 0.10;
       const margin = m.margin != null ? m.margin : 0.05;
       const pct = (x) => `${Math.round(x * 100)}%`;
-      return `median ${fmtChatPrice(med)} − ${pct(tax)} tax − ${pct(mug)} mug − ${pct(margin)} margin → ${fmtChatPrice(buy.max)}`;
+      const medTail = med != null ? ` (median ${fmtChatPrice(med)})` : '';
+      return `min ${fmtChatPrice(mn)} − ${pct(tax)} tax − ${pct(mug)} mug − ${pct(margin)} margin → ${fmtChatPrice(buy.max)}${medTail}`;
     },
     removeAll() {
       if (typeof document === 'undefined') return;
@@ -4619,7 +4483,6 @@
     AdvertiseGenerator,
     IntelSettings,
     BonusTrashGuard,
-    BreakpointFlagger,
     similarity,
     PricingEngine,
     BBEngine,
