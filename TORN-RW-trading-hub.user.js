@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.10
+// @version      0.3.11
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.10';
+  const SCRIPT_VERSION = '0.3.11';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1937,7 +1937,17 @@
     }
     // Action math uses cleared sales only — asking is shown as a spread line.
     const comps        = (composite.cleared || []).map(compShape).filter(Boolean);
-    const askingShaped = (composite.asking  || []).map(compShape).filter(Boolean);
+    const askingRawL   = composite.asking || [];
+    const askingShaped = askingRawL.map(compShape).filter(Boolean);
+    const askingComps  = askingShaped.map((c, i) => {
+      const raw = askingRawL[i] || {};
+      return {
+        ...c,
+        listingId: raw.listingId != null ? raw.listingId : null,
+        sellerId:  raw.sellerId  != null ? raw.sellerId  : null,
+        source: raw.source || 'market',
+      };
+    });
     const askingMedian = _median(askingShaped.map(c => c.price));
     const askingCount  = askingShaped.length;
     if (!comps.length) {
@@ -1990,6 +2000,7 @@
         primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
         strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
         comps,
+        askingComps,
         marketCheapest,
         askingMedian,
         askingCount,
@@ -2989,6 +3000,22 @@
       }
       .rwth-card-ladder-cheapest { color: #7ed098; }
 
+      /* v0.3.0 slice 16 — per-row drill-down inside the ladders. */
+      .rwth-card-ladder-table tr.rwth-card-ladder-row { cursor: pointer; }
+      .rwth-card-ladder-table tr.rwth-card-ladder-row:hover td { background: #0d1f2a; }
+      .rwth-card-ladder-table tr.rwth-card-ladder-row.expanded td { background: #0d1f2a; }
+      .rwth-card-ladder-caret { color: #5dc6f0; display: inline-block; width: 9px; margin-right: 3px; }
+      .rwth-card-ladder-detail td { padding: 0; background: #07111a; }
+      .rwth-card-ladder-subtable {
+        width: 100%; border-collapse: collapse; font-size: 10px;
+        margin: 2px 0 4px 14px;
+      }
+      .rwth-card-ladder-subtable th { color: #667; font-weight: 400; padding: 1px 6px; text-align: left;
+                                       border-bottom: 1px dotted #00e5ff22; }
+      .rwth-card-ladder-subtable td { padding: 1px 6px; color: #cfe; }
+      .rwth-card-ladder-subtable a { color: #5dc6f0; text-decoration: none; }
+      .rwth-card-ladder-subtable a:hover { text-decoration: underline; }
+
       /* Ledger per-row Price-check panel. */
       .rwth-price-panel {
         margin-top: 4px; padding: 8px 10px;
@@ -3922,7 +3949,8 @@
               : c.cost != null ? c.cost
               : c.buyout != null ? c.buyout : NaN);
     if (!Number.isFinite(p)) return null;
-    const q = Number(c.quality != null ? c.quality : NaN);
+    const q = Number(c.quality != null ? c.quality
+              : c.qualityPct != null ? c.qualityPct : NaN);
     const tsRaw = c.timestamp != null ? c.timestamp
                 : c.sold_at != null ? c.sold_at
                 : c.created_at != null ? c.created_at : null;
@@ -3933,7 +3961,8 @@
       else { const d = Date.parse(tsRaw); if (Number.isFinite(d)) timestamp = d; }
     }
     const bvRaw = c.bonusValue != null ? c.bonusValue
-                : c.bonus1_value != null ? c.bonus1_value : null;
+                : c.bonus1_value != null ? c.bonus1_value
+                : c.bonusPct != null ? c.bonusPct : null;
     const bv = bvRaw != null ? Number(bvRaw) : NaN;
     return {
       price: p,
@@ -4280,6 +4309,7 @@
       ladders.className = 'rwth-card-ladders';
       ladders.appendChild(InlineRenderer._buildBonusLadder({
         title: 'SOLD (cleared)',
+        kind: 'sold',
         comps: filtered,
         ownK,
         cheapestPrice: null,
@@ -4287,6 +4317,7 @@
       }));
       ladders.appendChild(InlineRenderer._buildBonusLadder({
         title: 'LISTED (asking)',
+        kind: 'listed',
         comps: askingArr,
         ownK,
         cheapestPrice: cheapest,
@@ -4296,7 +4327,7 @@
 
       return wrap;
     },
-    _buildBonusLadder({ title, comps, ownK, cheapestPrice, emptyText }) {
+    _buildBonusLadder({ title, kind, comps, ownK, cheapestPrice, emptyText }) {
       const col = document.createElement('div');
       col.className = 'rwth-card-ladder-col';
       const h = document.createElement('div');
@@ -4311,7 +4342,7 @@
         const k = Number(c.bonusValue);
         if (!Number.isFinite(k)) continue;
         if (!groups.has(k)) groups.set(k, []);
-        groups.get(k).push(Number(c.price));
+        groups.get(k).push(c);
       }
       if (!groups.size) {
         const empty = document.createElement('div');
@@ -4327,30 +4358,126 @@
       thead.innerHTML = '<tr><th>bonus%</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>';
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
+      // One row expanded at a time (acceptance: ephemeral, popup-local).
+      let openKey = null;
+      let openDetail = null;
+      let openRow = null;
       for (const k of keys) {
-        const prices = groups.get(k).filter(p => Number.isFinite(p) && p > 0);
-        if (!prices.length) continue;
+        const rows = groups.get(k).filter(c => Number.isFinite(Number(c.price)) && Number(c.price) > 0);
+        if (!rows.length) continue;
+        const prices = rows.map(c => Number(c.price));
         const med = _median(prices);
         const mn  = Math.min(...prices);
         const mx  = Math.max(...prices);
         const tr = document.createElement('tr');
+        tr.classList.add('rwth-card-ladder-row');
         const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
         const isOwn = ownK != null && k === ownK;
         if (isOwn) tr.classList.add('rwth-card-ladder-own');
         const hasCheapest = cheapestPrice != null && mn === cheapestPrice;
         const tag = isOwn ? ' ← you' : '';
-        tr.appendChild(td(`${k}%${tag}`));
+        const bonusCell = document.createElement('td');
+        const caret = document.createElement('span');
+        caret.className = 'rwth-card-ladder-caret';
+        caret.textContent = '▸';
+        bonusCell.appendChild(caret);
+        bonusCell.appendChild(document.createTextNode(`${k}%${tag}`));
+        tr.appendChild(bonusCell);
         tr.appendChild(td(fmtChatPrice(med)));
         const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest live' : ''));
         if (hasCheapest) minCell.classList.add('rwth-card-ladder-cheapest');
         tr.appendChild(minCell);
         tr.appendChild(td(fmtChatPrice(mx)));
-        tr.appendChild(td(String(prices.length)));
+        tr.appendChild(td(String(rows.length)));
+        tr.addEventListener('click', () => {
+          if (openKey === k) {
+            if (openDetail) openDetail.remove();
+            if (openRow) {
+              openRow.classList.remove('expanded');
+              const c = openRow.querySelector('.rwth-card-ladder-caret');
+              if (c) c.textContent = '▸';
+            }
+            openKey = null; openDetail = null; openRow = null;
+            return;
+          }
+          if (openDetail) openDetail.remove();
+          if (openRow) {
+            openRow.classList.remove('expanded');
+            const c = openRow.querySelector('.rwth-card-ladder-caret');
+            if (c) c.textContent = '▸';
+          }
+          const detail = InlineRenderer._buildLadderDetailRow(kind, rows, 5);
+          tr.classList.add('expanded');
+          caret.textContent = '▾';
+          tr.parentNode.insertBefore(detail, tr.nextSibling);
+          openKey = k; openDetail = detail; openRow = tr;
+        });
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
       col.appendChild(table);
       return col;
+    },
+    _buildLadderDetailRow(kind, rows, colspan) {
+      const tr = document.createElement('tr');
+      tr.className = 'rwth-card-ladder-detail';
+      const td = document.createElement('td');
+      td.colSpan = colspan;
+      const sub = document.createElement('table');
+      sub.className = 'rwth-card-ladder-subtable';
+      const thead = document.createElement('thead');
+      const tbody = document.createElement('tbody');
+      const sorted = rows.slice();
+      const fmtPct = v => Number.isFinite(Number(v)) ? `${Number(v).toFixed(2)}%` : '—';
+      if (kind === 'listed') {
+        sorted.sort((a, b) => Number(a.price) - Number(b.price));
+        thead.innerHTML = '<tr><th>price</th><th>bonus%</th><th>quality%</th>'
+                       + '<th>seller</th><th>listing</th><th>source</th><th></th></tr>';
+        for (const r of sorted) {
+          const row = document.createElement('tr');
+          const mk = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
+          row.appendChild(mk(fmtChatPrice(Number(r.price))));
+          row.appendChild(mk(fmtPct(r.bonusValue)));
+          row.appendChild(mk(fmtPct(r.quality)));
+          row.appendChild(mk(r.sellerId != null ? String(r.sellerId) : '—'));
+          row.appendChild(mk(r.listingId != null ? String(r.listingId) : '—'));
+          row.appendChild(mk(r.source || 'market'));
+          const linkCell = document.createElement('td');
+          if (r.sellerId != null) {
+            const a = document.createElement('a');
+            a.href = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(r.sellerId)}`;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = 'open';
+            linkCell.appendChild(a);
+          } else {
+            linkCell.textContent = '—';
+          }
+          row.appendChild(linkCell);
+          tbody.appendChild(row);
+        }
+      } else {
+        sorted.sort((a, b) => {
+          const ta = Number(a.timestamp) || 0;
+          const tb = Number(b.timestamp) || 0;
+          return tb - ta;
+        });
+        thead.innerHTML = '<tr><th>date</th><th>price</th><th>bonus%</th><th>quality%</th></tr>';
+        for (const r of sorted) {
+          const row = document.createElement('tr');
+          const mk = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
+          row.appendChild(mk(InlineRenderer._fmtDate(r.timestamp)));
+          row.appendChild(mk(fmtChatPrice(Number(r.price))));
+          row.appendChild(mk(fmtPct(r.bonusValue)));
+          row.appendChild(mk(fmtPct(r.quality)));
+          tbody.appendChild(row);
+        }
+      }
+      sub.appendChild(thead);
+      sub.appendChild(tbody);
+      td.appendChild(sub);
+      tr.appendChild(td);
+      return tr;
     },
     _fmtDate(ts) {
       const n = Number(ts);
@@ -4503,6 +4630,7 @@
         return {
           ...c,
           listingId: raw.listingId != null ? raw.listingId : null,
+          sellerId:  raw.sellerId  != null ? raw.sellerId  : null,
           source: raw.source || 'market',
         };
       });
