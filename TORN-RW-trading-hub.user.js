@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.17
+// @version      0.3.18
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.17';
+  const SCRIPT_VERSION = '0.3.18';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1938,15 +1938,18 @@
     // ledger v0.2.x panel is gone, so we always emit a two-tier ctx).
     const dict = ItemClassifier.getDict();
     const cls  = dict ? ItemClassifier.classify(item.itemName, dict) : null;
-    const category = (cls && cls.category)
-      || (item.type === 'armor' ? 'armor' : 'weapon');
+    // Ledger rows carry the user-set form value `item.type` ('armor' | 'weapon')
+    // which is a UI taxonomy, not Torn's. Translate at this boundary into
+    // Torn's real `type` so downstream routing stays precise.
+    const type = (cls && cls.type)
+      || (item.type === 'armor' ? 'defensive' : 'primary');
     const rarity = (cls && cls.rarity) || item.rarity || null;
     const classTag = cls
       ? formatClassTag({ ...cls, rarity })
-      : formatClassTag({ category, rarity });
+      : formatClassTag({ type, rarity });
 
     const bbRate = MEM.bbRate && MEM.bbRate.rate;
-    const bbClassKey = category === 'armor' ? 'armor' : (cls && cls.weaponBase) || null;
+    const bbClassKey = type === 'defensive' ? 'armor' : (cls && cls.weaponBase) || null;
     const bbFloor = bbClassKey && rarity && bbRate
       ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
           { bonusCount: (item.bonuses || []).length })
@@ -1954,7 +1957,7 @@
 
     let itemClassKey = resolveItemClass(cls);
     if (!itemClassKey) {
-      itemClassKey = category === 'armor' ? 'assaultArmor' : 'yellowWeapon';
+      itemClassKey = type === 'defensive' ? 'assaultArmor' : 'yellowWeapon';
     }
 
     const marketCheapest = askingShaped.length
@@ -2094,8 +2097,17 @@
     return s;
   }
 
+  // Torn's `/v2/torn/items` `type` field. We mirror these verbatim — never
+  // collapse into a synthetic umbrella like "weapon" or "armor". `defensive`
+  // is Torn's term for armor; the three weapon types are routing-equivalent
+  // for our pricing surfaces (RW pricing keys off rarity, not weapon type).
+  const WEAPON_TYPES = ['primary', 'secondary', 'melee'];
+  function isWeaponType(type) { return WEAPON_TYPES.indexOf(type) !== -1; }
+
   const ItemClassifier = {
     ARMOR_SETS,
+    WEAPON_TYPES,
+    isWeaponType,
     classify(itemName, itemsDict, opts) {
       const name = String(itemName || '').trim();
       const dict = itemsDict || {};
@@ -2103,34 +2115,33 @@
       const rarity = meta && meta.rarity
         ? String(meta.rarity).toLowerCase() : null;
       const typeRaw = meta ? String(meta.type || '').toLowerCase() : '';
-      let category = 'other';
-      if (typeRaw === 'defensive' || typeRaw === 'armor') category = 'armor';
-      else if (typeRaw === 'primary' || typeRaw === 'secondary' || typeRaw === 'melee') category = 'weapon';
+      const type = (typeRaw === 'defensive' || isWeaponType(typeRaw))
+        ? typeRaw : null;
 
       let armorSet = null;
-      if (category === 'armor') {
+      if (type === 'defensive') {
         for (const s of ARMOR_SETS) {
           if (name === s || name.startsWith(s + ' ')) { armorSet = s; break; }
         }
       }
 
       let weaponBase = null;
-      if (category === 'weapon') {
+      if (isWeaponType(type)) {
         const raw = meta && (meta.weapon_class || meta.sub_type || meta.subType);
         weaponBase = normWeaponBase(raw);
       }
 
       const trashSet = opts && opts.trashSet;
-      const isTrash = category === 'weapon' && !!(trashSet && (
+      const isTrash = isWeaponType(type) && !!(trashSet && (
         (trashSet.has && trashSet.has(name)) ||
         (Array.isArray(trashSet) && trashSet.indexOf(name) !== -1)
       ));
 
       const isBBFloorEligible =
-        (category === 'armor' && (armorSet === 'Riot' || armorSet === 'Dune'))
+        (type === 'defensive' && (armorSet === 'Riot' || armorSet === 'Dune'))
         || isTrash;
 
-      return { rarity, category, armorSet, weaponBase, isTrash, isBBFloorEligible };
+      return { rarity, type, armorSet, weaponBase, isTrash, isBBFloorEligible };
     },
     // Sync read of the cached dict — null until fetchItemsDict has populated it.
     getDict() {
@@ -2174,11 +2185,13 @@
 
   // resolveItemClass(cls) — collapse a classify() result into a PricingEngine
   // routing key. Returns null when the result isn't actionable (unknown rarity
-  // or off-axis category). Trash overrides rarity since trashBB hard-floors.
+  // or off-axis type). Trash overrides rarity since trashBB hard-floors.
+  // Routes on Torn's real `type` field (defensive | primary | secondary | melee),
+  // not a synthetic umbrella — see ItemClassifier comment above.
   function resolveItemClass(cls) {
     if (!cls) return null;
     if (cls.isTrash) return 'trashBB';
-    if (cls.category === 'armor') {
+    if (cls.type === 'defensive') {
       if (cls.armorSet === 'Riot' || cls.armorSet === 'Dune') return 'duneRiotArmor';
       if (cls.armorSet === 'Assault') return 'assaultArmor';
       if (cls.rarity === 'orange') return 'orangeArmor';
@@ -2186,7 +2199,7 @@
       if (cls.rarity === 'yellow') return 'assaultArmor';
       return null;
     }
-    if (cls.category === 'weapon') {
+    if (isWeaponType(cls.type)) {
       if (cls.rarity === 'yellow') return 'yellowWeapon';
       if (cls.rarity === 'orange') return 'orangeWeapon';
       if (cls.rarity === 'red')    return 'redWeapon';
@@ -2201,11 +2214,11 @@
   function formatClassTag(cls) {
     if (!cls) return '';
     const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
-    if (cls.category === 'armor') {
+    if (cls.type === 'defensive') {
       const parts = [cls.armorSet, cls.rarity].filter(Boolean);
       return parts.length ? `[${parts.join(' · ')}]` : '';
     }
-    if (cls.category === 'weapon') {
+    if (isWeaponType(cls.type)) {
       if (cls.isTrash) return `[trash${cls.rarity ? ' · ' + cls.rarity : ''}]`;
       return cls.rarity ? `[${cap(cls.rarity)} weapon]` : '[weapon]';
     }
@@ -4961,17 +4974,24 @@
       // type/rarity when the dict has not been fetched yet.
       const dict = ItemClassifier.getDict();
       const cls = dict ? ItemClassifier.classify(parsed.itemName, dict) : null;
-      const category = (cls && cls.category) || (parsed.itemType === 'armor' ? 'armor' : 'weapon');
+      // `parsed.itemType` is DOM-scraped from auction row stat labels
+      // ('Damage:' vs 'Armor:') — our own UI taxonomy, not Torn's. Translate
+      // to Torn's real `type` at this boundary; 'primary' is an arbitrary
+      // stand-in for weapons when the dict hasn't loaded (any weapon type
+      // routes the same for RW pricing).
+      const type = (cls && cls.type)
+        || (parsed.itemType === 'armor' ? 'defensive' : 'primary');
       const rarity = (cls && cls.rarity) || parsed.rarity || null;
       const classTag = cls
         ? formatClassTag({ ...cls, rarity })
-        : formatClassTag({ category, rarity });
+        : formatClassTag({ type, rarity });
 
       // BB floor — used as hard guard on Riot/Dune/trash and informational
-      // elsewhere. Armor takes 'armor' as the class key; weapons use the
+      // elsewhere. `'armor'` here is BBEngine's internal multiplier key
+      // (unrelated to Torn's `defensive` type label); weapons key on the
       // resolved weaponBase (pistol/rifle/etc).
       const bbRate = MEM.bbRate && MEM.bbRate.rate;
-      const bbClassKey = category === 'armor' ? 'armor' : (cls && cls.weaponBase) || null;
+      const bbClassKey = type === 'defensive' ? 'armor' : (cls && cls.weaponBase) || null;
       const bbFloor = bbClassKey && rarity && bbRate
         ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
             { bonusCount: (parsed.parsedBonuses || []).length })
