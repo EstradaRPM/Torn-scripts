@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.19
+// @version      0.3.20
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.19';
+  const SCRIPT_VERSION = '0.3.20';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3672,6 +3672,39 @@
     },
 
     /**
+     * deductionChain({ anchor, settings }) →
+     *   { anchor, tax, mug, margin, buyMax, resaleNet } | null
+     *
+     * King's order-of-ops step 4, single-cut model (#290/#291): from a
+     * reference price — the asking floor for the no-cleared-comp fallback, or
+     * the comp median for the cleared two-tier card — deduct 5% market tax +
+     * 10% mug risk + 5–10% profit margin to a max bid. There is NO separate
+     * market-inflation multiplier: the single cut already accounts for why you
+     * bid under asking (sellers pad asking for the same tax/mug exposure, so
+     * stacking a second discount would double-count it).
+     *
+     * `buyMax`    – highest bid that still clears the margin after tax + mug.
+     * `resaleNet` – what you net selling at the anchor after tax + mug only
+     *               (no margin); the gap buyMax → resaleNet is the profit
+     *               buffer the margin reserves.
+     *
+     * anchor   – reference price (> 0), else returns null.
+     * settings – { tax, mug, margin } (defaults 0.05 / 0.10 / 0.05).
+     */
+    deductionChain(args) {
+      const a = args || {};
+      const s = a.settings || {};
+      const anchor = Number(a.anchor);
+      if (!Number.isFinite(anchor) || anchor <= 0) return null;
+      const tax    = s.tax    != null ? s.tax    : 0.05;
+      const mug    = s.mug    != null ? s.mug    : 0.10;
+      const margin = s.margin != null ? s.margin : 0.05;
+      const buyMax    = Math.round(anchor * (1 - tax - mug - margin));
+      const resaleNet = Math.round(anchor * (1 - tax - mug));
+      return { anchor: Math.round(anchor), tax, mug, margin, buyMax, resaleNet };
+    },
+
+    /**
      * compReference(comps, settings) →
      *   { median, count, comps, strictCount, widenedBonusCount,
      *     widenedTolerance, recencyDays, tolerance, suppressedByChange }
@@ -4221,6 +4254,86 @@
         parts.push(`Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)`);
       }
       badge.textContent = parts.join(' · ');
+    },
+    /**
+     * renderMarketFloorCard(infoEl, ctx) — no-cleared-comp fallback (#291).
+     * When cleared comps are zero but asking listings exist, anchor a verdict
+     * on the asking floor via PricingEngine.deductionChain (single-cut model)
+     * instead of the dead-end `no comp` one-liner. Honest about provenance:
+     * labels the estimate market-floor / exact-bonus / no-cleared-comp so the
+     * user knows it is weaker than a cleared-comp card. Per-listing quality
+     * annotation of the floor listings is #294.
+     *   ctx: { classTag, currentBid, marketFloor, askingCount, askingMedian }
+     */
+    renderMarketFloorCard(infoEl, ctx) {
+      const badge = InlineRenderer._slot(infoEl);
+      if (!badge) return;
+      const s = ctx || {};
+      const chain = PricingEngine.deductionChain({ anchor: s.marketFloor });
+      badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-fair';
+      badge.textContent = '';
+      const cb = Number(s.currentBid);
+
+      // ── headline: class tag · buy max · room/over vs current bid ────────
+      const head = document.createElement('div');
+      head.className = 'rwth-card-headline';
+      if (s.classTag) {
+        const tag = document.createElement('span');
+        tag.className = 'rwth-card-classtag';
+        tag.textContent = s.classTag;
+        head.appendChild(tag);
+      }
+      const buyEl = document.createElement('span');
+      buyEl.className = 'rwth-card-buymax';
+      buyEl.textContent = chain ? `Buy max ${fmtChatPrice(chain.buyMax)}` : 'Buy max —';
+      head.appendChild(buyEl);
+      if (chain && Number.isFinite(cb)) {
+        const d = chain.buyMax - cb;
+        const delta = document.createElement('span');
+        if (d >= 0) { delta.className = 'rwth-card-room'; delta.textContent = `room ${fmtChatPrice(d)}`; }
+        else        { delta.className = 'rwth-card-over'; delta.textContent = `over by ${fmtChatPrice(-d)}`; }
+        head.appendChild(delta);
+      }
+      badge.appendChild(head);
+
+      // ── provenance note — weaker than a cleared-comp card ───────────────
+      const note = document.createElement('div');
+      note.className = 'rwth-card-ref rwth-card-thin';
+      note.textContent = 'market-floor estimate · no cleared comps · exact bonus';
+      badge.appendChild(note);
+
+      if (chain) {
+        // ── single-cut deduction chain ────────────────────────────────────
+        const ded = document.createElement('div');
+        ded.className = 'rwth-card-ref rwth-card-ded';
+        ded.textContent =
+          `floor ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          + ` − ${Math.round(chain.mug * 100)}% mug − ${Math.round(chain.margin * 100)}% margin`
+          + ` → buy max ${fmtChatPrice(chain.buyMax)}`;
+        badge.appendChild(ded);
+
+        // ── explicit buy/pass verdict ─────────────────────────────────────
+        const verd = document.createElement('div');
+        verd.className = 'rwth-card-ref rwth-card-verdict';
+        if (Number.isFinite(cb)) {
+          verd.textContent = cb <= chain.buyMax
+            ? `BUY — bid ${fmtChatPrice(cb)} ≤ max ${fmtChatPrice(chain.buyMax)}`
+            : `PASS — bid ${fmtChatPrice(cb)} over max ${fmtChatPrice(chain.buyMax)}`;
+        } else {
+          verd.textContent = `buy ≤ ${fmtChatPrice(chain.buyMax)}`;
+        }
+        badge.appendChild(verd);
+      }
+
+      // ── asking spread (the real data we have) ───────────────────────────
+      const spread = document.createElement('div');
+      spread.className = 'rwth-card-ladder';
+      const parts = [];
+      if (s.marketFloor != null)  parts.push(`floor ${fmtChatPrice(s.marketFloor)}`);
+      if (s.askingMedian != null) parts.push(`median ${fmtChatPrice(s.askingMedian)}`);
+      if (s.askingCount)          parts.push(`${s.askingCount} listed`);
+      spread.textContent = 'Asking: ' + parts.join(' · ');
+      badge.appendChild(spread);
     },
     /**
      * renderTwoTierCard(infoEl, ctx) — v0.3.0 two-tier card.
@@ -4972,12 +5085,6 @@
       });
       const askingMedian = _median(askingShaped.map(c => c.price));
       const askingCount  = askingShaped.length;
-      if (!comps.length) {
-        InlineRenderer.renderAuctionBadge(info, {
-          error: 'no comp', askingMedian, askingCount,
-        });
-        return;
-      }
       // Resolve item class from the cached items dict. Falls back to DOM-parsed
       // type/rarity when the dict has not been fetched yet.
       const dict = ItemClassifier.getDict();
@@ -5006,13 +5113,32 @@
             { bonusCount: (parsed.parsedBonuses || []).length })
         : null;
 
+      const marketCheapest = askingShaped.length
+        ? Math.min(...askingShaped.map(c => c.price)) : null;
+
+      // v0.3.0 slice 20a (#291) — no cleared comps. When asking listings still
+      // exist, anchor a single-cut verdict on the asking floor instead of the
+      // dead-end `no comp` one-liner. Only when BOTH cleared and asking are
+      // empty do we keep the bare badge.
+      if (!comps.length) {
+        if (marketCheapest != null) {
+          InlineRenderer.renderMarketFloorCard(info, {
+            classTag, currentBid: listingPrice,
+            marketFloor: marketCheapest, askingMedian, askingCount,
+          });
+        } else {
+          InlineRenderer.renderAuctionBadge(info, {
+            error: 'no comp', askingMedian, askingCount,
+          });
+        }
+        return;
+      }
+
       // Per-class routing (v0.3.0 slice 5). Classes that resolve to a
       // PricingEngine key get the two-tier card; anything we can't route
       // falls through to the legacy verdict badge.
       const itemClassKey = resolveItemClass(cls);
       if (itemClassKey) {
-        const marketCheapest = askingShaped.length
-          ? Math.min(...askingShaped.map(c => c.price)) : null;
         const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
         const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
         InlineRenderer.renderTwoTierCard(info, {
