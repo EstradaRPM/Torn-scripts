@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.23
+// @version      0.3.24
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.23';
+  const SCRIPT_VERSION = '0.3.24';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4611,6 +4611,29 @@
         sensEl.textContent = 'not enough comps to derive sensitivity';
       }
       badge.appendChild(sensEl);
+
+      // ── deduction chain + verdict (slice 20e, #295) ───────────────────
+      const chain = reference && reference.median != null
+        ? PricingEngine.deductionChain({ anchor: reference.median }) : null;
+      if (chain) {
+        const ded = document.createElement('div');
+        ded.className = 'rwth-card-ref rwth-card-ded';
+        ded.textContent =
+          `median ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          + ` − ${Math.round(chain.mug * 100)}% mug − ${Math.round(chain.margin * 100)}% margin`
+          + ` → buy max ${fmtChatPrice(chain.buyMax)}`;
+        badge.appendChild(ded);
+
+        const cb = Number(s.currentBid);
+        if (Number.isFinite(cb) && cb > 0) {
+          const verd = document.createElement('div');
+          verd.className = 'rwth-card-ref rwth-card-verdict';
+          verd.textContent = cb <= chain.buyMax
+            ? `BUY — bid ${fmtChatPrice(cb)} ≤ max ${fmtChatPrice(chain.buyMax)}`
+            : `PASS — bid ${fmtChatPrice(cb)} over max ${fmtChatPrice(chain.buyMax)}`;
+          badge.appendChild(verd);
+        }
+      }
 
       // ── ladder ────────────────────────────────────────────────────────
       const ladderEl = document.createElement('div');
