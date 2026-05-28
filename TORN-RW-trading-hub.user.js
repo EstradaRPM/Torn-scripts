@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.25
+// @version      0.3.26
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.25';
+  const SCRIPT_VERSION = '0.3.26';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3339,8 +3339,20 @@
       if (!w || typeof w !== 'object') return null;
       const price = Number(w.price != null ? w.price : NaN);
       if (!Number.isFinite(price)) return null;
-      const bonusPct = Number(w.bonus1Value != null ? w.bonus1Value
-                       : w.bonusValue != null ? w.bonusValue : NaN);
+      // weav3r ranked-weapons returns the bonus under a `bonuses` map/array of
+      // { bonus, value } entries — NOT a flat bonus1Value/bonusValue. Reading
+      // the non-existent flat fields left every LISTED (asking) row at 0.00%
+      // bonus while quality populated fine. Take the first entry as the primary
+      // %, matching the Supabase cleared-comp convention (bonus_values[0]).
+      let bonusPct = NaN;
+      if (w.bonuses && typeof w.bonuses === 'object') {
+        const first = Object.values(w.bonuses).find(b => b && b.value != null);
+        if (first) bonusPct = Number(first.value);
+      }
+      if (!Number.isFinite(bonusPct)) {
+        bonusPct = Number(w.bonus1Value != null ? w.bonus1Value
+                   : w.bonusValue != null ? w.bonusValue : NaN);
+      }
       const qualityPct = Number(w.quality != null ? w.quality : NaN);
       return {
         price,
