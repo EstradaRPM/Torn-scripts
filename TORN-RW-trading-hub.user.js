@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.21
+// @version      0.3.22
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.21';
+  const SCRIPT_VERSION = '0.3.22';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -90,6 +90,7 @@
     intel: {
       enabled: { auction: true, ledger: true },
       defaults: { ignoreQuality: false },
+      qualityClampDefault: false,
       mugBuffer: 10,
       marginTarget: 15,
       markup: 1.20,
@@ -913,6 +914,11 @@
         <input type="checkbox" data-intel="defaults.ignoreQuality"
                ${intel.defaults.ignoreQuality ? 'checked' : ''}>
         Any Quality (ignore quality for all items by default)
+      </label>
+      <label class="rwth-intel-check" style="margin-top:4px;">
+        <input type="checkbox" data-intel="qualityClampDefault"
+               ${intel.qualityClampDefault ? 'checked' : ''}>
+        Quality clamp ON by default (seed new cards to exact-bucket filter)
       </label>
 
       <p class="rwth-form-title" style="margin:14px 0 4px;">Trash bonus list</p>
@@ -1772,6 +1778,7 @@
       mugBuffer:    MEM.intel.mugBuffer,
       marginTarget: MEM.intel.marginTarget,
       markup:       MEM.intel.markup,
+      qualityClampDefault: MEM.intel.qualityClampDefault,
       excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
       bonusChangeDates: { ...(MEM.intel.bonusChangeDates || {}) },
       similarBases: (MEM.intel.similarBases || []).map(c => (c || []).slice()),
@@ -1782,6 +1789,7 @@
       if (path === 'enabled.auction')           nextIntel.enabled.auction  = Boolean(val);
       else if (path === 'enabled.ledger')       nextIntel.enabled.ledger   = Boolean(val);
       else if (path === 'defaults.ignoreQuality') nextIntel.defaults.ignoreQuality = Boolean(val);
+      else if (path === 'qualityClampDefault') nextIntel.qualityClampDefault = Boolean(val);
       else if (path === 'mugBuffer')    nextIntel.mugBuffer    = Number(val) || 0;
       else if (path === 'marginTarget') nextIntel.marginTarget = Number(val) || 0;
       else if (path === 'markup')       nextIntel.markup       = Number(val) || 1;
@@ -4360,7 +4368,8 @@
       badge._rwthCtx = ctx || {};
       let drill = InlineRenderer._drillState.get(badge);
       if (!drill) {
-        drill = { bonus: 'auto', quality: 'auto', expanded: false, axis: 'bonus' };
+        const initQ = MEM.intel.qualityClampDefault ? 'exact' : 'auto';
+        drill = { bonus: 'auto', quality: initQ, expanded: false, axis: 'bonus' };
         InlineRenderer._drillState.set(badge, drill);
       }
       InlineRenderer._paintCard(badge, drill);
