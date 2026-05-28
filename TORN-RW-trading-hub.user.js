@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.13
+// @version      0.3.14
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.13';
+  const SCRIPT_VERSION = '0.3.14';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3399,6 +3399,15 @@
     return _isoToEpoch(iso);
   }
 
+  // v0.3.14 slice 19b (#286) — derived sensitivity thresholds. A slope is only
+  // reported when the comp set is dense enough to read it: ≥5 comps spanning
+  // ≥3 distinct bonus values. Below that we say so instead of inventing a number.
+  const SENSITIVITY_MIN_COMPS = 5;
+  const SENSITIVITY_MIN_DISTINCT = 3;
+  // Slope is considered "meaningful" when |slope per 1%| exceeds this fraction
+  // of the comp median — otherwise the base is flat and % barely moves price.
+  const SENSITIVITY_FLAT_FRACTION = 0.01;
+
   const RECENCY_DEFAULTS = {
     yellowWeapon:  180,
     orangeWeapon:  548,
@@ -3728,6 +3737,54 @@
           : null,
         suppressedByChange,
       };
+    },
+
+    /**
+     * deriveSensitivity(comps) →
+     *   { label: 'thin'|'flat'|'sloped', slope?, perPct?, comps, distinctBonus }
+     *
+     * v0.3.14 slice 19b (#286). Reads the bonus-%/price slope from the comp
+     * set instead of guessing. With ≥SENSITIVITY_MIN_COMPS comps spanning
+     * ≥SENSITIVITY_MIN_DISTINCT distinct bonus values, fits a least-squares
+     * slope through (bonusValue, median-price-at-that-bonus) and labels the
+     * base 'sloped' when |slope| exceeds SENSITIVITY_FLAT_FRACTION of the
+     * comp median, else 'flat'. Otherwise 'thin' (no slope number).
+     *
+     * comps – Array<{ price, bonusValue }>. Caller passes the already-filtered
+     *         comp set used elsewhere on the card.
+     */
+    deriveSensitivity(comps) {
+      const list = (comps || []).filter(c => c
+        && Number.isFinite(Number(c.price)) && Number(c.price) > 0
+        && Number.isFinite(Number(c.bonusValue)));
+      const distinctBonus = new Set(list.map(c => Number(c.bonusValue))).size;
+      if (list.length < SENSITIVITY_MIN_COMPS || distinctBonus < SENSITIVITY_MIN_DISTINCT) {
+        return { label: 'thin', comps: list.length, distinctBonus };
+      }
+      const byBonus = new Map();
+      for (const c of list) {
+        const k = Number(c.bonusValue);
+        if (!byBonus.has(k)) byBonus.set(k, []);
+        byBonus.get(k).push(Number(c.price));
+      }
+      const points = [...byBonus.entries()]
+        .map(([b, prices]) => ({ b, p: _median(prices) }))
+        .sort((a, b) => a.b - b.b);
+      const n = points.length;
+      const meanX = points.reduce((s, pt) => s + pt.b, 0) / n;
+      const meanY = points.reduce((s, pt) => s + pt.p, 0) / n;
+      let num = 0, den = 0;
+      for (const pt of points) {
+        num += (pt.b - meanX) * (pt.p - meanY);
+        den += (pt.b - meanX) * (pt.b - meanX);
+      }
+      const slope = den > 0 ? num / den : 0;
+      const median = _median(list.map(c => Number(c.price))) || 0;
+      const threshold = Math.abs(median) * SENSITIVITY_FLAT_FRACTION;
+      if (Math.abs(slope) <= threshold) {
+        return { label: 'flat', slope, perPct: slope, comps: list.length, distinctBonus };
+      }
+      return { label: 'sloped', slope, perPct: slope, comps: list.length, distinctBonus };
     },
 
     /**
@@ -4285,6 +4342,19 @@
         refEl.textContent = parts.join(' · ');
         badge.appendChild(refEl);
       }
+
+      // ── derived sensitivity (slice 19b) ───────────────────────────────
+      const sens = PricingEngine.deriveSensitivity(filtered);
+      const sensEl = document.createElement('div');
+      sensEl.className = 'rwth-card-sensitivity';
+      if (sens.label === 'sloped') {
+        sensEl.textContent = `every 1% ≈ ${fmtChatPrice(Math.abs(sens.perPct))} on this base`;
+      } else if (sens.label === 'flat') {
+        sensEl.textContent = '% barely moves price on this base';
+      } else {
+        sensEl.textContent = 'not enough comps to derive sensitivity';
+      }
+      badge.appendChild(sensEl);
 
       // ── ladder ────────────────────────────────────────────────────────
       const ladderEl = document.createElement('div');
@@ -4923,6 +4993,9 @@
     DomScanner,
     compShape,
     BONUS_CHANGE_DATES_SEED,
+    SENSITIVITY_MIN_COMPS,
+    SENSITIVITY_MIN_DISTINCT,
+    SENSITIVITY_FLAT_FRACTION,
     resolveBonusChangeEpoch,
     parseBonusChangeDates,
     fmtBonusChangeDates,
