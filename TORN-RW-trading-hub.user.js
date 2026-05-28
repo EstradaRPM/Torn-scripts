@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.20
+// @version      0.3.21
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.20';
+  const SCRIPT_VERSION = '0.3.21';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4156,7 +4156,8 @@
               : c.buyout != null ? c.buyout : NaN);
     if (!Number.isFinite(p)) return null;
     const q = Number(c.quality != null ? c.quality
-              : c.qualityPct != null ? c.qualityPct : NaN);
+              : c.qualityPct != null ? c.qualityPct
+              : c.stat_quality != null ? c.stat_quality : NaN);
     const tsRaw = c.timestamp != null ? c.timestamp
                 : c.sold_at != null ? c.sold_at
                 : c.created_at != null ? c.created_at : null;
@@ -4166,9 +4167,18 @@
       if (Number.isFinite(n) && n > 0) timestamp = n < 1e12 ? n * 1000 : n;
       else { const d = Date.parse(tsRaw); if (Number.isFinite(d)) timestamp = d; }
     }
+    // Supabase auction rows carry the primary bonus % in a
+    // `bonus_values: [{bonus_id, bonus_value}, …]` array (parallel to
+    // `bonus_ids`), not a flat `bonus1_value`. Without this branch every
+    // cleared comp shaped `bonusValue: null`, and the exact-bonus clamp in
+    // CompWidener.inBand silently dropped the entire set → 0 cleared (#292).
+    const bvFromArray = (Array.isArray(c.bonus_values) && c.bonus_values.length
+                         && c.bonus_values[0] && c.bonus_values[0].bonus_value != null)
+      ? c.bonus_values[0].bonus_value : null;
     const bvRaw = c.bonusValue != null ? c.bonusValue
                 : c.bonus1_value != null ? c.bonus1_value
-                : c.bonusPct != null ? c.bonusPct : null;
+                : c.bonusPct != null ? c.bonusPct
+                : bvFromArray != null ? bvFromArray : null;
     const bv = bvRaw != null ? Number(bvRaw) : NaN;
     const out = {
       price: p,
