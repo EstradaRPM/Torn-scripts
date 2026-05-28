@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.11
+// @version      0.3.12
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.11';
+  const SCRIPT_VERSION = '0.3.12';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4059,7 +4059,7 @@
       badge._rwthCtx = ctx || {};
       let drill = InlineRenderer._drillState.get(badge);
       if (!drill) {
-        drill = { bonus: 'auto', quality: 'auto', expanded: false };
+        drill = { bonus: 'auto', quality: 'auto', expanded: false, axis: 'bonus' };
         InlineRenderer._drillState.set(badge, drill);
       }
       InlineRenderer._paintCard(badge, drill);
@@ -4242,6 +4242,30 @@
       const wrap = document.createElement('div');
       wrap.className = 'rwth-card-drill';
 
+      // axis toggle (slice 18) — bonus % vs quality % grouping for both ladders.
+      const axisRow = document.createElement('div');
+      axisRow.className = 'rwth-card-drill-knobs';
+      const axisGroup = document.createElement('div');
+      const axisLbl = document.createElement('label');
+      axisLbl.textContent = 'group';
+      axisGroup.appendChild(axisLbl);
+      const axisOpts = [['bonus', 'bonus %'], ['quality', 'quality %']];
+      for (const [val, txt] of axisOpts) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = txt;
+        if ((drill.axis || 'bonus') === val) b.classList.add('active');
+        b.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          drill.axis = val;
+          InlineRenderer._paintCard(badge, drill);
+        });
+        axisGroup.appendChild(b);
+      }
+      axisRow.appendChild(axisGroup);
+      wrap.appendChild(axisRow);
+
       // knobs
       const knobs = document.createElement('div');
       knobs.className = 'rwth-card-drill-knobs';
@@ -4297,8 +4321,7 @@
       // bonus-% ladders — SOLD (cleared) and LISTED (asking) side-by-side.
       // Verdict math uses SOLD only; LISTED informs spread (PRD #265 Story 5/6,
       // slice 14 issue #280). King: item-market asks run 15–25% above sellable.
-      const ownBv = Number(ctx.primaryBonusValue);
-      const ownK  = Number.isFinite(ownBv) ? ownBv : null;
+      const axis = drill.axis === 'quality' ? 'quality' : 'bonus';
       const askingArr = Array.isArray(ctx.askingComps) ? ctx.askingComps : [];
       const cheapest = askingArr.reduce((m, c) => {
         const p = Number(c && c.price);
@@ -4307,19 +4330,24 @@
       }, null);
       const ladders = document.createElement('div');
       ladders.className = 'rwth-card-ladders';
+      const soldEmpty = axis === 'quality'
+        ? (filtered.length ? 'no comps carry a quality %' : 'no comps match these filters')
+        : (filtered.length ? 'no comps carry a bonus %'   : 'no comps match these filters');
       ladders.appendChild(InlineRenderer._buildBonusLadder({
         title: 'SOLD (cleared)',
         kind: 'sold',
         comps: filtered,
-        ownK,
+        axis,
+        ctx,
         cheapestPrice: null,
-        emptyText: filtered.length ? 'no comps carry a bonus %' : 'no comps match these filters',
+        emptyText: soldEmpty,
       }));
       ladders.appendChild(InlineRenderer._buildBonusLadder({
         title: 'LISTED (asking)',
         kind: 'listed',
         comps: askingArr,
-        ownK,
+        axis,
+        ctx,
         cheapestPrice: cheapest,
         emptyText: 'no live listings',
       }));
@@ -4327,7 +4355,40 @@
 
       return wrap;
     },
-    _buildBonusLadder({ title, kind, comps, ownK, cheapestPrice, emptyText }) {
+    _qualityBuckets(itemClass) {
+      const s = String(itemClass || '').toLowerCase();
+      if (s.includes('orange')) {
+        return [
+          { lo: 0,   hi: 150, label: '<150%' },
+          { lo: 150, hi: 200, label: '150–199%' },
+          { lo: 200, hi: 250, label: '200–249%' },
+          { lo: 250, hi: Infinity, label: '250%+' },
+        ];
+      }
+      if (s.includes('red')) {
+        return [
+          { lo: 0,   hi: 200, label: '<200%' },
+          { lo: 200, hi: 300, label: '200–299%' },
+          { lo: 300, hi: 400, label: '300–399%' },
+          { lo: 400, hi: Infinity, label: '400%+' },
+        ];
+      }
+      return [
+        { lo: 0,   hi: 100, label: '<100%' },
+        { lo: 100, hi: 130, label: '100–129%' },
+        { lo: 130, hi: 150, label: '130–149%' },
+        { lo: 150, hi: Infinity, label: '150%+' },
+      ];
+    },
+    _qualityBucketIndex(q, buckets) {
+      const v = Number(q);
+      if (!Number.isFinite(v)) return -1;
+      for (let i = 0; i < buckets.length; i++) {
+        if (v >= buckets[i].lo && v < buckets[i].hi) return i;
+      }
+      return -1;
+    },
+    _buildBonusLadder({ title, kind, comps, axis, ctx, cheapestPrice, emptyText }) {
       const col = document.createElement('div');
       col.className = 'rwth-card-ladder-col';
       const h = document.createElement('div');
@@ -4335,14 +4396,26 @@
       h.textContent = title;
       col.appendChild(h);
 
+      const useQuality = axis === 'quality';
+      const buckets = useQuality ? InlineRenderer._qualityBuckets(ctx && ctx.itemClass) : null;
       const arr = Array.isArray(comps) ? comps : [];
-      const groups = new Map();
-      for (const c of arr) {
-        if (!c || c.bonusValue == null) continue;
-        const k = Number(c.bonusValue);
-        if (!Number.isFinite(k)) continue;
-        if (!groups.has(k)) groups.set(k, []);
-        groups.get(k).push(c);
+      const groups = new Map(); // key → { label, sort, rows }
+      if (useQuality) {
+        for (const c of arr) {
+          if (!c) continue;
+          const idx = InlineRenderer._qualityBucketIndex(c.quality, buckets);
+          if (idx < 0) continue;
+          if (!groups.has(idx)) groups.set(idx, { label: buckets[idx].label, sort: idx, rows: [] });
+          groups.get(idx).rows.push(c);
+        }
+      } else {
+        for (const c of arr) {
+          if (!c || c.bonusValue == null) continue;
+          const k = Number(c.bonusValue);
+          if (!Number.isFinite(k)) continue;
+          if (!groups.has(k)) groups.set(k, { label: `${k}%`, sort: k, rows: [] });
+          groups.get(k).rows.push(c);
+        }
       }
       if (!groups.size) {
         const empty = document.createElement('div');
@@ -4351,19 +4424,29 @@
         col.appendChild(empty);
         return col;
       }
-      const keys = Array.from(groups.keys()).sort((a, b) => b - a);
+      // own marker — bucket index when grouping by quality, raw bonus % otherwise.
+      let ownKey = null;
+      if (useQuality) {
+        const ownIdx = InlineRenderer._qualityBucketIndex(ctx && ctx.listingQuality, buckets);
+        if (ownIdx >= 0) ownKey = ownIdx;
+      } else {
+        const ownBv = Number(ctx && ctx.primaryBonusValue);
+        if (Number.isFinite(ownBv)) ownKey = ownBv;
+      }
+      const entries = Array.from(groups.entries()).sort((a, b) => b[1].sort - a[1].sort);
       const table = document.createElement('table');
       table.className = 'rwth-card-drill-table rwth-card-ladder-table';
       const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>bonus%</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>';
+      const firstHead = useQuality ? 'quality' : 'bonus%';
+      thead.innerHTML = `<tr><th>${firstHead}</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>`;
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
       // One row expanded at a time (acceptance: ephemeral, popup-local).
       let openKey = null;
       let openDetail = null;
       let openRow = null;
-      for (const k of keys) {
-        const rows = groups.get(k).filter(c => Number.isFinite(Number(c.price)) && Number(c.price) > 0);
+      for (const [k, group] of entries) {
+        const rows = group.rows.filter(c => Number.isFinite(Number(c.price)) && Number(c.price) > 0);
         if (!rows.length) continue;
         const prices = rows.map(c => Number(c.price));
         const med = _median(prices);
@@ -4372,7 +4455,7 @@
         const tr = document.createElement('tr');
         tr.classList.add('rwth-card-ladder-row');
         const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
-        const isOwn = ownK != null && k === ownK;
+        const isOwn = ownKey != null && k === ownKey;
         if (isOwn) tr.classList.add('rwth-card-ladder-own');
         const hasCheapest = cheapestPrice != null && mn === cheapestPrice;
         const tag = isOwn ? ' ← you' : '';
@@ -4381,7 +4464,7 @@
         caret.className = 'rwth-card-ladder-caret';
         caret.textContent = '▸';
         bonusCell.appendChild(caret);
-        bonusCell.appendChild(document.createTextNode(`${k}%${tag}`));
+        bonusCell.appendChild(document.createTextNode(`${group.label}${tag}`));
         tr.appendChild(bonusCell);
         tr.appendChild(td(fmtChatPrice(med)));
         const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest live' : ''));
