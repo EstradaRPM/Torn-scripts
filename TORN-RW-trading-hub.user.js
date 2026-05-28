@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.12
+// @version      0.3.13
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.12';
+  const SCRIPT_VERSION = '0.3.13';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -101,6 +101,11 @@
       // ships the mechanism only, the user supplies the lists in Settings.
       // Empty → fall through to defaults.bonusTolerance (current behavior).
       excludedBonuses: [],                                  // ["cupid", "achilles", …]
+      // v0.3.0 slice 19a (#285) — user overrides for BONUS_CHANGE_DATES.
+      // Merged over the in-code seed; key = lower-cased bonus name, value =
+      // ISO YYYY-MM-DD. Comps older than the date are suppressed when the
+      // listing carries that bonus.
+      bonusChangeDates: {},
     },
     bbRate: null,           // { rate, cachePrices, fetchedAt } — hydrated from rwth_bb_rate
     fetchError: null,
@@ -148,6 +153,8 @@
         defaults: { ...MEM.intel.defaults, ...(intel.defaults || {}) },
         bonuses:  { ...(intel.bonuses || {}) },
         excludedBonuses: Array.isArray(intel.excludedBonuses) ? intel.excludedBonuses.slice() : [],
+        bonusChangeDates: (intel.bonusChangeDates && typeof intel.bonusChangeDates === 'object')
+          ? { ...intel.bonusChangeDates } : {},
       };
     }
   }
@@ -824,6 +831,26 @@
       .filter(Boolean)
       .filter((v, i, a) => a.indexOf(v) === i);
   }
+  // v0.3.0 slice 19a (#285) — `bonus: YYYY-MM-DD` per line. User overrides
+  // shown alongside the in-code seed so the user sees what's already active.
+  function fmtBonusChangeDates(seed, overrides) {
+    const merged = { ...seed, ...(overrides || {}) };
+    return Object.keys(merged).sort()
+      .map(k => `${k}: ${merged[k]}`).join('\n');
+  }
+  function parseBonusChangeDates(text, seed) {
+    const out = {};
+    String(text || '').split(/\n+/).forEach((line) => {
+      const m = String(line).trim().match(/^([a-z][a-z0-9_\- ]*?)\s*[:=]\s*(\d{4}-\d{2}-\d{2})\s*$/i);
+      if (!m) return;
+      const key = m[1].trim().toLowerCase();
+      const iso = m[2];
+      // Only persist as an override when it differs from the seed — keeps
+      // the stored override map small and faithful to user intent.
+      if (!seed || seed[key] !== iso) out[key] = iso;
+    });
+    return out;
+  }
   function buildSettingsTab(mem) {
     const s = (mem && mem.settings) || {};
     const intel = (mem && mem.intel) || MEM.intel;
@@ -912,6 +939,12 @@
       <textarea class="rwth-field-input" id="rwth-intel-trash" rows="2"
                 style="width:100%;font-family:inherit;"
                 placeholder="cupid, achilles, …">${escapeAttr(fmtTrashList(intel.excludedBonuses))}</textarea>
+
+      <p class="rwth-form-title" style="margin:14px 0 4px;">Reference tables</p>
+      <p class="rwth-intel-empty" style="margin:0 0 4px;">Bonus-mechanic change dates — one per line as <code>bonus: YYYY-MM-DD</code>. Cleared sales older than the date for that bonus are suppressed from the comp set (King example 4 — puncture nerf).</p>
+      <textarea class="rwth-field-input" id="rwth-intel-bonus-change-dates" rows="3"
+                style="width:100%;font-family:inherit;"
+                placeholder="puncture: 2026-02-01">${escapeAttr(fmtBonusChangeDates(BONUS_CHANGE_DATES_SEED, intel.bonusChangeDates))}</textarea>
 
       <div class="rwth-settings-actions">
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
@@ -1758,6 +1791,7 @@
       marginTarget: MEM.intel.marginTarget,
       markup:       MEM.intel.markup,
       excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
+      bonusChangeDates: { ...(MEM.intel.bonusChangeDates || {}) },
     };
     document.querySelectorAll('#rwth-content [data-intel]').forEach((el) => {
       const path = el.dataset.intel;
@@ -1788,6 +1822,10 @@
     // Trash list — hard "don't fetch" filter.
     const trashEl = document.getElementById('rwth-intel-trash');
     if (trashEl) nextIntel.excludedBonuses = parseTrashList(trashEl.value);
+
+    // v0.3.0 slice 19a (#285) — bonus-mechanic change dates editor.
+    const bcdEl = document.getElementById('rwth-intel-bonus-change-dates');
+    if (bcdEl) nextIntel.bonusChangeDates = parseBonusChangeDates(bcdEl.value, BONUS_CHANGE_DATES_SEED);
 
     Store.set('rwth_intel_settings', nextIntel);
     setState({ settings: next, intel: nextIntel });
@@ -3336,6 +3374,31 @@
   // Default recency window (days) per item class for compReference (v0.3.0
   // slice 6): yellow 6mo, orange 18mo, red 3yr. Armor classes that route to
   // BB floor (Dune/Riot/trash) have no recency dependency.
+  // v0.3.0 slice 19a (#285) — Seed table of bonus-mechanic change dates.
+  // Sales with `timestamp < date` are dropped when the listing's primary
+  // bonus matches a key here. Source: King's RW logic doc, example 4
+  // (puncture nerf, Feb 2026). Users extend via Settings → Reference tables.
+  const BONUS_CHANGE_DATES_SEED = {
+    puncture: '2026-02-01',
+  };
+
+  /** ISO date → epoch ms, returns null on parse failure. */
+  function _isoToEpoch(iso) {
+    if (!iso) return null;
+    const ms = Date.parse(String(iso).trim() + 'T00:00:00Z');
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  /** Resolve the suppression threshold for `bonusName` from seed + user overrides. */
+  function resolveBonusChangeEpoch(bonusName, intel) {
+    if (!bonusName) return null;
+    const key = String(bonusName).trim().toLowerCase();
+    if (!key) return null;
+    const overrides = (intel && intel.bonusChangeDates) || {};
+    const iso = overrides[key] != null ? overrides[key] : BONUS_CHANGE_DATES_SEED[key];
+    return _isoToEpoch(iso);
+  }
+
   const RECENCY_DEFAULTS = {
     yellowWeapon:  180,
     orangeWeapon:  548,
@@ -3596,12 +3659,25 @@
 
       const list = (comps || []).filter(c => c && Number.isFinite(Number(c.price)) && Number(c.price) > 0);
 
+      // v0.3.0 slice 19a (#285) — suppress sales from before a known bonus-
+      // mechanic change for the listing's primary bonus. King's example 4
+      // (puncture nerf): old logs are stale and would drag the median up.
+      // Undated comps pass through (we can't know which side of the date).
+      const intelForSuppress = s.intel || (typeof MEM !== 'undefined' ? MEM.intel : null);
+      const suppressEpoch = resolveBonusChangeEpoch(s.bonusName, intelForSuppress);
+      const preSuppressCount = list.length;
+      const afterSuppress = suppressEpoch == null
+        ? list
+        : list.filter(c => !Number.isFinite(Number(c.timestamp))
+                            || Number(c.timestamp) >= suppressEpoch);
+      const suppressedByChange = preSuppressCount - afterSuppress.length;
+
       // Recency filter: only applied when we have both a window and a timestamp;
       // undated comps fall through so legacy/asking rows aren't silently dropped.
       const recencyMs = recencyDays != null ? recencyDays * 86400000 : null;
       const inRecency = recencyMs == null
-        ? list
-        : list.filter(c => !Number.isFinite(Number(c.timestamp))
+        ? afterSuppress
+        : afterSuppress.filter(c => !Number.isFinite(Number(c.timestamp))
                             || (now - Number(c.timestamp)) <= recencyMs);
 
       const strictTol = Number.isFinite(Number(s.strictTolerance)) ? Number(s.strictTolerance) : null;
@@ -3623,6 +3699,7 @@
           recencyDays,
           tolerance: strictTol,
           widened: null,
+          suppressedByChange,
         };
       }
 
@@ -3649,6 +3726,7 @@
         widened: widenedExtra > 0
           ? { strictCount: strict.length, widenedCount: widenedExtra, widenedTolerance }
           : null,
+        suppressedByChange,
       };
     },
 
@@ -4114,6 +4192,7 @@
         itemClass: s.itemClass,
         targetBonusValue: useAutoRef ? s.primaryBonusValue : null,
         strictTolerance: useAutoRef ? s.strictTolerance : null,
+        bonusName: s.primaryBonusName,
       });
 
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
@@ -4183,7 +4262,7 @@
       badge.appendChild(head);
 
       // ── reference summary ─────────────────────────────────────────────
-      if (reference && (reference.count > 0 || reference.widened)) {
+      if (reference && (reference.count > 0 || reference.widened || reference.suppressedByChange)) {
         const refEl = document.createElement('div');
         refEl.className = 'rwth-card-ref';
         const parts = [];
@@ -4198,6 +4277,9 @@
           parts.push(reference.recencyDays >= 365
             ? `${Math.round(reference.recencyDays / 365)}yr`
             : `${Math.round(reference.recencyDays / 30)}mo`);
+        }
+        if (reference.suppressedByChange > 0) {
+          parts.push(`${reference.suppressedByChange} suppressed (bonus nerf)`);
         }
         if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('filtered');
         refEl.textContent = parts.join(' · ');
@@ -4840,6 +4922,10 @@
     BONUS_NAME_TO_ID,
     DomScanner,
     compShape,
+    BONUS_CHANGE_DATES_SEED,
+    resolveBonusChangeEpoch,
+    parseBonusChangeDates,
+    fmtBonusChangeDates,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
