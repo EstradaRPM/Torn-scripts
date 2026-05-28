@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.16
+// @version      0.3.17
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.16';
+  const SCRIPT_VERSION = '0.3.17';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -87,19 +87,14 @@
       apiKey: '###PDA-APIKEY###',
     },
     // Intel feature state — persisted to rwth_intel_settings.
-    // bonuses: { [bonusId]: { tolerance: number, ignoreQuality: bool } }
-    // bonusId is the lower-cased bonus name used as a stable key (e.g. "blindfire").
     intel: {
       enabled: { auction: true, ledger: true },
-      defaults: { bonusTolerance: 10, qualityTolerance: 10, ignoreQuality: false },
-      bonuses: {},
-      band: 7,
+      defaults: { ignoreQuality: false },
       mugBuffer: 10,
       marginTarget: 15,
       markup: 1.20,
       // v0.3.0 slice 9 — user-curated seed data. Empty by design: PRD #265
       // ships the mechanism only, the user supplies the lists in Settings.
-      // Empty → fall through to defaults.bonusTolerance (current behavior).
       excludedBonuses: [],                                  // ["cupid", "achilles", …]
       // v0.3.0 slice 19a (#285) — user overrides for BONUS_CHANGE_DATES.
       // Merged over the in-code seed; key = lower-cased bonus name, value =
@@ -157,7 +152,6 @@
         ...intel,
         enabled:  { ...MEM.intel.enabled,  ...(intel.enabled  || {}) },
         defaults: { ...MEM.intel.defaults, ...(intel.defaults || {}) },
-        bonuses:  { ...(intel.bonuses || {}) },
         excludedBonuses: Array.isArray(intel.excludedBonuses) ? intel.excludedBonuses.slice() : [],
         bonusChangeDates: (intel.bonusChangeDates && typeof intel.bonusChangeDates === 'object')
           ? { ...intel.bonusChangeDates } : {},
@@ -720,40 +714,6 @@
     </div>`;
   }
 
-  // ─── IntelSettings pure helpers (ADR-0002) ──────────────────────────────────
-  // Shape mirrors the Price Checker's settingsManager contract so future slices
-  // can call a single function regardless of which surface is doing the pricing.
-  //
-  //   getEffectiveBonusTolerance(bonusId, intel)
-  //     → per-bonus override tolerance if present, else intel.defaults.bonusTolerance
-  //       (returns 0 when ignoreQuality is set for the bonus — tolerance is moot).
-  //
-  //   getEffectiveQualityTolerance(bonusId, intel)
-  //     → 0 if the per-bonus or global ignoreQuality flag is set, else
-  //       per-bonus override qualityTolerance if present, else
-  //       intel.defaults.qualityTolerance
-  //
-  // `bonusId` is the lower-cased bonus name (stable dict key, e.g. "blindfire").
-  const IntelSettings = {
-    getEffectiveBonusTolerance(bonusId, intel) {
-      const cfg = intel || MEM.intel;
-      const key = (bonusId || '').toLowerCase();
-      const override = cfg.bonuses && cfg.bonuses[key];
-      if (override && override.ignoreQuality) return 0;
-      if (override && override.tolerance != null) return override.tolerance;
-      return cfg.defaults.bonusTolerance;
-    },
-    getEffectiveQualityTolerance(bonusId, intel) {
-      const cfg = intel || MEM.intel;
-      const key = (bonusId || '').toLowerCase();
-      const override = cfg.bonuses && cfg.bonuses[key];
-      if (cfg.defaults.ignoreQuality) return 0;
-      if (override && override.ignoreQuality) return 0;
-      if (override && override.tolerance != null) return override.tolerance;
-      return cfg.defaults.qualityTolerance;
-    },
-  };
-
   // ─── BonusTrashGuard (pure, ADR-0002) ───────────────────────────────────────
   // Curated trash-bonus exclusion list. `isExcluded` is consulted before any
   // Supabase/weav3r fetch so excluded items short-circuit with no API spend.
@@ -803,28 +763,6 @@
     return `<img src="${escapeAttr(src)}" alt="" width="1" height="1" `
       + `style="width: 1px; height: 1px; border: 0; display: block;" `
       + `referrerpolicy="no-referrer">`;
-  }
-
-  function buildIntelBonusOverrides(bonuses) {
-    const entries = Object.entries(bonuses || {});
-    if (!entries.length) return '<p class="rwth-intel-empty">No per-bonus overrides yet.</p>';
-    return entries.map(([id, ov]) => `
-      <div class="rwth-intel-bonus-row" data-intel-bonus-id="${escapeAttr(id)}">
-        <span class="rwth-intel-bonus-name">${escapeAttr(id)}</span>
-        <label class="rwth-intel-bonus-field">
-          <span>Tol %</span>
-          <input class="rwth-field-input rwth-intel-bonus-tol" type="number" min="0" max="100" step="1"
-                 data-intel-bonus-tol="${escapeAttr(id)}"
-                 value="${escapeAttr(ov.tolerance != null ? ov.tolerance : '')}">
-        </label>
-        <label class="rwth-intel-bonus-check">
-          <input type="checkbox" data-intel-bonus-iq="${escapeAttr(id)}"
-                 ${ov.ignoreQuality ? 'checked' : ''}>
-          Any quality
-        </label>
-        <button class="rwth-btn rwth-btn-ghost rwth-intel-bonus-rm" type="button"
-                data-action="remove-intel-bonus" data-id="${escapeAttr(id)}">✕</button>
-      </div>`).join('');
   }
 
   // v0.3.0 slice 9 — Settings serializers for the seed-data editors.
@@ -953,24 +891,6 @@
       </div>
       <div class="rwth-intel-grid">
         <label class="rwth-field">
-          <span class="rwth-field-label">Default bonus tolerance %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 data-intel="defaults.bonusTolerance"
-                 value="${escapeAttr(intel.defaults.bonusTolerance)}">
-        </label>
-        <label class="rwth-field">
-          <span class="rwth-field-label">Default quality tolerance %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 data-intel="defaults.qualityTolerance"
-                 value="${escapeAttr(intel.defaults.qualityTolerance)}">
-        </label>
-        <label class="rwth-field">
-          <span class="rwth-field-label">Verdict band %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 data-intel="band"
-                 value="${escapeAttr(intel.band)}">
-        </label>
-        <label class="rwth-field">
           <span class="rwth-field-label">Mug buffer %</span>
           <input class="rwth-field-input" type="number" min="0" max="100" step="1"
                  data-intel="mugBuffer"
@@ -994,19 +914,6 @@
                ${intel.defaults.ignoreQuality ? 'checked' : ''}>
         Any Quality (ignore quality for all items by default)
       </label>
-      <p class="rwth-form-title" style="margin:10px 0 4px;">Per-bonus overrides</p>
-      <div id="rwth-intel-bonuses">${buildIntelBonusOverrides(intel.bonuses)}</div>
-      <div class="rwth-intel-add-row">
-        <input class="rwth-field-input" type="text" id="rwth-intel-add-name"
-               placeholder="Bonus name (e.g. Blindfire)" autocomplete="off" spellcheck="false">
-        <input class="rwth-field-input" type="number" id="rwth-intel-add-tol"
-               placeholder="Tol %" min="0" max="100" step="1">
-        <label class="rwth-intel-check">
-          <input type="checkbox" id="rwth-intel-add-iq">
-          Any quality
-        </label>
-        <button class="rwth-btn" type="button" data-action="add-intel-bonus">+ Add</button>
-      </div>
 
       <p class="rwth-form-title" style="margin:14px 0 4px;">Trash bonus list</p>
       <p class="rwth-intel-empty" style="margin:0 0 4px;">Bonuses to skip entirely — comma- or newline-separated. Items carrying any of these short-circuit before any comp fetch.</p>
@@ -1781,8 +1688,6 @@
                                 imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
         case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
         case 'toggle-collapse':     toggleCollapse(actionEl.dataset.collapse); break;
-        case 'add-intel-bonus':     addIntelBonus(); break;
-        case 'remove-intel-bonus':  removeIntelBonus(id); break;
       }
     });
 
@@ -1864,8 +1769,6 @@
     const nextIntel = {
       enabled:  { ...MEM.intel.enabled },
       defaults: { ...MEM.intel.defaults },
-      bonuses:  { ...MEM.intel.bonuses },
-      band:         MEM.intel.band,
       mugBuffer:    MEM.intel.mugBuffer,
       marginTarget: MEM.intel.marginTarget,
       markup:       MEM.intel.markup,
@@ -1878,25 +1781,10 @@
       const val  = el.type === 'checkbox' ? el.checked : el.value;
       if (path === 'enabled.auction')           nextIntel.enabled.auction  = Boolean(val);
       else if (path === 'enabled.ledger')       nextIntel.enabled.ledger   = Boolean(val);
-      else if (path === 'defaults.bonusTolerance') nextIntel.defaults.bonusTolerance = Number(val) || 0;
-      else if (path === 'defaults.qualityTolerance') nextIntel.defaults.qualityTolerance = Number(val) || 0;
       else if (path === 'defaults.ignoreQuality') nextIntel.defaults.ignoreQuality = Boolean(val);
-      else if (path === 'band')         nextIntel.band         = Number(val) || 0;
       else if (path === 'mugBuffer')    nextIntel.mugBuffer    = Number(val) || 0;
       else if (path === 'marginTarget') nextIntel.marginTarget = Number(val) || 0;
       else if (path === 'markup')       nextIntel.markup       = Number(val) || 1;
-    });
-    // Collect per-bonus override edits made inline.
-    document.querySelectorAll('#rwth-content [data-intel-bonus-tol]').forEach((el) => {
-      const id = el.dataset.intelBonusTol;
-      if (!nextIntel.bonuses[id]) nextIntel.bonuses[id] = {};
-      const v = parseFloat(el.value);
-      nextIntel.bonuses[id].tolerance = Number.isFinite(v) ? v : null;
-    });
-    document.querySelectorAll('#rwth-content [data-intel-bonus-iq]').forEach((el) => {
-      const id = el.dataset.intelBonusIq;
-      if (!nextIntel.bonuses[id]) nextIntel.bonuses[id] = {};
-      nextIntel.bonuses[id].ignoreQuality = el.checked;
     });
 
     // Trash list — hard "don't fetch" filter.
@@ -1923,38 +1811,6 @@
       const el = document.getElementById('rwth-settings-status');
       if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
     }, 2200);
-  }
-
-  // Add a per-bonus intel override from the "Add override" row inputs.
-  function addIntelBonus() {
-    const nameEl = document.getElementById('rwth-intel-add-name');
-    const tolEl  = document.getElementById('rwth-intel-add-tol');
-    const iqEl   = document.getElementById('rwth-intel-add-iq');
-    if (!nameEl) return;
-    const raw = (nameEl.value || '').trim();
-    if (!raw) return;
-    const id = raw.toLowerCase();
-    const tol = tolEl ? parseFloat(tolEl.value) : NaN;
-    const nextBonuses = {
-      ...MEM.intel.bonuses,
-      [id]: {
-        tolerance:     Number.isFinite(tol) ? tol : null,
-        ignoreQuality: iqEl ? iqEl.checked : false,
-      },
-    };
-    const nextIntel = { ...MEM.intel, bonuses: nextBonuses };
-    Store.set('rwth_intel_settings', nextIntel);
-    setState({ intel: nextIntel });
-  }
-
-  // Remove a per-bonus intel override by its id (lower-cased bonus name).
-  function removeIntelBonus(id) {
-    if (!id) return;
-    const nextBonuses = { ...MEM.intel.bonuses };
-    delete nextBonuses[id];
-    const nextIntel = { ...MEM.intel, bonuses: nextBonuses };
-    Store.set('rwth_intel_settings', nextIntel);
-    setState({ intel: nextIntel });
   }
 
   // Flip one section's fold state and persist it so it survives a reload.
@@ -2042,10 +1898,9 @@
     }
     // v3: ctx-shape result (BadgeRenderer v2). Prefix bump so pre-v0.3.7
     // cached pricecheck:v2 entries (verdict/suggest) are ignored.
-    const cacheKey = 'pricecheck:v3:' + JSON.stringify({
+    const cacheKey = 'pricecheck:v4:' + JSON.stringify({
       n: item.itemName, b: item.bonuses, q: item.quality, c: itemCategory(item),
       e: intel.enabled.ledger,
-      d: intel.defaults, ov: intel.bonuses,
     });
     let composite = Cache.get(cacheKey);
     if (!composite) {
@@ -2106,9 +1961,6 @@
       ? Math.min(...askingShaped.map(c => c.price)) : null;
     const primaryBonus = (item.bonuses || [])[0] || null;
     const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
-    const strictTol = primaryBonus
-      ? IntelSettings.getEffectiveBonusTolerance(String(primaryBonus.name).toLowerCase(), MEM.intel)
-      : null;
 
     writePriceCheckResult(item.id, {
       ctx: {
@@ -2120,7 +1972,7 @@
         listingQuality: item.quality,
         primaryBonusName: primaryBonus ? primaryBonus.name : null,
         primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
-        strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
+        strictTolerance: 0,
         comps,
         askingComps,
         marketCheapest,
@@ -3397,8 +3249,7 @@
         source: 'market',
       };
     },
-    _buildQuery(item, intelSettings) {
-      const intel    = intelSettings || MEM.intel;
+    _buildQuery(item) {
       const bonuses  = ((item && item.bonuses) || []).filter(b => b && b.name);
       const itemName = (item && item.itemName) || '';
       const q = { sortField: 'price', sortDirection: 'asc' };
@@ -3410,35 +3261,20 @@
         q.tab = 'weapons';
         if (itemName) q.weaponName = itemName;
       }
+      // No bonus-value / quality range filters — widener + drilldown handle
+      // narrowing on-card so the network layer returns a wide-enough comp set.
       bonuses.slice(0, 2).forEach((b, i) => {
-        const lo  = String(b.name).toLowerCase();
-        const tol = IntelSettings.getEffectiveBonusTolerance(lo, intel);
-        const val = Number(b.value);
-        const range = Number.isFinite(val) ? similarity.calcRange(val, tol) : null;
-        if (i === 0) {
-          q.bonus1 = b.name;
-          if (range) { q.minBonus1Value = range.min; q.maxBonus1Value = range.max; }
-        } else {
-          q.bonus2 = b.name;
-          if (range) { q.minBonus2Value = range.min; q.maxBonus2Value = range.max; }
-        }
+        if (i === 0) q.bonus1 = b.name;
+        else         q.bonus2 = b.name;
       });
-      const primaryKey = bonuses[0] ? String(bonuses[0].name).toLowerCase() : '';
-      const qTol = IntelSettings.getEffectiveQualityTolerance(primaryKey, intel);
-      const qv = Number(item && item.quality);
-      if (Number.isFinite(qv)) {
-        const qr = similarity.calcRange(qv, qTol);
-        q.minQuality = qr.min;
-        q.maxQuality = qr.max;
-      }
       return q;
     },
     /**
-     * fetch(item, intelSettings) → Promise<{ market, bazaar }>
+     * fetch(item) → Promise<{ market, bazaar }>
      * Cached 5 min by item+criteria. Errors degrade to empty arrays.
      */
-    async fetch(item, intelSettings) {
-      const query = ListingsFetcher._buildQuery(item, intelSettings);
+    async fetch(item) {
+      const query = ListingsFetcher._buildQuery(item);
       const key   = JSON.stringify(query);
       const now   = Date.now();
       const hit   = ListingsFetcher._cache.get(key);
@@ -3872,9 +3708,12 @@
 
       const strictTol = Number.isFinite(Number(s.strictTolerance)) ? Number(s.strictTolerance) : null;
       const target    = Number.isFinite(Number(s.targetBonusValue)) ? Number(s.targetBonusValue) : null;
+      // Default widening ladder when callers pass strictTolerance:0 (exact
+      // match) — slice 19e (#289). Widener steps outward in 1%, 3%, 5%, 10%
+      // bands until ≥minStrict comps are collected.
       const widenTols = Array.isArray(s.widenTolerances) && s.widenTolerances.length
         ? s.widenTolerances
-        : (strictTol != null ? [strictTol * 2, strictTol * 3] : []);
+        : (strictTol != null ? [1, 3, 5, 10] : []);
 
       // v0.3.15 slice 19c (#287) — delegate band-selection + tagging to
       // CompWidener. Each surviving comp carries `provenance` so callers
@@ -3955,8 +3794,6 @@
      * listings) in parallel and returns them as two distinct arrays — never
      * blended (PRD Story 5/6, issue #267). `cleared` drives action math;
      * `asking` is shown as an informational spread line.
-     * Applies effective per-bonus + quality tolerances via IntelSettings →
-     * similarity.calcRange to derive value/quality ranges.
      * Network errors degrade to empty arrays — never throws (PRD Story 10).
      *
      * item            – { itemName, bonuses: [{name,value},...], quality, category? }
@@ -3973,44 +3810,22 @@
       };
       if (itemName) supabaseQuery.item_name = itemName;
 
+      // Bonus id only (no value range): the widener + drilldown narrow on-card.
+      // Without a resolved id the value filter would collapse the comp set —
+      // mirrors Price Checker behaviour.
       bonuses.slice(0, 2).forEach((b, i) => {
         const lo  = String(b.name).toLowerCase();
         const id  = BONUS_NAME_TO_ID[lo] != null
           ? BONUS_NAME_TO_ID[lo]
           : BONUS_NAME_TO_ID[lo.replace(/[\s-]/g, '')];
-        const tol = IntelSettings.getEffectiveBonusTolerance(lo, intel);
-        const val = Number(b.value);
-        const hasVal = Number.isFinite(val);
-        const range  = hasVal ? similarity.calcRange(val, tol) : null;
-        // Value filters without a resolved bonus id collapse the comp set —
-        // drop them when id can't be looked up (mirrors Price Checker).
-        if (i === 0) {
-          if (id != null) {
-            supabaseQuery.bonus1_id = id;
-            if (range) { supabaseQuery.bonus1_value_min = range.min;
-                         supabaseQuery.bonus1_value_max = range.max; }
-          }
-        } else {
-          if (id != null) {
-            supabaseQuery.bonus2_id = id;
-            if (range) { supabaseQuery.bonus2_value_min = range.min;
-                         supabaseQuery.bonus2_value_max = range.max; }
-          }
-        }
+        if (id == null) return;
+        if (i === 0) supabaseQuery.bonus1_id = id;
+        else         supabaseQuery.bonus2_id = id;
       });
-
-      const primaryKey = bonuses[0] ? String(bonuses[0].name).toLowerCase() : '';
-      const qTol = IntelSettings.getEffectiveQualityTolerance(primaryKey, intel);
-      const qv   = Number(item && item.quality);
-      if (Number.isFinite(qv)) {
-        const qr = similarity.calcRange(qv, qTol);
-        supabaseQuery.quality_min = qr.min;
-        supabaseQuery.quality_max = qr.max;
-      }
 
       const [clearedRaw, listings] = await Promise.all([
         SupabaseClient.search(supabaseQuery).then(r => r.auctions || []).catch(() => []),
-        ListingsFetcher.fetch(item, intel).catch(() => ({ market: [], bazaar: [] })),
+        ListingsFetcher.fetch(item).catch(() => ({ market: [], bazaar: [] })),
       ]);
 
       // Stamp every same-base comp with its source baseName so downstream
@@ -4020,48 +3835,31 @@
       }));
 
       // v0.3.0 slice 19d (#288) — King's order-of-ops step 3: when same-base
-      // strict+widenedBonus comps stay <5, widen to adjacent tiers (one
-      // stronger + one weaker). Fires only when the primary bonus + tol are
-      // resolvable; capped at 2 extra Supabase calls. Each base-widen comp is
+      // cleared comps stay <5, widen to adjacent tiers (one stronger + one
+      // weaker). Capped at 2 extra Supabase calls. Each base-widen comp is
       // tagged `provenance: 'widenedBase'` so the card + SOLD ladder can
       // surface it distinctly. `widenedBase` returns the resolved labels for
       // the ref-line "widened base to {…}" surface.
       const widenedBase = [];
       const baseExtras  = [];
-      const primaryBonus = bonuses[0];
-      const targetVal    = primaryBonus ? Number(primaryBonus.value) : NaN;
-      const strictTol    = primaryBonus
-        ? Number(IntelSettings.getEffectiveBonusTolerance(primaryKey, intel))
-        : NaN;
-      if (Number.isFinite(targetVal) && Number.isFinite(strictTol)) {
-        // Mirror compReference: strict band, then widen up to ×3 to approximate
-        // post-CompWidener pull. Listed asks live on a separate spread line —
-        // King's threshold counts cleared sales only.
-        const inWidenedBonus = (c) => {
-          const bv = Number(c.bonus1_value != null ? c.bonus1_value : c.bonusValue);
-          if (!Number.isFinite(bv)) return false;
-          return Math.abs(bv - targetVal) <= strictTol * 3;
-        };
-        const sameBaseUsable = cleared.filter(inWidenedBonus).length;
-        if (sameBaseUsable < 5) {
-          const dict = ItemClassifier.getDict();
-          const neighbours = resolveAdjacentBases(itemName, intel);
-          for (const n of neighbours) {
-            const resolved = _resolveBaseItemName(n.label, dict);
-            if (!resolved) continue;
-            const q = Object.assign({}, supabaseQuery, { item_name: resolved });
-            try {
-              const r = await SupabaseClient.search(q);
-              const extras = (r.auctions || []).map(c => Object.assign({}, c, {
-                baseName: resolved,
-                provenance: 'widenedBase',
-              }));
-              if (extras.length) {
-                baseExtras.push(...extras);
-                widenedBase.push(resolved);
-              }
-            } catch (_) { /* network failure → just skip this neighbour */ }
-          }
+      if (cleared.length < 5) {
+        const dict = ItemClassifier.getDict();
+        const neighbours = resolveAdjacentBases(itemName, intel);
+        for (const n of neighbours) {
+          const resolved = _resolveBaseItemName(n.label, dict);
+          if (!resolved) continue;
+          const q = Object.assign({}, supabaseQuery, { item_name: resolved });
+          try {
+            const r = await SupabaseClient.search(q);
+            const extras = (r.auctions || []).map(c => Object.assign({}, c, {
+              baseName: resolved,
+              provenance: 'widenedBase',
+            }));
+            if (extras.length) {
+              baseExtras.push(...extras);
+              widenedBase.push(resolved);
+            }
+          } catch (_) { /* network failure → just skip this neighbour */ }
         }
       }
 
@@ -4668,11 +4466,9 @@
       knobs.className = 'rwth-card-drill-knobs';
       const hasBonus = Number.isFinite(Number(ctx.primaryBonusValue));
       const hasQ     = Number.isFinite(Number(ctx.listingQuality)) && Number(ctx.listingQuality) > 0;
-      const strictLabel = hasBonus && Number.isFinite(Number(ctx.strictTolerance))
-        ? `strict ±${Number(ctx.strictTolerance)}%` : 'strict';
       const bonusOpts = [
         ['auto',   'auto',     true],
-        ['strict', strictLabel, hasBonus],
+        ['strict', 'strict',   hasBonus],
         ['pm1',    '±1%',      hasBonus],
         ['pm3',    '±3%',      hasBonus],
         ['all',    'all',      true],
@@ -5190,9 +4986,6 @@
           ? Math.min(...askingShaped.map(c => c.price)) : null;
         const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
         const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
-        const strictTol = primaryBonus
-          ? IntelSettings.getEffectiveBonusTolerance(String(primaryBonus.name).toLowerCase(), MEM.intel)
-          : null;
         InlineRenderer.renderTwoTierCard(info, {
           itemClass: itemClassKey,
           classTag,
@@ -5201,7 +4994,7 @@
           listingQuality: item.quality,
           primaryBonusName: primaryBonus ? primaryBonus.name : null,
           primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
-          strictTolerance: Number.isFinite(strictTol) ? strictTol : null,
+          strictTolerance: 0,
           comps,
           askingComps,
           marketCheapest,
@@ -5262,7 +5055,6 @@
     matchSell,
     summarizeSells,
     AdvertiseGenerator,
-    IntelSettings,
     BonusTrashGuard,
     similarity,
     PricingEngine,
