@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.15
+// @version      0.3.16
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.15';
+  const SCRIPT_VERSION = '0.3.16';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -106,6 +106,12 @@
       // ISO YYYY-MM-DD. Comps older than the date are suppressed when the
       // listing carries that bonus.
       bonusChangeDates: {},
+      // v0.3.0 slice 19d (#288) — user overrides for SIMILAR_BASES_SEED.
+      // Array of clusters; each cluster is an ordered array of lower-cased
+      // weapon-base tokens (e.g. ['macana','dbk','metal_nunchakus','kodachi',
+      // 'samurai','yasukuni','katana']). Adjacency = neighbours in the array.
+      // User overrides concat onto the seed at lookup time.
+      similarBases: [],
     },
     bbRate: null,           // { rate, cachePrices, fetchedAt } — hydrated from rwth_bb_rate
     fetchError: null,
@@ -155,6 +161,9 @@
         excludedBonuses: Array.isArray(intel.excludedBonuses) ? intel.excludedBonuses.slice() : [],
         bonusChangeDates: (intel.bonusChangeDates && typeof intel.bonusChangeDates === 'object')
           ? { ...intel.bonusChangeDates } : {},
+        similarBases: Array.isArray(intel.similarBases)
+          ? intel.similarBases.map(c => Array.isArray(c) ? c.slice() : []).filter(c => c.length)
+          : [],
       };
     }
   }
@@ -851,6 +860,71 @@
     });
     return out;
   }
+  // v0.3.0 slice 19d (#288) — one cluster per line, comma-separated tokens.
+  // Seed clusters are shown alongside user overrides so the user can see what
+  // is already active. Saved overrides are clusters not already in the seed.
+  function fmtSimilarBases(seed, overrides) {
+    const lines = [];
+    (seed || []).forEach(c => lines.push((c || []).join(', ')));
+    (overrides || []).forEach(c => lines.push((c || []).join(', ')));
+    return lines.join('\n');
+  }
+  function parseSimilarBases(text, seed) {
+    const seedKeys = new Set((seed || []).map(c => (c || []).join(',')));
+    const out = [];
+    String(text || '').split(/\n+/).forEach((line) => {
+      const tokens = String(line).split(/[,]+/)
+        .map(t => t.trim().toLowerCase().replace(/\s+/g, '_'))
+        .filter(Boolean);
+      if (tokens.length < 2) return;
+      const key = tokens.join(',');
+      if (seedKeys.has(key)) return;
+      out.push(tokens);
+    });
+    return out;
+  }
+  // Resolve adjacency: find the first cluster (seed ∪ overrides) that contains
+  // a token matching itemName, then return up to one neighbour on each side.
+  // A token matches when its underscore-stripped form is a substring of the
+  // lower-cased item name (e.g. 'metal_nunchakus' → 'metal nunchakus').
+  function resolveAdjacentBases(itemName, intel) {
+    const name = String(itemName || '').toLowerCase().trim();
+    if (!name) return [];
+    const userClusters = (intel && Array.isArray(intel.similarBases))
+      ? intel.similarBases : [];
+    const clusters = SIMILAR_BASES_SEED.concat(userClusters);
+    const tokenToName = (tok) => String(tok || '').replace(/_/g, ' ');
+    for (const cluster of clusters) {
+      if (!Array.isArray(cluster) || cluster.length < 2) continue;
+      const idx = cluster.findIndex(tok => name.includes(tokenToName(tok)));
+      if (idx < 0) continue;
+      const out = [];
+      // One side then the other — order preserved per spec (stronger + weaker).
+      if (idx > 0) out.push(cluster[idx - 1]);
+      if (idx < cluster.length - 1) out.push(cluster[idx + 1]);
+      return out.map(tok => ({ token: tok, label: tokenToName(tok) }));
+    }
+    return [];
+  }
+  // Resolve a similar-base token to a full Torn item name using the cached
+  // items dict. Picks the shortest dict entry whose lowercased form contains
+  // the token — e.g. 'samurai' → 'Samurai Sword', 'tavor' → 'Tavor'. Falls
+  // back to a Title-cased token when the dict is unavailable so the Supabase
+  // call can still attempt the lookup.
+  function _resolveBaseItemName(label, dict) {
+    const tok = String(label || '').toLowerCase().trim();
+    if (!tok) return null;
+    if (dict) {
+      let best = null;
+      for (const key of Object.keys(dict)) {
+        if (String(key).toLowerCase().includes(tok)) {
+          if (best == null || key.length < best.length) best = key;
+        }
+      }
+      if (best) return best;
+    }
+    return tok.replace(/\b\w/g, ch => ch.toUpperCase());
+  }
   function buildSettingsTab(mem) {
     const s = (mem && mem.settings) || {};
     const intel = (mem && mem.intel) || MEM.intel;
@@ -945,6 +1019,11 @@
       <textarea class="rwth-field-input" id="rwth-intel-bonus-change-dates" rows="3"
                 style="width:100%;font-family:inherit;"
                 placeholder="puncture: 2026-02-01">${escapeAttr(fmtBonusChangeDates(BONUS_CHANGE_DATES_SEED, intel.bonusChangeDates))}</textarea>
+
+      <p class="rwth-intel-empty" style="margin:8px 0 4px;">Similar-base clusters — one cluster per line, comma-separated tokens (lower-case, underscores for spaces). When same-base comps are thin, the script pulls one stronger + one weaker neighbour from the cluster (King example 3 — yasukuni weaken cross-checked vs kodachi + samurai).</p>
+      <textarea class="rwth-field-input" id="rwth-intel-similar-bases" rows="4"
+                style="width:100%;font-family:inherit;"
+                placeholder="macana, dbk, metal_nunchakus, kodachi, samurai, yasukuni, katana">${escapeAttr(fmtSimilarBases(SIMILAR_BASES_SEED, intel.similarBases))}</textarea>
 
       <div class="rwth-settings-actions">
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
@@ -1792,6 +1871,7 @@
       markup:       MEM.intel.markup,
       excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
       bonusChangeDates: { ...(MEM.intel.bonusChangeDates || {}) },
+      similarBases: (MEM.intel.similarBases || []).map(c => (c || []).slice()),
     };
     document.querySelectorAll('#rwth-content [data-intel]').forEach((el) => {
       const path = el.dataset.intel;
@@ -1826,6 +1906,10 @@
     // v0.3.0 slice 19a (#285) — bonus-mechanic change dates editor.
     const bcdEl = document.getElementById('rwth-intel-bonus-change-dates');
     if (bcdEl) nextIntel.bonusChangeDates = parseBonusChangeDates(bcdEl.value, BONUS_CHANGE_DATES_SEED);
+
+    // v0.3.0 slice 19d (#288) — similar-base clusters editor.
+    const sbEl = document.getElementById('rwth-intel-similar-bases');
+    if (sbEl) nextIntel.similarBases = parseSimilarBases(sbEl.value, SIMILAR_BASES_SEED);
 
     Store.set('rwth_intel_settings', nextIntel);
     setState({ settings: next, intel: nextIntel });
@@ -2042,6 +2126,7 @@
         marketCheapest,
         askingMedian,
         askingCount,
+        widenedBase: Array.isArray(composite.widenedBase) ? composite.widenedBase.slice() : [],
         margins: null,
       },
     });
@@ -3040,6 +3125,9 @@
       /* v0.3.0 slice 19c — widened-bonus rows (SOLD ladder only). */
       .rwth-card-ladder-table tr.rwth-card-ladder-widened td { font-style: italic; color: #aab; }
       .rwth-card-ladder-table tr.rwth-card-ladder-widened-mixed td { color: #cbb482; }
+      /* v0.3.0 slice 19d — widened-base rows (SOLD ladder) + thin-ref label. */
+      .rwth-card-ladder-table tr.rwth-card-ladder-widenedbase td { color: #d49ad4; font-style: italic; }
+      .rwth-card-thin { color: #d49a78; font-style: italic; }
 
       /* v0.3.0 slice 16 — per-row drill-down inside the ladders. */
       .rwth-card-ladder-table tr.rwth-card-ladder-row { cursor: pointer; }
@@ -3385,6 +3473,18 @@
     puncture: '2026-02-01',
   };
 
+  // v0.3.0 slice 19d (#288) — weapon-base adjacency clusters. King's RW logic
+  // doc step 3: when same-base comps are thin, pull adjacent tiers (one
+  // stronger + one weaker). Each inner array is an ordered tier-cluster;
+  // adjacency = neighbours in the array. Tokens are lower-case, underscores
+  // for spaces; resolution matches the token (with underscores → spaces)
+  // against the lower-cased item name. Users extend via Settings.
+  const SIMILAR_BASES_SEED = [
+    ['macana', 'dbk', 'metal_nunchakus', 'kodachi', 'samurai', 'yasukuni', 'katana'],
+    ['armalite', 'enfield', 'sig552', 'tavor'],
+    ['mp40', 'thompson'],
+  ];
+
   /** ISO date → epoch ms, returns null on parse failure. */
   function _isoToEpoch(iso) {
     if (!iso) return null;
@@ -3454,20 +3554,34 @@
       const minStrict = Number.isFinite(Number(o.minStrict)) ? Number(o.minStrict) : 3;
       const widenTols = Array.isArray(o.widenTols)
         ? o.widenTols.slice().sort((a, b) => a - b) : [];
+      // v0.3.0 slice 19d (#288) — comps tagged `widenedBase` (from adjacent
+      // tier-cluster fetches) are kept verbatim. Bonus widening is a same-base
+      // operation; the base-widen population travels in parallel and gets
+      // surfaced separately on the card + ladder.
+      const baseWidened = list.filter(c => c && c.provenance === 'widenedBase')
+        .map(c => Object.assign({}, c));
+      const sameBase    = list.filter(c => !(c && c.provenance === 'widenedBase'));
       if (!Number.isFinite(target) || !Number.isFinite(strictTol)) {
-        const all = list.map(c => Object.assign({}, c));
-        return { comps: all, strictCount: all.length,
-                 widenedBonusCount: 0, widenedTolerance: null };
+        const all = sameBase.map(c => Object.assign({}, c));
+        return {
+          comps: all.concat(baseWidened),
+          strictCount: all.length,
+          widenedBonusCount: 0,
+          widenedBaseCount: baseWidened.length,
+          widenedTolerance: null,
+        };
       }
       const inBand = (c, tol) => c && c.bonusValue != null
         && Number.isFinite(Number(c.bonusValue))
         && Math.abs(Number(c.bonusValue) - target) <= tol;
-      const strict = list.filter(c => inBand(c, strictTol));
+      const strict = sameBase.filter(c => inBand(c, strictTol));
       if (strict.length >= minStrict || !widenTols.length) {
+        const tagged = strict.map(c => Object.assign({}, c, { provenance: 'strict' }));
         return {
-          comps: strict.map(c => Object.assign({}, c, { provenance: 'strict' })),
+          comps: tagged.concat(baseWidened),
           strictCount: strict.length,
           widenedBonusCount: 0,
+          widenedBaseCount: baseWidened.length,
           widenedTolerance: strictTol,
         };
       }
@@ -3475,7 +3589,7 @@
       let chosenTol = strictTol;
       for (const tol of widenTols) {
         if (tol <= strictTol) continue;
-        const w = list.filter(c => inBand(c, tol));
+        const w = sameBase.filter(c => inBand(c, tol));
         if (w.length > chosen.length) { chosen = w; chosenTol = tol; }
         if (chosen.length >= minStrict) break;
       }
@@ -3485,9 +3599,10 @@
       }));
       const widenedBonusCount = tagged.length - strict.length;
       return {
-        comps: tagged,
+        comps: tagged.concat(baseWidened),
         strictCount: strict.length,
         widenedBonusCount: Math.max(0, widenedBonusCount),
+        widenedBaseCount: baseWidened.length,
         widenedTolerance: chosenTol,
       };
     },
@@ -3777,6 +3892,7 @@
         comps: tagged.comps,
         strictCount: tagged.strictCount,
         widenedBonusCount: tagged.widenedBonusCount,
+        widenedBaseCount: tagged.widenedBaseCount || 0,
         widenedTolerance: tagged.widenedTolerance,
         recencyDays,
         tolerance: tolOut,
@@ -3892,14 +4008,72 @@
         supabaseQuery.quality_max = qr.max;
       }
 
-      const [cleared, listings] = await Promise.all([
+      const [clearedRaw, listings] = await Promise.all([
         SupabaseClient.search(supabaseQuery).then(r => r.auctions || []).catch(() => []),
         ListingsFetcher.fetch(item, intel).catch(() => ({ market: [], bazaar: [] })),
       ]);
+
+      // Stamp every same-base comp with its source baseName so downstream
+      // can distinguish strict from widened-base rows after we merge.
+      const cleared = clearedRaw.map(c => Object.assign({}, c, {
+        baseName: c.item_name || itemName,
+      }));
+
+      // v0.3.0 slice 19d (#288) — King's order-of-ops step 3: when same-base
+      // strict+widenedBonus comps stay <5, widen to adjacent tiers (one
+      // stronger + one weaker). Fires only when the primary bonus + tol are
+      // resolvable; capped at 2 extra Supabase calls. Each base-widen comp is
+      // tagged `provenance: 'widenedBase'` so the card + SOLD ladder can
+      // surface it distinctly. `widenedBase` returns the resolved labels for
+      // the ref-line "widened base to {…}" surface.
+      const widenedBase = [];
+      const baseExtras  = [];
+      const primaryBonus = bonuses[0];
+      const targetVal    = primaryBonus ? Number(primaryBonus.value) : NaN;
+      const strictTol    = primaryBonus
+        ? Number(IntelSettings.getEffectiveBonusTolerance(primaryKey, intel))
+        : NaN;
+      if (Number.isFinite(targetVal) && Number.isFinite(strictTol)) {
+        // Mirror compReference: strict band, then widen up to ×3 to approximate
+        // post-CompWidener pull. Listed asks live on a separate spread line —
+        // King's threshold counts cleared sales only.
+        const inWidenedBonus = (c) => {
+          const bv = Number(c.bonus1_value != null ? c.bonus1_value : c.bonusValue);
+          if (!Number.isFinite(bv)) return false;
+          return Math.abs(bv - targetVal) <= strictTol * 3;
+        };
+        const sameBaseUsable = cleared.filter(inWidenedBonus).length;
+        if (sameBaseUsable < 5) {
+          const dict = ItemClassifier.getDict();
+          const neighbours = resolveAdjacentBases(itemName, intel);
+          for (const n of neighbours) {
+            const resolved = _resolveBaseItemName(n.label, dict);
+            if (!resolved) continue;
+            const q = Object.assign({}, supabaseQuery, { item_name: resolved });
+            try {
+              const r = await SupabaseClient.search(q);
+              const extras = (r.auctions || []).map(c => Object.assign({}, c, {
+                baseName: resolved,
+                provenance: 'widenedBase',
+              }));
+              if (extras.length) {
+                baseExtras.push(...extras);
+                widenedBase.push(resolved);
+              }
+            } catch (_) { /* network failure → just skip this neighbour */ }
+          }
+        }
+      }
+
       // `asking` keeps its legacy combined shape for callers that haven't moved
       // to the listings object yet. Listings stay split for the LISTED ladder.
       const asking = (listings.market || []).concat(listings.bazaar || []);
-      return { cleared, asking, listings };
+      return {
+        cleared: cleared.concat(baseExtras),
+        asking,
+        listings,
+        widenedBase,
+      };
     },
   };
 
@@ -4144,12 +4318,17 @@
                 : c.bonus1_value != null ? c.bonus1_value
                 : c.bonusPct != null ? c.bonusPct : null;
     const bv = bvRaw != null ? Number(bvRaw) : NaN;
-    return {
+    const out = {
       price: p,
       quality: Number.isFinite(q) ? q : 0,
       timestamp,
       bonusValue: Number.isFinite(bv) ? bv : null,
     };
+    // v0.3.0 slice 19d (#288) — carry base-widen provenance + the source
+    // item name so the SOLD ladder + ref line can mark widened-base rows.
+    if (c.provenance != null) out.provenance = c.provenance;
+    if (c.baseName != null)   out.baseName   = String(c.baseName);
+    return out;
   }
 
   // ─── InlineRenderer (impure) ────────────────────────────────────────────────
@@ -4285,6 +4464,10 @@
         itemClass: s.itemClass, comps: filtered,
         currentBid: s.currentBid, bbFloor: s.bbFloor,
       });
+      // v0.3.0 slice 19d (#288) — thin-reference fallback. After base-widen,
+      // <5 total comps means we cannot anchor a headline buy max — show the
+      // range only and label the card "judgment call".
+      const thinReference = filtered.length > 0 && filtered.length < 5;
       const ladder = PricingEngine.sellLadder({
         itemClass: s.itemClass, comps: filtered,
         marketCheapest: s.marketCheapest,
@@ -4314,6 +4497,9 @@
       if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
         const tol = buy.tolerance != null ? buy.tolerance : 0;
         buyEl.textContent = `BB floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} tolerance`;
+      } else if (thinReference && Array.isArray(buy.range)) {
+        // Slice 19d: suppress headline anchor — range only when comps stay thin.
+        buyEl.textContent = `Buy range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
       } else if (buy.max == null && Array.isArray(buy.range)) {
         buyEl.textContent = `Buy range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
       } else if (buy.max != null) {
@@ -4375,6 +4561,11 @@
           if (reference.tolerance != null) head2 += ` · ±${reference.tolerance}%`;
           parts.push(head2);
         }
+        // v0.3.0 slice 19d (#288) — surface adjacent-base widening when it fired.
+        const widenedBaseList = Array.isArray(s.widenedBase) ? s.widenedBase : [];
+        if (widenedBaseList.length) {
+          parts.push(`widened base to {${widenedBaseList.join(', ')}}`);
+        }
         if (reference.recencyDays != null) {
           parts.push(reference.recencyDays >= 365
             ? `${Math.round(reference.recencyDays / 365)}yr`
@@ -4386,6 +4577,15 @@
         if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('filtered');
         refEl.textContent = parts.join(' · ');
         badge.appendChild(refEl);
+      }
+      // v0.3.0 slice 19d (#288) — thin-reference label. Surfaces below the ref
+      // line whenever the comp set stayed under 5 even after base-widening,
+      // so the user knows the headline range is a judgment call, not a fit.
+      if (thinReference) {
+        const thinEl = document.createElement('div');
+        thinEl.className = 'rwth-card-ref rwth-card-thin';
+        thinEl.textContent = 'thin reference — judgment call';
+        badge.appendChild(thinEl);
       }
 
       // ── derived sensitivity (slice 19b) ───────────────────────────────
@@ -4670,17 +4870,29 @@
         const tag = isOwn ? ' ← you' : '';
         // Provenance marker (slice 19c). Per-row: all strict → no marker;
         // none strict → italic + tooltip "widened"; mixed → fraction.
+        // v0.3.0 slice 19d (#288): rows composed entirely of widened-base
+        // comps take precedence over the bonus-widen marker so the user sees
+        // the source-base call-out (e.g. "Samurai Sword 11% (widened base)").
         let widenedSuffix = '';
-        if (typeof isStrict === 'function') {
-          const strictRows = rows.filter(isStrict).length;
-          if (strictRows === 0) {
+        const baseWidenedRows = rows.filter(c => c && c.provenance === 'widenedBase');
+        if (rows.length && baseWidenedRows.length === rows.length) {
+          tr.classList.add('rwth-card-ladder-widenedbase');
+          const baseNames = Array.from(new Set(baseWidenedRows.map(c => c.baseName).filter(Boolean)));
+          tr.title = baseNames.length ? `widened base: ${baseNames.join(', ')}` : 'widened base';
+          widenedSuffix = baseNames.length
+            ? ` (${baseNames.join(', ')})`
+            : ' (widened base)';
+        } else if (typeof isStrict === 'function') {
+          const sameBaseRows = rows.filter(c => !(c && c.provenance === 'widenedBase'));
+          const strictRows = sameBaseRows.filter(isStrict).length;
+          if (sameBaseRows.length && strictRows === 0) {
             tr.classList.add('rwth-card-ladder-widened');
             tr.title = 'widened bonus';
             widenedSuffix = ' (widened)';
-          } else if (strictRows < rows.length) {
+          } else if (strictRows < sameBaseRows.length) {
             tr.classList.add('rwth-card-ladder-widened-mixed');
-            tr.title = `${strictRows}/${rows.length} strict`;
-            widenedSuffix = ` (${strictRows}/${rows.length} strict)`;
+            tr.title = `${strictRows}/${sameBaseRows.length} strict`;
+            widenedSuffix = ` (${strictRows}/${sameBaseRows.length} strict)`;
           }
         }
         const bonusCell = document.createElement('td');
@@ -4995,6 +5207,7 @@
           marketCheapest,
           askingMedian,
           askingCount,
+          widenedBase: Array.isArray(r.widenedBase) ? r.widenedBase.slice() : [],
           margins: null,
         });
         return;
@@ -5066,6 +5279,10 @@
     DomScanner,
     compShape,
     BONUS_CHANGE_DATES_SEED,
+    SIMILAR_BASES_SEED,
+    resolveAdjacentBases,
+    parseSimilarBases,
+    fmtSimilarBases,
     SENSITIVITY_MIN_COMPS,
     SENSITIVITY_MIN_DISTINCT,
     SENSITIVITY_FLAT_FRACTION,
