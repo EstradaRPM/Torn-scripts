@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.22
+// @version      0.3.23
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.22';
+  const SCRIPT_VERSION = '0.3.23';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3010,6 +3010,13 @@
       .rwth-card-ladder-table tr.rwth-card-ladder-widenedbase td { color: #d49ad4; font-style: italic; }
       .rwth-card-thin { color: #d49a78; font-style: italic; }
 
+      /* v0.3.0 slice 20d — per-listing quality annotation on floor listings */
+      .rwth-card-askfloor { margin-top: 4px; font-size: 10px; }
+      .rwth-card-askfloor-row { color: #8aa; }
+      .rwth-card-floor-beats { color: #ff8a8a; }
+      .rwth-card-floor-below { color: #7ed098; }
+      .rwth-card-askfloor-more { color: #667; font-style: italic; }
+
       /* v0.3.0 slice 16 — per-row drill-down inside the ladders. */
       .rwth-card-ladder-table tr.rwth-card-ladder-row { cursor: pointer; }
       .rwth-card-ladder-table tr.rwth-card-ladder-row:hover td { background: #0d1f2a; }
@@ -4279,9 +4286,9 @@
      * on the asking floor via PricingEngine.deductionChain (single-cut model)
      * instead of the dead-end `no comp` one-liner. Honest about provenance:
      * labels the estimate market-floor / exact-bonus / no-cleared-comp so the
-     * user knows it is weaker than a cleared-comp card. Per-listing quality
-     * annotation of the floor listings is #294.
-     *   ctx: { classTag, currentBid, marketFloor, askingCount, askingMedian }
+     * user knows it is weaker than a cleared-comp card.
+     *   ctx: { classTag, currentBid, marketFloor, askingCount, askingMedian,
+     *          askingComps?, listingQuality? }
      */
     renderMarketFloorCard(infoEl, ctx) {
       const badge = InlineRenderer._slot(infoEl);
@@ -4343,15 +4350,28 @@
         badge.appendChild(verd);
       }
 
-      // ── asking spread (the real data we have) ───────────────────────────
-      const spread = document.createElement('div');
-      spread.className = 'rwth-card-ladder';
-      const parts = [];
-      if (s.marketFloor != null)  parts.push(`floor ${fmtChatPrice(s.marketFloor)}`);
-      if (s.askingMedian != null) parts.push(`median ${fmtChatPrice(s.askingMedian)}`);
-      if (s.askingCount)          parts.push(`${s.askingCount} listed`);
-      spread.textContent = 'Asking: ' + parts.join(' · ');
-      badge.appendChild(spread);
+      // ── asking floor listings with per-listing quality annotation (#294) ──
+      const askFloor = document.createElement('div');
+      askFloor.className = 'rwth-card-askfloor';
+      const floorEls = InlineRenderer._floorListingEls(s.askingComps, s.listingQuality, 3);
+      if (floorEls.length) {
+        const hdr = document.createElement('div');
+        hdr.className = 'rwth-card-ref';
+        const parts = [];
+        if (s.askingMedian != null) parts.push(`median ${fmtChatPrice(s.askingMedian)}`);
+        if (s.askingCount) parts.push(`${s.askingCount} listed`);
+        hdr.textContent = 'Asking: ' + parts.join(' · ');
+        askFloor.appendChild(hdr);
+        for (const el of floorEls) askFloor.appendChild(el);
+      } else {
+        const parts = [];
+        if (s.marketFloor != null)  parts.push(`floor ${fmtChatPrice(s.marketFloor)}`);
+        if (s.askingMedian != null) parts.push(`median ${fmtChatPrice(s.askingMedian)}`);
+        if (s.askingCount)          parts.push(`${s.askingCount} listed`);
+        askFloor.className = 'rwth-card-ladder';
+        askFloor.textContent = 'Asking: ' + parts.join(' · ');
+      }
+      badge.appendChild(askFloor);
     },
     /**
      * renderTwoTierCard(infoEl, ctx) — v0.3.0 two-tier card.
@@ -4375,6 +4395,46 @@
       InlineRenderer._paintCard(badge, drill);
     },
     _drillState: new WeakMap(),
+    _floorListingEls(askingComps, listingQuality, maxShow) {
+      const sorted = (askingComps || [])
+        .filter(c => Number.isFinite(Number(c.price)))
+        .sort((a, b) => Number(a.price) - Number(b.price));
+      const show = sorted.slice(0, maxShow || 3);
+      const rest = sorted.length - show.length;
+      const lq = Number(listingQuality);
+      const hasLq = Number.isFinite(lq) && lq > 0;
+      const els = [];
+      for (const c of show) {
+        const div = document.createElement('div');
+        div.className = 'rwth-card-askfloor-row';
+        const cq = Number(c.quality);
+        const hasQ = Number.isFinite(cq) && cq > 0;
+        let text = fmtChatPrice(c.price);
+        if (hasQ) {
+          text += ` @ ${cq}% q`;
+          if (hasLq) {
+            if (cq > lq) {
+              text += ' — beats candidate';
+              div.classList.add('rwth-card-floor-beats');
+            } else if (cq < lq) {
+              text += ' — below candidate';
+              div.classList.add('rwth-card-floor-below');
+            } else {
+              text += ' — same quality';
+            }
+          }
+        }
+        div.textContent = text;
+        els.push(div);
+      }
+      if (rest > 0) {
+        const more = document.createElement('div');
+        more.className = 'rwth-card-askfloor-more';
+        more.textContent = `+${rest} more listed`;
+        els.push(more);
+      }
+      return els;
+    },
     _applyDrillFilters(comps, drill, ctx) {
       let arr = (comps || []).slice();
       const bv = Number(ctx.primaryBonusValue);
@@ -4580,6 +4640,15 @@
         ladderEl.appendChild(span);
       }
       badge.appendChild(ladderEl);
+
+      // ── asking floor listings with per-listing quality annotation (#294) ──
+      const floorEls = InlineRenderer._floorListingEls(s.askingComps, s.listingQuality, 3);
+      if (floorEls.length) {
+        const askFloor = document.createElement('div');
+        askFloor.className = 'rwth-card-askfloor';
+        for (const el of floorEls) askFloor.appendChild(el);
+        badge.appendChild(askFloor);
+      }
 
       // ── drilldown ─────────────────────────────────────────────────────
       if (drill.expanded) {
@@ -5144,6 +5213,7 @@
           InlineRenderer.renderMarketFloorCard(info, {
             classTag, currentBid: listingPrice,
             marketFloor: marketCheapest, askingMedian, askingCount,
+            askingComps, listingQuality: parsed.quality,
           });
         } else {
           InlineRenderer.renderAuctionBadge(info, {
