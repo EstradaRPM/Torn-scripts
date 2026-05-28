@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.14
+// @version      0.3.15
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.14';
+  const SCRIPT_VERSION = '0.3.15';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3037,6 +3037,9 @@
         margin-bottom: 2px; text-transform: uppercase;
       }
       .rwth-card-ladder-cheapest { color: #7ed098; }
+      /* v0.3.0 slice 19c — widened-bonus rows (SOLD ladder only). */
+      .rwth-card-ladder-table tr.rwth-card-ladder-widened td { font-style: italic; color: #aab; }
+      .rwth-card-ladder-table tr.rwth-card-ladder-widened-mixed td { color: #cbb482; }
 
       /* v0.3.0 slice 16 — per-row drill-down inside the ladders. */
       .rwth-card-ladder-table tr.rwth-card-ladder-row { cursor: pointer; }
@@ -3427,6 +3430,69 @@
     return s.length % 2 !== 0 ? s[m] : (s[m - 1] + s[m]) / 2;
   }
 
+  // ─── CompWidener (pure) ─────────────────────────────────────────────────────
+  // v0.3.15 slice 19c (#287). Picks the narrowest bonus-tolerance band that
+  // yields ≥minStrict comps and tags each surviving comp with its provenance
+  // so the card can show `5 strict + 3 widened bonus to ±2%` and the SOLD
+  // ladder can mark widened-only rows distinctly. Replaces the silent widen
+  // inside compReference.
+  const CompWidener = {
+    /**
+     * tag(comps, { target, strictTol, widenTols, minStrict }) →
+     *   { comps, strictCount, widenedBonusCount, widenedTolerance }
+     *
+     * `comps` are pre-filtered for everything else (recency, suppression).
+     * Returns clones tagged with `provenance: 'strict' | 'widenedBonus'`.
+     * When target/strictTol are missing, returns clones with no provenance
+     * (no bonus filter to widen on).
+     */
+    tag(comps, opts) {
+      const o = opts || {};
+      const list = Array.isArray(comps) ? comps : [];
+      const target    = Number(o.target);
+      const strictTol = Number(o.strictTol);
+      const minStrict = Number.isFinite(Number(o.minStrict)) ? Number(o.minStrict) : 3;
+      const widenTols = Array.isArray(o.widenTols)
+        ? o.widenTols.slice().sort((a, b) => a - b) : [];
+      if (!Number.isFinite(target) || !Number.isFinite(strictTol)) {
+        const all = list.map(c => Object.assign({}, c));
+        return { comps: all, strictCount: all.length,
+                 widenedBonusCount: 0, widenedTolerance: null };
+      }
+      const inBand = (c, tol) => c && c.bonusValue != null
+        && Number.isFinite(Number(c.bonusValue))
+        && Math.abs(Number(c.bonusValue) - target) <= tol;
+      const strict = list.filter(c => inBand(c, strictTol));
+      if (strict.length >= minStrict || !widenTols.length) {
+        return {
+          comps: strict.map(c => Object.assign({}, c, { provenance: 'strict' })),
+          strictCount: strict.length,
+          widenedBonusCount: 0,
+          widenedTolerance: strictTol,
+        };
+      }
+      let chosen = strict;
+      let chosenTol = strictTol;
+      for (const tol of widenTols) {
+        if (tol <= strictTol) continue;
+        const w = list.filter(c => inBand(c, tol));
+        if (w.length > chosen.length) { chosen = w; chosenTol = tol; }
+        if (chosen.length >= minStrict) break;
+      }
+      const strictSet = new Set(strict);
+      const tagged = chosen.map(c => Object.assign({}, c, {
+        provenance: strictSet.has(c) ? 'strict' : 'widenedBonus',
+      }));
+      const widenedBonusCount = tagged.length - strict.length;
+      return {
+        comps: tagged,
+        strictCount: strict.length,
+        widenedBonusCount: Math.max(0, widenedBonusCount),
+        widenedTolerance: chosenTol,
+      };
+    },
+  };
+
   const PricingEngine = {
     /**
      * verdict(listing, comps, opts) → { tier, reference, band, compsUsed, tolerance,
@@ -3635,18 +3701,18 @@
 
     /**
      * compReference(comps, settings) →
-     *   { median, count, recencyDays, tolerance, widened }
+     *   { median, count, comps, strictCount, widenedBonusCount,
+     *     widenedTolerance, recencyDays, tolerance, suppressedByChange }
      *
      * Tiered recency window per item class (v0.3.0 slice 6): yellow 6mo,
      * orange 18mo, red 3yr. Default table below; override via
      * `settings.recencyByClass`.
      *
-     * Auto-widen-with-provenance: when the strict-bonus-tolerance subset
-     * pulls fewer than 3 comps, widen to the next band and flag it in
-     * `widened: { strictCount, widenedCount, widenedTolerance }` so the
-     * card can surface "3 strict + 4 widened to ±N%" instead of silently
-     * stretching. `widenedCount` is the *additional* comps the wider band
-     * pulled in.
+     * v0.3.15 slice 19c (#287): delegates the widen-on-thin band selection
+     * to CompWidener.tag, which tags each surviving comp with
+     * `provenance: 'strict' | 'widenedBonus'`. `strictCount` /
+     * `widenedBonusCount` / `widenedTolerance` drive the ref line
+     * "5 strict + 3 widened bonus to ±2%".
      *
      * Inputs:
      *   comps    – Array<{ price, timestamp?, bonusValue? }> (compShape output)
@@ -3691,50 +3757,29 @@
 
       const strictTol = Number.isFinite(Number(s.strictTolerance)) ? Number(s.strictTolerance) : null;
       const target    = Number.isFinite(Number(s.targetBonusValue)) ? Number(s.targetBonusValue) : null;
-      const applyTol = (arr, tol) => {
-        if (tol == null || target == null) return arr;
-        return arr.filter(c => c.bonusValue != null
-                                && Math.abs(Number(c.bonusValue) - target) <= tol);
-      };
+      const widenTols = Array.isArray(s.widenTolerances) && s.widenTolerances.length
+        ? s.widenTolerances
+        : (strictTol != null ? [strictTol * 2, strictTol * 3] : []);
 
-      const strict = applyTol(inRecency, strictTol);
+      // v0.3.15 slice 19c (#287) — delegate band-selection + tagging to
+      // CompWidener. Each surviving comp carries `provenance` so callers
+      // (ref line + SOLD ladder) can distinguish strict from widened.
+      const tagged = CompWidener.tag(inRecency, {
+        target, strictTol, widenTols, minStrict: 3,
+      });
 
-      // No auto-widen when strict already has ≥3, or when caller didn't give
-      // us bonus filter inputs to widen on.
-      if (strict.length >= 3 || target == null || strictTol == null) {
-        return {
-          median: _median(strict.map(c => Number(c.price))),
-          count: strict.length,
-          recencyDays,
-          tolerance: strictTol,
-          widened: null,
-          suppressedByChange,
-        };
-      }
-
-      const widenBands = Array.isArray(s.widenTolerances) && s.widenTolerances.length
-        ? s.widenTolerances.slice().sort((a, b) => a - b)
-        : [strictTol * 2, strictTol * 3];
-      let widenedSet = strict;
-      let widenedTolerance = strictTol;
-      for (const tol of widenBands) {
-        if (tol <= strictTol) continue;
-        const w = applyTol(inRecency, tol);
-        if (w.length > widenedSet.length) {
-          widenedSet = w;
-          widenedTolerance = tol;
-        }
-        if (widenedSet.length >= 3) break;
-      }
-      const widenedExtra = Math.max(0, widenedSet.length - strict.length);
+      const tolOut = (target != null && strictTol != null)
+        ? tagged.widenedTolerance
+        : strictTol;
       return {
-        median: _median(widenedSet.map(c => Number(c.price))),
-        count: widenedSet.length,
+        median: _median(tagged.comps.map(c => Number(c.price))),
+        count: tagged.comps.length,
+        comps: tagged.comps,
+        strictCount: tagged.strictCount,
+        widenedBonusCount: tagged.widenedBonusCount,
+        widenedTolerance: tagged.widenedTolerance,
         recencyDays,
-        tolerance: widenedTolerance,
-        widened: widenedExtra > 0
-          ? { strictCount: strict.length, widenedCount: widenedExtra, widenedTolerance }
-          : null,
+        tolerance: tolOut,
         suppressedByChange,
       };
     },
@@ -4319,12 +4364,12 @@
       badge.appendChild(head);
 
       // ── reference summary ─────────────────────────────────────────────
-      if (reference && (reference.count > 0 || reference.widened || reference.suppressedByChange)) {
+      if (reference && (reference.count > 0 || reference.widenedBonusCount || reference.suppressedByChange)) {
         const refEl = document.createElement('div');
         refEl.className = 'rwth-card-ref';
         const parts = [];
-        if (reference.widened) {
-          parts.push(`${reference.widened.strictCount} strict + ${reference.widened.widenedCount} widened to ±${reference.widened.widenedTolerance}%`);
+        if (reference.widenedBonusCount > 0) {
+          parts.push(`${reference.strictCount} strict + ${reference.widenedBonusCount} widened bonus to ±${reference.widenedTolerance}%`);
         } else {
           let head2 = `${reference.count} comp${reference.count === 1 ? '' : 's'}`;
           if (reference.tolerance != null) head2 += ` · ±${reference.tolerance}%`;
@@ -4485,6 +4530,17 @@
       const soldEmpty = axis === 'quality'
         ? (filtered.length ? 'no comps carry a quality %' : 'no comps match these filters')
         : (filtered.length ? 'no comps carry a bonus %'   : 'no comps match these filters');
+      // v0.3.15 slice 19c (#287) — when the ref line ran auto bonus filtering,
+      // surface which ladder rows are strict-only vs widened. Predicate is
+      // omitted (no marker) when the user manually overrode the bonus knob.
+      const strictTolNum = Number(ctx && ctx.strictTolerance);
+      const targetBonusNum = Number(ctx && ctx.primaryBonusValue);
+      const soldIsStrict = (drill.bonus === 'auto'
+                            && Number.isFinite(strictTolNum)
+                            && Number.isFinite(targetBonusNum))
+        ? (c) => c && c.bonusValue != null && Number.isFinite(Number(c.bonusValue))
+                  && Math.abs(Number(c.bonusValue) - targetBonusNum) <= strictTolNum
+        : null;
       ladders.appendChild(InlineRenderer._buildBonusLadder({
         title: 'SOLD (cleared)',
         kind: 'sold',
@@ -4493,6 +4549,7 @@
         ctx,
         cheapestPrice: null,
         emptyText: soldEmpty,
+        isStrict: soldIsStrict,
       }));
       ladders.appendChild(InlineRenderer._buildBonusLadder({
         title: 'LISTED (asking)',
@@ -4540,7 +4597,7 @@
       }
       return -1;
     },
-    _buildBonusLadder({ title, kind, comps, axis, ctx, cheapestPrice, emptyText }) {
+    _buildBonusLadder({ title, kind, comps, axis, ctx, cheapestPrice, emptyText, isStrict }) {
       const col = document.createElement('div');
       col.className = 'rwth-card-ladder-col';
       const h = document.createElement('div');
@@ -4611,12 +4668,27 @@
         if (isOwn) tr.classList.add('rwth-card-ladder-own');
         const hasCheapest = cheapestPrice != null && mn === cheapestPrice;
         const tag = isOwn ? ' ← you' : '';
+        // Provenance marker (slice 19c). Per-row: all strict → no marker;
+        // none strict → italic + tooltip "widened"; mixed → fraction.
+        let widenedSuffix = '';
+        if (typeof isStrict === 'function') {
+          const strictRows = rows.filter(isStrict).length;
+          if (strictRows === 0) {
+            tr.classList.add('rwth-card-ladder-widened');
+            tr.title = 'widened bonus';
+            widenedSuffix = ' (widened)';
+          } else if (strictRows < rows.length) {
+            tr.classList.add('rwth-card-ladder-widened-mixed');
+            tr.title = `${strictRows}/${rows.length} strict`;
+            widenedSuffix = ` (${strictRows}/${rows.length} strict)`;
+          }
+        }
         const bonusCell = document.createElement('td');
         const caret = document.createElement('span');
         caret.className = 'rwth-card-ladder-caret';
         caret.textContent = '▸';
         bonusCell.appendChild(caret);
-        bonusCell.appendChild(document.createTextNode(`${group.label}${tag}`));
+        bonusCell.appendChild(document.createTextNode(`${group.label}${tag}${widenedSuffix}`));
         tr.appendChild(bonusCell);
         tr.appendChild(td(fmtChatPrice(med)));
         const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest live' : ''));
@@ -4981,6 +5053,7 @@
     BonusTrashGuard,
     similarity,
     PricingEngine,
+    CompWidener,
     BBEngine,
     ItemClassifier,
     formatClassTag,
