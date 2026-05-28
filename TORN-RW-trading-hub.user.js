@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.26
+// @version      0.3.27
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.26';
+  const SCRIPT_VERSION = '0.3.27';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3691,7 +3691,12 @@
       const med = _median(prices);
       const mn  = prices.length ? Math.min(...prices) : null;
       const cb  = Number(a.currentBid);
-      const deltaOf = (m) => (Number.isFinite(cb) && m != null) ? m - cb : null;
+      // `room` compares the target against a *live* auction bid. Ledger cards
+      // pass currentBid:null, and Number(null) is 0 (finite!) — which made room
+      // compute max − 0 = max and echo the buy figure on every held item.
+      // Require a positive bid so held items emit no room line at all.
+      const hasBid = a.currentBid != null && Number.isFinite(cb) && cb > 0;
+      const deltaOf = (m) => (hasBid && m != null) ? m - cb : null;
       const empty = { max: null, floor: null, currentBidDelta: null };
 
       if (cls === 'duneRiotArmor') {
@@ -4693,7 +4698,11 @@
       badge.appendChild(sensEl);
 
       // ── deduction chain + verdict (slice 20e, #295) ───────────────────
-      const chain = reference && reference.median != null
+      // Auction-only — this is the "what should I bid" tool. Ledger cards
+      // (held items, currentBid:null) already own the piece, so the buy-max
+      // chain and BUY/PASS verdict are pure noise there. Suppress on held.
+      const isAuctionCtx = s.currentBid != null;
+      const chain = (isAuctionCtx && reference && reference.median != null)
         ? PricingEngine.deductionChain({ anchor: reference.median }) : null;
       if (chain) {
         const ded = document.createElement('div');
