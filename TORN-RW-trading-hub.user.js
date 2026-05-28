@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.18
+// @version      0.3.19
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.18';
+  const SCRIPT_VERSION = '0.3.19';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1939,17 +1939,19 @@
     const dict = ItemClassifier.getDict();
     const cls  = dict ? ItemClassifier.classify(item.itemName, dict) : null;
     // Ledger rows carry the user-set form value `item.type` ('armor' | 'weapon')
-    // which is a UI taxonomy, not Torn's. Translate at this boundary into
-    // Torn's real `type` so downstream routing stays precise.
+    // which is a UI taxonomy. The 'armor' UI value happens to coincide with
+    // one of Torn's real armor-type values, so it passes through unchanged;
+    // the 'weapon' UI value translates to 'primary' as an arbitrary stand-in
+    // among the three weapon types (RW pricing keys off rarity, not subtype).
     const type = (cls && cls.type)
-      || (item.type === 'armor' ? 'defensive' : 'primary');
+      || (item.type === 'armor' ? 'armor' : 'primary');
     const rarity = (cls && cls.rarity) || item.rarity || null;
     const classTag = cls
       ? formatClassTag({ ...cls, rarity })
       : formatClassTag({ type, rarity });
 
     const bbRate = MEM.bbRate && MEM.bbRate.rate;
-    const bbClassKey = type === 'defensive' ? 'armor' : (cls && cls.weaponBase) || null;
+    const bbClassKey = isArmorType(type) ? 'armor' : (cls && cls.weaponBase) || null;
     const bbFloor = bbClassKey && rarity && bbRate
       ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
           { bonusCount: (item.bonuses || []).length })
@@ -1957,7 +1959,7 @@
 
     let itemClassKey = resolveItemClass(cls);
     if (!itemClassKey) {
-      itemClassKey = type === 'defensive' ? 'assaultArmor' : 'yellowWeapon';
+      itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
     }
 
     const marketCheapest = askingShaped.length
@@ -2098,16 +2100,22 @@
   }
 
   // Torn's `/v2/torn/items` `type` field. We mirror these verbatim — never
-  // collapse into a synthetic umbrella like "weapon" or "armor". `defensive`
-  // is Torn's term for armor; the three weapon types are routing-equivalent
-  // for our pricing surfaces (RW pricing keys off rarity, not weapon type).
+  // collapse into a synthetic umbrella like "weapon" or "armor". Torn has
+  // returned both `'Armor'` and `'Defensive'` for body armor across endpoints
+  // and revisions; we accept either and preserve whichever came back. The
+  // three weapon types are routing-equivalent for our pricing surfaces
+  // (RW pricing keys off rarity, not weapon type).
   const WEAPON_TYPES = ['primary', 'secondary', 'melee'];
+  const ARMOR_TYPES  = ['armor', 'defensive'];
   function isWeaponType(type) { return WEAPON_TYPES.indexOf(type) !== -1; }
+  function isArmorType(type)  { return ARMOR_TYPES.indexOf(type)  !== -1; }
 
   const ItemClassifier = {
     ARMOR_SETS,
     WEAPON_TYPES,
+    ARMOR_TYPES,
     isWeaponType,
+    isArmorType,
     classify(itemName, itemsDict, opts) {
       const name = String(itemName || '').trim();
       const dict = itemsDict || {};
@@ -2115,11 +2123,11 @@
       const rarity = meta && meta.rarity
         ? String(meta.rarity).toLowerCase() : null;
       const typeRaw = meta ? String(meta.type || '').toLowerCase() : '';
-      const type = (typeRaw === 'defensive' || isWeaponType(typeRaw))
+      const type = (isArmorType(typeRaw) || isWeaponType(typeRaw))
         ? typeRaw : null;
 
       let armorSet = null;
-      if (type === 'defensive') {
+      if (isArmorType(type)) {
         for (const s of ARMOR_SETS) {
           if (name === s || name.startsWith(s + ' ')) { armorSet = s; break; }
         }
@@ -2138,7 +2146,7 @@
       ));
 
       const isBBFloorEligible =
-        (type === 'defensive' && (armorSet === 'Riot' || armorSet === 'Dune'))
+        (isArmorType(type) && (armorSet === 'Riot' || armorSet === 'Dune'))
         || isTrash;
 
       return { rarity, type, armorSet, weaponBase, isTrash, isBBFloorEligible };
@@ -2191,7 +2199,7 @@
   function resolveItemClass(cls) {
     if (!cls) return null;
     if (cls.isTrash) return 'trashBB';
-    if (cls.type === 'defensive') {
+    if (isArmorType(cls.type)) {
       if (cls.armorSet === 'Riot' || cls.armorSet === 'Dune') return 'duneRiotArmor';
       if (cls.armorSet === 'Assault') return 'assaultArmor';
       if (cls.rarity === 'orange') return 'orangeArmor';
@@ -2214,7 +2222,7 @@
   function formatClassTag(cls) {
     if (!cls) return '';
     const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
-    if (cls.type === 'defensive') {
+    if (isArmorType(cls.type)) {
       const parts = [cls.armorSet, cls.rarity].filter(Boolean);
       return parts.length ? `[${parts.join(' · ')}]` : '';
     }
@@ -4975,12 +4983,13 @@
       const dict = ItemClassifier.getDict();
       const cls = dict ? ItemClassifier.classify(parsed.itemName, dict) : null;
       // `parsed.itemType` is DOM-scraped from auction row stat labels
-      // ('Damage:' vs 'Armor:') — our own UI taxonomy, not Torn's. Translate
-      // to Torn's real `type` at this boundary; 'primary' is an arbitrary
-      // stand-in for weapons when the dict hasn't loaded (any weapon type
-      // routes the same for RW pricing).
+      // ('Damage:' vs 'Armor:') — our own UI taxonomy. The 'armor' UI value
+      // happens to coincide with one of Torn's real armor-type values, so it
+      // passes through unchanged; the 'weapon' UI value translates to
+      // 'primary' as an arbitrary stand-in among the three weapon types
+      // (RW pricing keys off rarity, not subtype).
       const type = (cls && cls.type)
-        || (parsed.itemType === 'armor' ? 'defensive' : 'primary');
+        || (parsed.itemType === 'armor' ? 'armor' : 'primary');
       const rarity = (cls && cls.rarity) || parsed.rarity || null;
       const classTag = cls
         ? formatClassTag({ ...cls, rarity })
@@ -4988,10 +4997,10 @@
 
       // BB floor — used as hard guard on Riot/Dune/trash and informational
       // elsewhere. `'armor'` here is BBEngine's internal multiplier key
-      // (unrelated to Torn's `defensive` type label); weapons key on the
-      // resolved weaponBase (pistol/rifle/etc).
+      // (distinct from Torn's `armor`/`defensive` type labels); weapons key
+      // on the resolved weaponBase (pistol/rifle/etc).
       const bbRate = MEM.bbRate && MEM.bbRate.rate;
-      const bbClassKey = type === 'defensive' ? 'armor' : (cls && cls.weaponBase) || null;
+      const bbClassKey = isArmorType(type) ? 'armor' : (cls && cls.weaponBase) || null;
       const bbFloor = bbClassKey && rarity && bbRate
         ? BBEngine.calculateFloor(bbClassKey, rarity, bbRate,
             { bonusCount: (parsed.parsedBonuses || []).length })
