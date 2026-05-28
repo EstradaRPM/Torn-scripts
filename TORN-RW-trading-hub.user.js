@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.24
+// @version      0.3.25
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.24';
+  const SCRIPT_VERSION = '0.3.25';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1877,6 +1877,66 @@
     markListed(id) { Ledger.update(id, { status: 'listed' }); },
   };
 
+  // ─── VelocityTracker — buy→sold days-to-clear log + per-class baseline ───────
+  // v0.3.0 slice 10a (#275). One append-only entry per closed ledger sale,
+  // persisted to rwth_velocity_log. classBaseline() returns the median
+  // days-to-clear for a class, null until VELOCITY_MIN_SAMPLES entries exist.
+  // Reads are fail-safe — a missing or corrupt log degrades to "no baseline",
+  // never throwing into render(). Anchor is buy→sold (not list→sold): the user
+  // constantly lists/de-lists to protect funds, so a list timestamp would be
+  // noise. Buckets coarsely by rarity × kind (e.g. 'yellow-weapon',
+  // 'orange-armor') so the record side (a ledger row) and the lookup side (a
+  // live card ctx) always land in the same bucket — coarser than the pricing
+  // itemClass (no dune/riot split) on purpose, since velocity is a soft
+  // heuristic, not a pricing input.
+  const VELOCITY_MIN_SAMPLES = 3;
+  const VELOCITY_KEY = 'rwth_velocity_log';
+
+  // Pure: coarse velocity bucket from rarity + armour-ness, or null when rarity
+  // is unknown (untracked). Identical inputs on the record and lookup sides.
+  function velocityClass(rarity, isArmor) {
+    const r = norm(rarity);
+    if (!r) return null;
+    return `${r}-${isArmor ? 'armor' : 'weapon'}`;
+  }
+
+  // Pure: median days-to-clear for one bucket from a raw log array, or null when
+  // fewer than VELOCITY_MIN_SAMPLES matching entries exist.
+  function velocityBaseline(log, cls) {
+    if (!cls || !Array.isArray(log)) return null;
+    const days = log
+      .filter(e => e && e.cls === cls && Number.isFinite(e.days))
+      .map(e => e.days);
+    if (days.length < VELOCITY_MIN_SAMPLES) return null;
+    return _median(days);
+  }
+
+  const VelocityTracker = {
+    _read() {
+      const log = Store.get(VELOCITY_KEY);
+      return Array.isArray(log) ? log : [];
+    },
+    // Append one closed sale's buy→sold duration. No-op when the row lacks a
+    // usable rarity or a positive duration (missing/!finite/negative stamps).
+    recordSale(item, boughtAt, soldAt) {
+      if (!item) return;
+      const cls = velocityClass(
+        item.rarity, isArmorType(item.type) || norm(item.category) === 'armor');
+      if (!cls) return;
+      const b = Number(boughtAt), s = Number(soldAt);
+      if (!Number.isFinite(b) || !Number.isFinite(s)) return;
+      const days = (s - b) / 86_400_000;
+      if (!Number.isFinite(days) || days < 0) return;
+      const log = this._read();
+      log.push({ cls, days, soldAt: s });
+      Store.set(VELOCITY_KEY, log);
+    },
+    // Median days-to-clear for a coarse class bucket, null until enough samples.
+    classBaseline(cls) {
+      return velocityBaseline(this._read(), cls);
+    },
+  };
+
   // Per-row Price-check toggle. Closes if already open; otherwise opens with a
   // loading panel and kicks off the async fetch. Composite {history, live} comp
   // result is cached via the shared rwth_cache_ store (key: pricecheck:<sig>)
@@ -1978,6 +2038,7 @@
     writePriceCheckResult(item.id, {
       ctx: {
         itemClass: itemClassKey,
+        rarity,
         classTag,
         bbFloor,
         currentBid: null,
@@ -2410,10 +2471,14 @@
     for (const row of preview.rows) {
       const sell = row.sell;
       if (row.matchedId) {
+        const soldAt = sell.timestamp || Date.now();
+        // Slice 10a (#275) — log buy→sold days-to-clear before the row closes.
+        const sold = items.find(i => i.id === row.matchedId);
+        if (sold) VelocityTracker.recordSale(sold, sold.buyTimestamp, soldAt);
         items = items.map(i => (i.id === row.matchedId ? {
           ...i, status: 'sold',
           saleGross: sell.saleGross, saleFees: sell.saleFees, saleNet: sell.saleNet,
-          soldTimestamp: sell.timestamp || Date.now(),
+          soldTimestamp: soldAt,
           soldVenue: sell.venue, buyer: sell.buyer,
         } : i));
       } else {
@@ -3016,6 +3081,9 @@
       .rwth-card-floor-beats { color: #ff8a8a; }
       .rwth-card-floor-below { color: #7ed098; }
       .rwth-card-askfloor-more { color: #667; font-style: italic; }
+
+      /* v0.3.0 slice 10a — typical days-to-clear (VelocityTracker) */
+      .rwth-card-velocity { color: #8ad0c0; }
 
       /* v0.3.0 slice 16 — per-row drill-down inside the ladders. */
       .rwth-card-ladder-table tr.rwth-card-ladder-row { cursor: pointer; }
@@ -4635,6 +4703,18 @@
         }
       }
 
+      // ── typical days-to-clear (slice 10a, #275) ───────────────────────
+      // Hidden until the class has ≥3 logged buy→sold sales; never blocks render.
+      const velCls = velocityClass(s.rarity, /Armor$/.test(String(s.itemClass || '')));
+      const baselineDays = VelocityTracker.classBaseline(velCls);
+      if (baselineDays != null) {
+        const vel = document.createElement('div');
+        vel.className = 'rwth-card-ref rwth-card-velocity';
+        const d = Math.round(baselineDays * 10) / 10;
+        vel.textContent = `typical ${d}d clear for this class`;
+        badge.appendChild(vel);
+      }
+
       // ── ladder ────────────────────────────────────────────────────────
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
@@ -5255,6 +5335,7 @@
         const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
         InlineRenderer.renderTwoTierCard(info, {
           itemClass: itemClassKey,
+          rarity: cls && cls.rarity,
           classTag,
           bbFloor,
           currentBid: listingPrice,
@@ -5348,6 +5429,9 @@
     resolveBonusChangeEpoch,
     parseBonusChangeDates,
     fmtBonusChangeDates,
+    velocityClass,
+    velocityBaseline,
+    VELOCITY_MIN_SAMPLES,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────
