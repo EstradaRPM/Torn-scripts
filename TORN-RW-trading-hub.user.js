@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.30
+// @version      0.3.31
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.30';
+  const SCRIPT_VERSION = '0.3.31';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -439,20 +439,20 @@
   function buildPriceCheckPanel(item, state) {
     const s = state || {};
     if (s.loading) {
-      return `<div class="rwth-price-panel rwth-tier-loading">⟳ checking comps…</div>`;
+      return `<div class="rwth-price-panel rwth-tier-loading">⟳ checking prices…</div>`;
     }
     const askingLine = (s.askingCount && s.askingMedian != null)
-      ? `<div class="rwth-price-math">Asking: ${fmtMoney(s.askingMedian)} (${s.askingCount} listed)</div>`
+      ? `<div class="rwth-price-math">${s.askingCount} for sale (typical ${fmtMoney(s.askingMedian)})</div>`
       : '';
     if (s.skipped === 'trash') {
       const which = s.bonusName ? ` (${escapeAttr(s.bonusName)})` : '';
-      return `<div class="rwth-price-panel rwth-tier-none">skipped: trash bonus${which}</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">skipped — low-value bonus${which}</div>`;
     }
     if (s.error) {
       return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}${askingLine}</div>`;
     }
     if (!s.ctx) {
-      return `<div class="rwth-price-panel rwth-tier-none">no comp${askingLine}</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">no comparable sales${askingLine}</div>`;
     }
     return `<div class="rwth-price-panel rwth-pc-anchor" data-pc-id="${escapeAttr(item.id)}"></div>`;
   }
@@ -4408,13 +4408,13 @@
       if (s.skipped === 'trash') {
         badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
         const which = s.bonusName ? ` (${s.bonusName})` : '';
-        badge.textContent = `skipped: trash bonus${which}`;
+        badge.textContent = `skipped — low-value bonus${which}`;
         return;
       }
       if (s.error) {
         badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
         const askPart = (s.askingCount && s.askingMedian != null)
-          ? ` · Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)` : '';
+          ? ` · ${s.askingCount} for sale (typical ${fmtChatPrice(s.askingMedian)})` : '';
         badge.textContent = s.error + askPart;
         return;
       }
@@ -4422,30 +4422,30 @@
       if (!v || v.tier === 'none') {
         badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
         const askPart = (s.askingCount && s.askingMedian != null)
-          ? ` · Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)` : '';
-        badge.textContent = 'no comp' + askPart;
+          ? ` · ${s.askingCount} for sale (typical ${fmtChatPrice(s.askingMedian)})` : '';
+        badge.textContent = 'no comparable sales' + askPart;
         return;
       }
-      const labels = { good: 'Good', fair: 'Fair', over: 'Over', thin: 'Thin' };
+      const labels = { good: 'Good buy', fair: 'Fair', over: 'Overpriced', thin: 'Few sales' };
       const tierLabel = labels[v.tier] || v.tier;
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-' + v.tier;
       const parts = [];
       if (s.classTag) parts.push(s.classTag);
       parts.push(tierLabel);
       if (s.listingPrice != null && v.reference != null) {
-        parts.push(`${fmtChatPrice(s.listingPrice)} vs ${fmtChatPrice(v.reference)} median`);
+        parts.push(`asking ${fmtChatPrice(s.listingPrice)} vs typical ${fmtChatPrice(v.reference)}`);
       } else if (v.reference != null) {
-        parts.push(`${fmtChatPrice(v.reference)} median`);
+        parts.push(`typical ${fmtChatPrice(v.reference)}`);
       }
-      parts.push(`(${v.compsUsed} comps · ±${v.tolerance}%)`);
+      parts.push(`(${v.compsUsed} similar sales · ±${v.tolerance}% bonus)`);
       if (v.slopeProjection != null && s.listingQuality != null) {
-        parts.push(`slope ${fmtChatPrice(v.slopeProjection)} at ${s.listingQuality}% q`);
+        parts.push(`projected ${fmtChatPrice(v.slopeProjection)} at ${s.listingQuality}% quality`);
       }
       if (s.bbFloor != null) {
-        parts.push(`BB floor ${fmtChatPrice(s.bbFloor)}`);
+        parts.push(`bazaar floor ${fmtChatPrice(s.bbFloor)}`);
       }
       if (s.askingCount && s.askingMedian != null) {
-        parts.push(`Asking: ${fmtChatPrice(s.askingMedian)} (${s.askingCount} listed)`);
+        parts.push(`${s.askingCount} for sale (typical ${fmtChatPrice(s.askingMedian)})`);
       }
       badge.textContent = parts.join(' · ');
     },
@@ -4479,13 +4479,13 @@
       }
       const buyEl = document.createElement('span');
       buyEl.className = 'rwth-card-buymax';
-      buyEl.textContent = chain ? `Buy max ${fmtChatPrice(chain.buyMax)}` : 'Buy max —';
+      buyEl.textContent = chain ? `Bid up to ${fmtChatPrice(chain.buyMax)}` : 'Bid up to —';
       head.appendChild(buyEl);
       if (chain && Number.isFinite(cb)) {
         const d = chain.buyMax - cb;
         const delta = document.createElement('span');
-        if (d >= 0) { delta.className = 'rwth-card-room'; delta.textContent = `room ${fmtChatPrice(d)}`; }
-        else        { delta.className = 'rwth-card-over'; delta.textContent = `over by ${fmtChatPrice(-d)}`; }
+        if (d >= 0) { delta.className = 'rwth-card-room'; delta.textContent = `${fmtChatPrice(d)} under your max`; }
+        else        { delta.className = 'rwth-card-over'; delta.textContent = `${fmtChatPrice(-d)} over your max`; }
         head.appendChild(delta);
       }
       badge.appendChild(head);
@@ -4493,7 +4493,7 @@
       // ── provenance note — weaker than a cleared-comp card ───────────────
       const note = document.createElement('div');
       note.className = 'rwth-card-ref rwth-card-thin';
-      note.textContent = 'market-floor estimate · no cleared comps · exact bonus';
+      note.textContent = 'Rough estimate — no completed sales yet, matched to your exact bonus';
       badge.appendChild(note);
 
       if (chain) {
@@ -4501,9 +4501,9 @@
         const ded = document.createElement('div');
         ded.className = 'rwth-card-ref rwth-card-ded';
         ded.textContent =
-          `floor ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
-          + ` − ${Math.round(chain.mug * 100)}% mug − ${Math.round(chain.margin * 100)}% margin`
-          + ` → buy max ${fmtChatPrice(chain.buyMax)}`;
+          `Floor price ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          + ` − ${Math.round(chain.mug * 100)}% mug risk − ${Math.round(chain.margin * 100)}% your profit`
+          + ` → bid up to ${fmtChatPrice(chain.buyMax)}`;
         badge.appendChild(ded);
 
         // ── explicit buy/pass verdict ─────────────────────────────────────
@@ -4511,10 +4511,10 @@
         verd.className = 'rwth-card-ref rwth-card-verdict';
         if (Number.isFinite(cb)) {
           verd.textContent = cb <= chain.buyMax
-            ? `BUY — bid ${fmtChatPrice(cb)} ≤ max ${fmtChatPrice(chain.buyMax)}`
-            : `PASS — bid ${fmtChatPrice(cb)} over max ${fmtChatPrice(chain.buyMax)}`;
+            ? `BUY — current bid ${fmtChatPrice(cb)} is within your max of ${fmtChatPrice(chain.buyMax)}`
+            : `PASS — current bid ${fmtChatPrice(cb)} is over your max of ${fmtChatPrice(chain.buyMax)}`;
         } else {
-          verd.textContent = `buy ≤ ${fmtChatPrice(chain.buyMax)}`;
+          verd.textContent = `Bid up to ${fmtChatPrice(chain.buyMax)}`;
         }
         badge.appendChild(verd);
       }
@@ -4527,18 +4527,18 @@
         const hdr = document.createElement('div');
         hdr.className = 'rwth-card-ref';
         const parts = [];
-        if (s.askingMedian != null) parts.push(`median ${fmtChatPrice(s.askingMedian)}`);
-        if (s.askingCount) parts.push(`${s.askingCount} listed`);
-        hdr.textContent = 'Asking: ' + parts.join(' · ');
+        if (s.askingMedian != null) parts.push(`typical ${fmtChatPrice(s.askingMedian)}`);
+        if (s.askingCount) parts.push(`${s.askingCount} for sale`);
+        hdr.textContent = 'For sale now: ' + parts.join(' · ');
         askFloor.appendChild(hdr);
         for (const el of floorEls) askFloor.appendChild(el);
       } else {
         const parts = [];
-        if (s.marketFloor != null)  parts.push(`floor ${fmtChatPrice(s.marketFloor)}`);
-        if (s.askingMedian != null) parts.push(`median ${fmtChatPrice(s.askingMedian)}`);
-        if (s.askingCount)          parts.push(`${s.askingCount} listed`);
+        if (s.marketFloor != null)  parts.push(`cheapest ${fmtChatPrice(s.marketFloor)}`);
+        if (s.askingMedian != null) parts.push(`typical ${fmtChatPrice(s.askingMedian)}`);
+        if (s.askingCount)          parts.push(`${s.askingCount} for sale`);
         askFloor.className = 'rwth-card-ladder';
-        askFloor.textContent = 'Asking: ' + parts.join(' · ');
+        askFloor.textContent = 'For sale now: ' + parts.join(' · ');
       }
       badge.appendChild(askFloor);
     },
@@ -4580,16 +4580,16 @@
         const hasQ = Number.isFinite(cq) && cq > 0;
         let text = fmtChatPrice(c.price);
         if (hasQ) {
-          text += ` @ ${cq}% q`;
+          text += ` at ${cq}% quality`;
           if (hasLq) {
             if (cq > lq) {
-              text += ' — beats candidate';
+              text += ' — better quality than yours';
               div.classList.add('rwth-card-floor-beats');
             } else if (cq < lq) {
-              text += ' — below candidate';
+              text += ' — worse quality than yours';
               div.classList.add('rwth-card-floor-below');
             } else {
-              text += ' — same quality';
+              text += ' — same quality as yours';
             }
           }
         }
@@ -4599,7 +4599,7 @@
       if (rest > 0) {
         const more = document.createElement('div');
         more.className = 'rwth-card-askfloor-more';
-        more.textContent = `+${rest} more listed`;
+        more.textContent = `+${rest} more for sale`;
         els.push(more);
       }
       return els;
@@ -4690,26 +4690,25 @@
       buyEl.className = 'rwth-card-buymax';
       if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
         const tol = buy.tolerance != null ? buy.tolerance : 0;
-        buyEl.textContent = `BB floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} tolerance`;
+        buyEl.textContent = `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room`;
       } else if (thinReference && Array.isArray(buy.range)) {
         // Slice 19d: suppress headline anchor — range only when comps stay thin.
-        buyEl.textContent = `Buy range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
+        buyEl.textContent = `Bid ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
       } else if (buy.max == null && Array.isArray(buy.range)) {
-        buyEl.textContent = `Buy range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
+        buyEl.textContent = `Bid ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
       } else if (buy.max != null) {
-        const anchorLabel = buy.anchor === 'min' ? 'Buy floor' : 'Buy max';
-        buyEl.textContent = `${anchorLabel} ${fmtChatPrice(buy.max)}`;
+        buyEl.textContent = `Bid up to ${fmtChatPrice(buy.max)}`;
         if (Array.isArray(buy.range)) {
           buyEl.textContent += ` (${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])})`;
         }
       } else {
-        buyEl.textContent = 'Buy max —';
+        buyEl.textContent = 'Bid up to —';
       }
       head.appendChild(buyEl);
       if (buy.medianTarget != null) {
         const medEl = document.createElement('span');
         medEl.className = 'rwth-card-buymed';
-        medEl.textContent = `median ${fmtChatPrice(buy.medianTarget)}`;
+        medEl.textContent = `typical ${fmtChatPrice(buy.medianTarget)}`;
         head.appendChild(medEl);
       }
       // Auction-clearing reference (what it actually sells for at auction) —
@@ -4717,13 +4716,13 @@
       if (buy.auctionMedian != null) {
         const amEl = document.createElement('span');
         amEl.className = 'rwth-card-buymed';
-        amEl.textContent = `auction median ${fmtChatPrice(buy.auctionMedian)}`;
+        amEl.textContent = `sells ~${fmtChatPrice(buy.auctionMedian)} at auction`;
         head.appendChild(amEl);
       }
       if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && buy.max != null) {
         const fl = document.createElement('span');
         fl.className = 'rwth-card-bbfloor';
-        fl.textContent = `BB floor ${fmtChatPrice(s.bbFloor)}`;
+        fl.textContent = `bazaar floor ${fmtChatPrice(s.bbFloor)}`;
         head.appendChild(fl);
       }
       if (buy.currentBidDelta != null) {
@@ -4731,10 +4730,10 @@
         const delta = document.createElement('span');
         if (d >= 0) {
           delta.className = 'rwth-card-room';
-          delta.textContent = `room ${fmtChatPrice(d)}`;
+          delta.textContent = `${fmtChatPrice(d)} under your max`;
         } else {
           delta.className = 'rwth-card-over';
-          delta.textContent = `over by ${fmtChatPrice(-d)}`;
+          delta.textContent = `${fmtChatPrice(-d)} over your max`;
         }
         head.appendChild(delta);
       }
@@ -4757,26 +4756,31 @@
         refEl.className = 'rwth-card-ref';
         const parts = [];
         if (reference.widenedBonusCount > 0) {
-          parts.push(`${reference.strictCount} strict + ${reference.widenedBonusCount} widened bonus to ±${reference.widenedTolerance}%`);
+          parts.push(`based on ${reference.strictCount} close + ${reference.widenedBonusCount} within ±${reference.widenedTolerance}% bonus of yours`);
         } else {
-          let head2 = `${reference.count} comp${reference.count === 1 ? '' : 's'}`;
-          if (reference.tolerance != null) head2 += ` · ±${reference.tolerance}%`;
+          const n = reference.count;
+          let head2 = `based on ${n} similar sale${n === 1 ? '' : 's'}`;
+          if (reference.tolerance != null) {
+            head2 += reference.tolerance === 0
+              ? ' (exact bonus match)'
+              : ` (within ±${reference.tolerance}% bonus of yours)`;
+          }
           parts.push(head2);
         }
         // v0.3.0 slice 19d (#288) — surface adjacent-base widening when it fired.
         const widenedBaseList = Array.isArray(s.widenedBase) ? s.widenedBase : [];
         if (widenedBaseList.length) {
-          parts.push(`widened base to {${widenedBaseList.join(', ')}}`);
+          parts.push(`also using ${widenedBaseList.join(', ')}`);
         }
         if (reference.recencyDays != null) {
           parts.push(reference.recencyDays >= 365
-            ? `${Math.round(reference.recencyDays / 365)}yr`
-            : `${Math.round(reference.recencyDays / 30)}mo`);
+            ? `~${Math.round(reference.recencyDays / 365)}yr old`
+            : `~${Math.round(reference.recencyDays / 30)}mo old`);
         }
         if (reference.suppressedByChange > 0) {
-          parts.push(`${reference.suppressedByChange} suppressed (bonus nerf)`);
+          parts.push(`skipped ${reference.suppressedByChange} (bonus since nerfed)`);
         }
-        if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('filtered');
+        if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('your filters applied');
         refEl.textContent = parts.join(' · ');
         badge.appendChild(refEl);
       }
@@ -4786,7 +4790,7 @@
       if (thinReference) {
         const thinEl = document.createElement('div');
         thinEl.className = 'rwth-card-ref rwth-card-thin';
-        thinEl.textContent = 'thin reference — judgment call';
+        thinEl.textContent = 'few comparable sales — treat this as a rough guess';
         badge.appendChild(thinEl);
       }
 
@@ -4795,11 +4799,11 @@
       const sensEl = document.createElement('div');
       sensEl.className = 'rwth-card-sensitivity';
       if (sens.label === 'sloped') {
-        sensEl.textContent = `every 1% ≈ ${fmtChatPrice(Math.abs(sens.perPct))} on this base`;
+        sensEl.textContent = `each 1% of bonus is worth about ${fmtChatPrice(Math.abs(sens.perPct))} on this weapon`;
       } else if (sens.label === 'flat') {
-        sensEl.textContent = '% barely moves price on this base';
+        sensEl.textContent = 'bonus % barely changes the price on this weapon';
       } else {
-        sensEl.textContent = 'not enough comps to derive sensitivity';
+        sensEl.textContent = 'not enough sales to tell how much bonus is worth';
       }
       badge.appendChild(sensEl);
 
@@ -4816,9 +4820,9 @@
         const ded = document.createElement('div');
         ded.className = 'rwth-card-ref rwth-card-ded';
         ded.textContent =
-          `market ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
-          + ` − ${Math.round(chain.mug * 100)}% mug − ${Math.round(chain.margin * 100)}% margin`
-          + ` → buy max ${fmtChatPrice(chain.buyMax)}`;
+          `Market price ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          + ` − ${Math.round(chain.mug * 100)}% mug risk − ${Math.round(chain.margin * 100)}% your profit`
+          + ` → bid up to ${fmtChatPrice(chain.buyMax)}`;
         badge.appendChild(ded);
 
         const cb = Number(s.currentBid);
@@ -4826,8 +4830,8 @@
           const verd = document.createElement('div');
           verd.className = 'rwth-card-ref rwth-card-verdict';
           verd.textContent = cb <= chain.buyMax
-            ? `BUY — bid ${fmtChatPrice(cb)} ≤ max ${fmtChatPrice(chain.buyMax)}`
-            : `PASS — bid ${fmtChatPrice(cb)} over max ${fmtChatPrice(chain.buyMax)}`;
+            ? `BUY — current bid ${fmtChatPrice(cb)} is within your max of ${fmtChatPrice(chain.buyMax)}`
+            : `PASS — current bid ${fmtChatPrice(cb)} is over your max of ${fmtChatPrice(chain.buyMax)}`;
           badge.appendChild(verd);
         }
       }
@@ -4840,7 +4844,7 @@
         const vel = document.createElement('div');
         vel.className = 'rwth-card-ref rwth-card-velocity';
         const d = Math.round(baselineDays * 10) / 10;
-        vel.textContent = `typical ${d}d clear for this class`;
+        vel.textContent = `usually sells in about ${d} days`;
         badge.appendChild(vel);
       }
 
@@ -4866,7 +4870,7 @@
       if (s.askingCount && s.askingMedian != null) {
         const span = document.createElement('span');
         const b = document.createElement('b');
-        b.textContent = `Asking (${s.askingCount})`;
+        b.textContent = `For sale (${s.askingCount})`;
         span.appendChild(b);
         span.appendChild(document.createTextNode(fmtChatPrice(s.askingMedian)));
         ladderEl.appendChild(span);
@@ -4922,7 +4926,7 @@
       const hasQ     = Number.isFinite(Number(ctx.listingQuality)) && Number(ctx.listingQuality) > 0;
       const bonusOpts = [
         ['auto',   'auto',     true],
-        ['strict', 'strict',   hasBonus],
+        ['strict', 'exact',    hasBonus],
         ['pm1',    '±1%',      hasBonus],
         ['pm3',    '±3%',      hasBonus],
         ['all',    'all',      true],
@@ -4978,8 +4982,8 @@
       const ladders = document.createElement('div');
       ladders.className = 'rwth-card-ladders';
       const soldEmpty = axis === 'quality'
-        ? (filtered.length ? 'no comps carry a quality %' : 'no comps match these filters')
-        : (filtered.length ? 'no comps carry a bonus %'   : 'no comps match these filters');
+        ? (filtered.length ? 'no sales list a quality %' : 'nothing matches your filters')
+        : (filtered.length ? 'no sales list a bonus %'   : 'nothing matches your filters');
       // v0.3.15 slice 19c (#287) — when the ref line ran auto bonus filtering,
       // surface which ladder rows are strict-only vs widened. Predicate is
       // omitted (no marker) when the user manually overrode the bonus knob.
@@ -4992,7 +4996,7 @@
                   && Math.abs(Number(c.bonusValue) - targetBonusNum) <= strictTolNum
         : null;
       ladders.appendChild(InlineRenderer._buildBonusLadder({
-        title: 'SOLD (cleared)',
+        title: 'Sold (completed)',
         kind: 'sold',
         comps: filtered,
         axis,
@@ -5002,13 +5006,13 @@
         isStrict: soldIsStrict,
       }));
       ladders.appendChild(InlineRenderer._buildBonusLadder({
-        title: 'LISTED (asking)',
+        title: 'For sale now',
         kind: 'listed',
         comps: askingArr,
         axis,
         ctx,
         cheapestPrice: cheapest,
-        emptyText: 'no live listings',
+        emptyText: 'nothing for sale right now',
       }));
       wrap.appendChild(ladders);
 
@@ -5096,8 +5100,8 @@
       const table = document.createElement('table');
       table.className = 'rwth-card-drill-table rwth-card-ladder-table';
       const thead = document.createElement('thead');
-      const firstHead = useQuality ? 'quality' : 'bonus%';
-      thead.innerHTML = `<tr><th>${firstHead}</th><th>median</th><th>min</th><th>max</th><th>n</th></tr>`;
+      const firstHead = useQuality ? 'quality' : 'bonus %';
+      thead.innerHTML = `<tr><th>${firstHead}</th><th>typical</th><th>cheapest</th><th>priciest</th><th>count</th></tr>`;
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
       // One row expanded at a time (acceptance: ephemeral, popup-local).
@@ -5117,7 +5121,7 @@
         const isOwn = ownKey != null && k === ownKey;
         if (isOwn) tr.classList.add('rwth-card-ladder-own');
         const hasCheapest = cheapestPrice != null && mn === cheapestPrice;
-        const tag = isOwn ? ' ← you' : '';
+        const tag = isOwn ? ' ← yours' : '';
         // Provenance marker (slice 19c). Per-row: all strict → no marker;
         // none strict → italic + tooltip "widened"; mixed → fraction.
         // v0.3.0 slice 19d (#288): rows composed entirely of widened-base
@@ -5128,21 +5132,21 @@
         if (rows.length && baseWidenedRows.length === rows.length) {
           tr.classList.add('rwth-card-ladder-widenedbase');
           const baseNames = Array.from(new Set(baseWidenedRows.map(c => c.baseName).filter(Boolean)));
-          tr.title = baseNames.length ? `widened base: ${baseNames.join(', ')}` : 'widened base';
+          tr.title = baseNames.length ? `also using ${baseNames.join(', ')}` : 'other base weapons';
           widenedSuffix = baseNames.length
             ? ` (${baseNames.join(', ')})`
-            : ' (widened base)';
+            : ' (other base)';
         } else if (typeof isStrict === 'function') {
           const sameBaseRows = rows.filter(c => !(c && c.provenance === 'widenedBase'));
           const strictRows = sameBaseRows.filter(isStrict).length;
           if (sameBaseRows.length && strictRows === 0) {
             tr.classList.add('rwth-card-ladder-widened');
-            tr.title = 'widened bonus';
-            widenedSuffix = ' (widened)';
+            tr.title = 'wider bonus range than yours';
+            widenedSuffix = ' (wider bonus)';
           } else if (strictRows < sameBaseRows.length) {
             tr.classList.add('rwth-card-ladder-widened-mixed');
-            tr.title = `${strictRows}/${sameBaseRows.length} strict`;
-            widenedSuffix = ` (${strictRows}/${sameBaseRows.length} strict)`;
+            tr.title = `${strictRows} of ${sameBaseRows.length} close to your bonus`;
+            widenedSuffix = ` (${strictRows}/${sameBaseRows.length} close)`;
           }
         }
         const bonusCell = document.createElement('td');
@@ -5153,7 +5157,7 @@
         bonusCell.appendChild(document.createTextNode(`${group.label}${tag}${widenedSuffix}`));
         tr.appendChild(bonusCell);
         tr.appendChild(td(fmtChatPrice(med)));
-        const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest live' : ''));
+        const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest for sale' : ''));
         if (hasCheapest) minCell.classList.add('rwth-card-ladder-cheapest');
         tr.appendChild(minCell);
         tr.appendChild(td(fmtChatPrice(mx)));
@@ -5267,34 +5271,34 @@
             return ps.length % 2 ? ps[m] : (ps[m - 1] + ps[m]) / 2;
           })();
       if (cls === 'duneRiotArmor') {
-        if (buy.floor == null) return 'BB floor unavailable — set API key + wait for rate fetch.';
+        if (buy.floor == null) return 'Bazaar floor not loaded yet — add your API key and wait for prices.';
         const tol = buy.tolerance != null ? buy.tolerance : 0;
-        return `BB floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} tolerance → ${fmtChatPrice(buy.max)}`;
+        return `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room → bid up to ${fmtChatPrice(buy.max)}`;
       }
       if (cls === 'trashBB') {
-        if (buy.floor == null) return 'BB floor unavailable.';
-        return `BB floor ${fmtChatPrice(buy.floor)} (hard) → ${fmtChatPrice(buy.max)}`;
+        if (buy.floor == null) return 'Bazaar floor not loaded yet.';
+        return `Bazaar floor ${fmtChatPrice(buy.floor)} (firm) → bid up to ${fmtChatPrice(buy.max)}`;
       }
       const prices = (filtered || []).map(c => Number(c && c.price))
         .filter(p => Number.isFinite(p) && p > 0);
       const mn = prices.length ? Math.min(...prices) : null;
       if (cls === 'assaultArmor') {
-        if (mn == null || !Array.isArray(buy.range)) return 'no comps to derive range.';
-        return `min ${fmtChatPrice(mn)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (mid ${fmtChatPrice(buy.max)}; median ${fmtChatPrice(med)})`;
+        if (mn == null || !Array.isArray(buy.range)) return 'not enough sales to work out a range.';
+        return `cheapest ${fmtChatPrice(mn)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (middle ${fmtChatPrice(buy.max)}; typical ${fmtChatPrice(med)})`;
       }
       if (cls === 'orangeWeapon' || cls === 'redWeapon' || cls === 'orangeArmor' || cls === 'redArmor') {
-        if (!Array.isArray(buy.range)) return 'no comps to derive range.';
-        return `comp range ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — no single max for ${cls}`;
+        if (!Array.isArray(buy.range)) return 'not enough sales to work out a range.';
+        return `similar sales run ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — too spread out for one buy price`;
       }
       // yellowWeapon (default) — floor-anchored on min.
-      if (mn == null || buy.max == null) return 'no comps to derive min.';
+      if (mn == null || buy.max == null) return 'not enough sales to work out a floor.';
       const m = ctx.margins || {};
       const tax    = m.tax    != null ? m.tax    : 0.05;
       const mug    = m.mug    != null ? m.mug    : 0.10;
       const margin = m.margin != null ? m.margin : 0.05;
       const pct = (x) => `${Math.round(x * 100)}%`;
-      const medTail = med != null ? ` (median ${fmtChatPrice(med)})` : '';
-      return `min ${fmtChatPrice(mn)} − ${pct(tax)} tax − ${pct(mug)} mug − ${pct(margin)} margin → ${fmtChatPrice(buy.max)}${medTail}`;
+      const medTail = med != null ? ` (typical ${fmtChatPrice(med)})` : '';
+      return `cheapest ${fmtChatPrice(mn)} − ${pct(tax)} tax − ${pct(mug)} mug risk − ${pct(margin)} your profit → bid up to ${fmtChatPrice(buy.max)}${medTail}`;
     },
     removeAll() {
       if (typeof document === 'undefined') return;
@@ -5358,7 +5362,7 @@
       }
       console.debug('[rwth] auction parsed', parsed);
       if (!parsed || !parsed.itemName) {
-        InlineRenderer.renderAuctionBadge(info, { error: 'no name' });
+        InlineRenderer.renderAuctionBadge(info, { error: "couldn't read the item" });
         return;
       }
       const listingPrice = parsed.currentBid != null
@@ -5383,7 +5387,7 @@
         r = await PricingEngine.fetchComps(item);
       } catch (e) {
         console.warn('[rwth] fetchComps threw', e);
-        InlineRenderer.renderAuctionBadge(info, { error: 'fetch err' });
+        InlineRenderer.renderAuctionBadge(info, { error: "couldn't load prices" });
         return;
       }
       const clearedRaw = r.cleared || [];
@@ -5449,7 +5453,7 @@
           });
         } else {
           InlineRenderer.renderAuctionBadge(info, {
-            error: 'no comp', askingMedian, askingCount,
+            error: 'no comparable sales', askingMedian, askingCount,
           });
         }
         return;
