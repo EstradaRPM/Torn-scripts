@@ -619,3 +619,89 @@ test('WEAPON_CATEGORY constant is removed', () => {
     require('path').join(__dirname, 'TORN-RW-trading-hub.user.js'), 'utf8');
   assert.ok(!/\bWEAPON_CATEGORY\b/.test(src), 'WEAPON_CATEGORY references must be gone');
 });
+
+// ── resolveMarketAnchor (bonus-bracket market anchor, #298 / PRD #296) ────────
+// Worked-example cases from the PRD acceptance criteria. Each asserts external
+// behaviour: given listings + a target bonus, which anchor (and tier) comes back.
+
+test('resolveMarketAnchor: Enfield Deadeye 32% anchors on the 30–35% bracket, not the floor', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const listings = [
+    { price: 100, bonusValue: 25 }, { price: 102, bonusValue: 26 },
+    { price: 105, bonusValue: 29 }, { price: 140, bonusValue: 31 },
+    { price: 142, bonusValue: 33 }, { price: 145, bonusValue: 35 },
+  ];
+  const r = resolveMarketAnchor(listings, 32);
+  assert.strictEqual(r.anchor, 140);              // 30–35% tier, not the 100 floor
+  assert.strictEqual(r.tier.thresholdBonus, 31);
+});
+
+test('resolveMarketAnchor: Jackhammer Warlord 16% anchors on the 16% bracket, not the 15%', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const listings = [
+    { price: 220, bonusValue: 15 }, { price: 240, bonusValue: 15 },
+    { price: 270, bonusValue: 16 }, { price: 290, bonusValue: 16 },
+  ];
+  const r = resolveMarketAnchor(listings, 16);
+  assert.strictEqual(r.anchor, 270);              // 16% bracket floor, not 220
+  assert.strictEqual(r.tier.thresholdBonus, 16);
+});
+
+test('resolveMarketAnchor: multi-step promotion evaluates each jump vs the previous tier', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const listings = [
+    { price: 220, bonusValue: 15 },
+    { price: 270, bonusValue: 16 },
+    { price: 350, bonusValue: 17 },
+  ];
+  assert.strictEqual(resolveMarketAnchor(listings, 15).anchor, 220);
+  assert.strictEqual(resolveMarketAnchor(listings, 16).anchor, 270);
+  assert.strictEqual(resolveMarketAnchor(listings, 17).anchor, 350);
+  assert.strictEqual(resolveMarketAnchor(listings, 17).tiers.length, 3);
+});
+
+test('resolveMarketAnchor: a cheap higher-bonus piece cancels the tier (undercut guard)', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const listings = [
+    { price: 220, bonusValue: 15 },
+    { price: 270, bonusValue: 16 },
+    { price: 200, bonusValue: 18 },   // strong piece going cheap
+  ];
+  const r = resolveMarketAnchor(listings, 16);
+  assert.strictEqual(r.anchor, 200);              // match/undercut the cheap 18%, not 270
+  assert.strictEqual(r.tiers.length, 1);          // the 16% tier never forms
+});
+
+test('resolveMarketAnchor: sub-threshold scatter within one bracket makes no new tier', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const listings = [
+    { price: 100, bonusValue: 25 },
+    { price: 107, bonusValue: 25 },
+    { price: 113, bonusValue: 25 },   // 13% internal spread, same bonus
+  ];
+  const r = resolveMarketAnchor(listings, 25);
+  assert.strictEqual(r.tiers.length, 1);
+  assert.strictEqual(r.anchor, 100);
+});
+
+test('resolveMarketAnchor: thin data (single listing) still yields a sensible anchor', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const r = resolveMarketAnchor([{ price: 300, bonusValue: 40 }], 40);
+  assert.strictEqual(r.anchor, 300);
+});
+
+test('resolveMarketAnchor: target below the first jump anchors on the global floor', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  const listings = [
+    { price: 220, bonusValue: 15 },
+    { price: 270, bonusValue: 16 },
+    { price: 350, bonusValue: 17 },
+  ];
+  assert.strictEqual(resolveMarketAnchor(listings, 14).anchor, 220);  // below lowest bonus
+});
+
+test('resolveMarketAnchor: no valid listings returns a null anchor', () => {
+  const { resolveMarketAnchor } = globalThis.__RwthPure;
+  assert.deepStrictEqual(resolveMarketAnchor([], 20), { anchor: null, tier: null, tiers: [] });
+  assert.strictEqual(resolveMarketAnchor([{ price: 0, bonusValue: 20 }], 20).anchor, null);
+});

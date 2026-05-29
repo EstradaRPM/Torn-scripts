@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.28
+// @version      0.3.29
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.28';
+  const SCRIPT_VERSION = '0.3.29';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3410,6 +3410,83 @@
     clear() { ListingsFetcher._cache.clear(); },
   };
 
+  // ─── Bracket-tiering market anchor (pure, #298 / PRD #296) ───────────────────
+  // The buy-max deduction is only as good as the price it anchors on. Item-
+  // market listings cluster into price brackets by bonus %, and the step between
+  // brackets is large and real (Enfield Deadeye 25–29% sits near the floor;
+  // 30–35% lists ~30% higher). Anchoring on the *global* cheapest listing prices
+  // a high-bonus target off a weaker, cheaper piece, so the buy max comes out
+  // far too low on exactly the items that matter most.
+  //
+  // resolveMarketAnchor(listings, targetBonus, opts) → { anchor, tier, tiers }
+  //   listings    – [{ price, bonusValue }]  (MARKET only — bazaar is excluded
+  //                 from anchor math; it isn't inflated, so deducting off it
+  //                 double-counts, and a cheap high-bonus bazaar piece would
+  //                 falsely trip the tier guard — PRD #296)
+  //   targetBonus – the candidate item's bonus %
+  //   opts.jumpThreshold – fractional step that promotes a bracket to a new tier
+  //                        (default BRACKET_JUMP_THRESHOLD)
+  //
+  // Algorithm (single pass over bonus brackets, ascending):
+  //   1. Market floor = global cheapest listing, ignoring bonus/quality.
+  //   2. Each distinct bonus %'s cheapest listing is its bracket floor.
+  //   3. Promote a bracket to a new tier when BOTH: its floor is ≥ threshold
+  //      above the *previous tier's* floor (so stacked steps each promote), AND
+  //      no higher-bonus listing sits below it (outlier/undercut guard — a cheap
+  //      strong piece cancels the jump so we match/undercut it instead of
+  //      overpaying).
+  //   4. Anchor = floor of the highest tier whose threshold bonus ≤ target;
+  //      below the first jump (or no target) falls back to the global floor.
+  // Pure: no DOM, no network, no globals.
+  const BRACKET_JUMP_THRESHOLD = 0.10;
+  function resolveMarketAnchor(listings, targetBonus, opts) {
+    const threshold = (opts && Number.isFinite(Number(opts.jumpThreshold)))
+      ? Number(opts.jumpThreshold) : BRACKET_JUMP_THRESHOLD;
+    const valid = (Array.isArray(listings) ? listings : [])
+      .map(l => ({ price: Number(l && l.price), bonus: Number(l && l.bonusValue) }))
+      .filter(l => Number.isFinite(l.price) && l.price > 0 && Number.isFinite(l.bonus));
+    if (!valid.length) return { anchor: null, tier: null, tiers: [] };
+
+    const globalFloor = Math.min(...valid.map(l => l.price));
+
+    // Cheapest listing per distinct bonus %, ascending by bonus.
+    const floorByBonus = new Map();
+    for (const l of valid) {
+      const cur = floorByBonus.get(l.bonus);
+      if (cur == null || l.price < cur) floorByBonus.set(l.bonus, l.price);
+    }
+    const brackets = [...floorByBonus.entries()]
+      .map(([bonus, floor]) => ({ bonus, floor }))
+      .sort((a, b) => a.bonus - b.bonus);
+
+    // Tier 0 is the base tier: its floor is the global cheapest (step 1), so a
+    // cheap strong piece anywhere pulls the base anchor down to it.
+    const tiers = [{ thresholdBonus: brackets[0].bonus, floor: globalFloor }];
+    for (let i = 1; i < brackets.length; i++) {
+      const b = brackets[i];
+      const prev = tiers[tiers.length - 1];
+      const jumped = b.floor >= prev.floor * (1 + threshold);
+      // Undercut guard: a higher-bonus listing going cheaper than this bracket's
+      // floor means the strong piece is the better buy — don't establish a tier
+      // here (PRD #296 user story 6).
+      const undercut = valid.some(l => l.bonus > b.bonus && l.price < b.floor);
+      if (jumped && !undercut) {
+        tiers.push({ thresholdBonus: b.bonus, floor: b.floor });
+      }
+    }
+
+    // Anchor = highest tier whose threshold bonus ≤ target; below the first jump
+    // (or no/NaN target) falls back to the base tier (global floor).
+    const tb = Number(targetBonus);
+    let tier = tiers[0];
+    if (Number.isFinite(tb)) {
+      for (const t of tiers) {
+        if (t.thresholdBonus <= tb) tier = t;
+      }
+    }
+    return { anchor: tier.floor, tier, tiers };
+  }
+
   // ─── PricingEngine (pure) ─────────────────────────────────────────────────────
   // Verdict + ledger-suggest engine — pure functions, no GM calls, no DOM.
   // All impure callers (fetch/cache/render) live in later slices.
@@ -4563,10 +4640,23 @@
       const filtered = InlineRenderer._applyDrillFilters(rawComps, drill, s);
       const useAutoRef = drill.bonus === 'auto';
 
+      // v0.3.29 (#298) — anchor the buy max + deduction on the bonus-% bracket
+      // the candidate falls into, not the global cheapest listing. Market
+      // listings only (bazaar excluded from anchor math — PRD #296). Falls back
+      // to the global cheapest when the resolver can't tier (no listings / no
+      // bonus data). Both the headline and the deduction line read `anchorPrice`
+      // so they agree by construction.
+      const marketListings = (Array.isArray(s.askingComps) ? s.askingComps : [])
+        .filter(c => (c.source || 'market') === 'market')
+        .map(c => ({ price: c.price, bonusValue: c.bonusValue }));
+      const bracket = resolveMarketAnchor(marketListings, s.primaryBonusValue);
+      const anchorPrice = (bracket && bracket.anchor != null)
+        ? bracket.anchor : s.marketCheapest;
+
       const buy = PricingEngine.buyTarget({
         itemClass: s.itemClass, comps: filtered,
         currentBid: s.currentBid, bbFloor: s.bbFloor,
-        marketAnchor: s.marketCheapest,
+        marketAnchor: anchorPrice,
       });
       // v0.3.0 slice 19d (#288) — thin-reference fallback. After base-widen,
       // <5 total comps means we cannot anchor a headline buy max — show the
@@ -4714,11 +4804,12 @@
       badge.appendChild(sensEl);
 
       // ── deduction chain + verdict (slice 20e, #295) ───────────────────
-      // Anchor the tax/mug/margin cut on the cheapest *market listing* (the
-      // inflated resale ask), not the auction-comp median — deducting resale
-      // friction off an auction-cleared price double-counts (see buyTarget).
-      // buyMax here therefore matches the headline buy max.
-      const chainAnchor = Number(s.marketCheapest);
+      // Anchor the tax/mug/margin cut on the bonus-bracket market listing (the
+      // inflated resale ask for the candidate's tier — v0.3.29/#298), not the
+      // auction-comp median: deducting resale friction off an auction-cleared
+      // price double-counts (see buyTarget). Reads the same `anchorPrice` as the
+      // headline buy max, so the two never disagree.
+      const chainAnchor = Number(anchorPrice);
       const chain = (Number.isFinite(chainAnchor) && chainAnchor > 0)
         ? PricingEngine.deductionChain({ anchor: chainAnchor }) : null;
       if (chain) {
@@ -5443,6 +5534,8 @@
     AdvertiseGenerator,
     BonusTrashGuard,
     similarity,
+    resolveMarketAnchor,
+    BRACKET_JUMP_THRESHOLD,
     PricingEngine,
     CompWidener,
     BBEngine,
