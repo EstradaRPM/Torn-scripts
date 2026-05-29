@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.26
+// @version      0.3.28
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.26';
+  const SCRIPT_VERSION = '0.3.28';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3724,15 +3724,25 @@
         const hi = Math.round(Math.max(...prices));
         return { max: null, floor: null, range: [lo, hi], median: med, currentBidDelta: null };
       }
-      // yellowWeapon (default) — floor-anchored on min.
-      if (mn == null) return { max: null, floor: bbFloor, currentBidDelta: null };
+      // yellowWeapon (default) — bid math is MARKET-anchored.
+      // The tax/mug/margin cut models resale friction off an *inflated item-
+      // market listing*, not off auction-cleared prices. Anchoring it on the
+      // auction comps (what pieces already clear for at auction) shaved 20% off
+      // an already-realistic sale price → a nonsense "auction bid" below what
+      // the thing actually sells for. Deduct off the cheapest live market
+      // listing instead, and surface the auction-comp median separately as the
+      // clearing reference the bid is judged against (no deduction — it is
+      // already a sale price).
       const tax    = s.tax    != null ? s.tax    : 0.05;
       const mug    = s.mug    != null ? s.mug    : 0.10;
       const margin = s.margin != null ? s.margin : 0.05;
       const ded = 1 - tax - mug - margin;
-      const max = Math.round(mn * ded);
-      const medianTarget = med != null ? Math.round(med * ded) : null;
-      return { max, floor: bbFloor, median: med, medianTarget, anchor: 'min',
+      const marketAnchor = Number(a.marketAnchor);
+      const hasMarket = Number.isFinite(marketAnchor) && marketAnchor > 0;
+      const max = hasMarket ? Math.round(marketAnchor * ded) : null;
+      return { max, floor: bbFloor, anchor: 'market',
+               marketAnchor: hasMarket ? Math.round(marketAnchor) : null,
+               auctionMedian: med != null ? Math.round(med) : null,
                currentBidDelta: deltaOf(max) };
     },
 
@@ -3771,12 +3781,14 @@
      *   { anchor, tax, mug, margin, buyMax, resaleNet } | null
      *
      * King's order-of-ops step 4, single-cut model (#290/#291): from a
-     * reference price — the asking floor for the no-cleared-comp fallback, or
-     * the comp median for the cleared two-tier card — deduct 5% market tax +
-     * 10% mug risk + 5–10% profit margin to a max bid. There is NO separate
-     * market-inflation multiplier: the single cut already accounts for why you
-     * bid under asking (sellers pad asking for the same tax/mug exposure, so
-     * stacking a second discount would double-count it).
+     * reference price — always an inflated item-market ask (the asking floor /
+     * cheapest live listing) — deduct 5% market tax + 10% mug risk + 5–10%
+     * profit margin to a max bid. The anchor is the market ask, NEVER an
+     * auction-cleared price: cleared comps are already realistic sale prices,
+     * so deducting resale friction off them double-counts. There is likewise NO
+     * separate market-inflation multiplier — the single cut already accounts
+     * for why you bid under asking (sellers pad asking for the same tax/mug
+     * exposure, so stacking a second discount would double-count it).
      *
      * `buyMax`    – highest bid that still clears the margin after tax + mug.
      * `resaleNet` – what you net selling at the anchor after tax + mug only
@@ -4554,6 +4566,7 @@
       const buy = PricingEngine.buyTarget({
         itemClass: s.itemClass, comps: filtered,
         currentBid: s.currentBid, bbFloor: s.bbFloor,
+        marketAnchor: s.marketCheapest,
       });
       // v0.3.0 slice 19d (#288) — thin-reference fallback. After base-widen,
       // <5 total comps means we cannot anchor a headline buy max — show the
@@ -4608,6 +4621,14 @@
         medEl.className = 'rwth-card-buymed';
         medEl.textContent = `median ${fmtChatPrice(buy.medianTarget)}`;
         head.appendChild(medEl);
+      }
+      // Auction-clearing reference (what it actually sells for at auction) —
+      // shown raw, NOT deducted. The bid sits against this, not derived from it.
+      if (buy.auctionMedian != null) {
+        const amEl = document.createElement('span');
+        amEl.className = 'rwth-card-buymed';
+        amEl.textContent = `auction median ${fmtChatPrice(buy.auctionMedian)}`;
+        head.appendChild(amEl);
       }
       if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && buy.max != null) {
         const fl = document.createElement('span');
@@ -4693,13 +4714,18 @@
       badge.appendChild(sensEl);
 
       // ── deduction chain + verdict (slice 20e, #295) ───────────────────
-      const chain = reference && reference.median != null
-        ? PricingEngine.deductionChain({ anchor: reference.median }) : null;
+      // Anchor the tax/mug/margin cut on the cheapest *market listing* (the
+      // inflated resale ask), not the auction-comp median — deducting resale
+      // friction off an auction-cleared price double-counts (see buyTarget).
+      // buyMax here therefore matches the headline buy max.
+      const chainAnchor = Number(s.marketCheapest);
+      const chain = (Number.isFinite(chainAnchor) && chainAnchor > 0)
+        ? PricingEngine.deductionChain({ anchor: chainAnchor }) : null;
       if (chain) {
         const ded = document.createElement('div');
         ded.className = 'rwth-card-ref rwth-card-ded';
         ded.textContent =
-          `median ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          `market ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
           + ` − ${Math.round(chain.mug * 100)}% mug − ${Math.round(chain.margin * 100)}% margin`
           + ` → buy max ${fmtChatPrice(chain.buyMax)}`;
         badge.appendChild(ded);
