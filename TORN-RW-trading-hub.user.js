@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.29
+// @version      0.3.30
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.29';
+  const SCRIPT_VERSION = '0.3.30';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5455,39 +5455,36 @@
         return;
       }
 
-      // Per-class routing (v0.3.0 slice 5). Classes that resolve to a
-      // PricingEngine key get the two-tier card; anything we can't route
-      // falls through to the legacy verdict badge.
-      const itemClassKey = resolveItemClass(cls);
-      if (itemClassKey) {
-        const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
-        const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
-        InlineRenderer.renderTwoTierCard(info, {
-          itemClass: itemClassKey,
-          rarity: cls && cls.rarity,
-          classTag,
-          bbFloor,
-          currentBid: listingPrice,
-          listingQuality: item.quality,
-          primaryBonusName: primaryBonus ? primaryBonus.name : null,
-          primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
-          strictTolerance: 0,
-          comps,
-          askingComps,
-          marketCheapest,
-          askingMedian,
-          askingCount,
-          widenedBase: Array.isArray(r.widenedBase) ? r.widenedBase.slice() : [],
-          margins: null,
-        });
-        return;
-      }
-
-      const verdict = PricingEngine.verdict(
-        { price: listingPrice || 0, quality: item.quality || 0 }, comps);
-      InlineRenderer.renderAuctionBadge(info, {
-        verdict, listingPrice, listingQuality: item.quality, bbFloor,
-        askingMedian, askingCount, classTag,
+      // Per-class routing (v0.3.0 slice 5). Mirror the ledger path's fallback
+      // (see ~line 2030): when a row doesn't resolve to a rarity-based key it
+      // still routes to the two-tier card — assaultArmor for armor, yellowWeapon
+      // for weapons — instead of dropping to the stripped legacy badge. Standard
+      // weapons (Enfield SA-80, Jackhammer, …) carry no rarity tier in
+      // /v2/torn/items, so resolveItemClass returned null and every weapon
+      // auction fell through to the one-line "no comp" badge while the SAME item
+      // rendered the full card on the ledger. Armor routes off its set, not
+      // rarity, which is why armors were unaffected (v0.3.30, #298 follow-up).
+      let itemClassKey = resolveItemClass(cls);
+      if (!itemClassKey) itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
+      const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
+      const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
+      InlineRenderer.renderTwoTierCard(info, {
+        itemClass: itemClassKey,
+        rarity: cls && cls.rarity,
+        classTag,
+        bbFloor,
+        currentBid: listingPrice,
+        listingQuality: item.quality,
+        primaryBonusName: primaryBonus ? primaryBonus.name : null,
+        primaryBonusValue: Number.isFinite(targetBonusValue) ? targetBonusValue : null,
+        strictTolerance: 0,
+        comps,
+        askingComps,
+        marketCheapest,
+        askingMedian,
+        askingCount,
+        widenedBase: Array.isArray(r.widenedBase) ? r.widenedBase.slice() : [],
+        margins: null,
       });
     },
     start() {
