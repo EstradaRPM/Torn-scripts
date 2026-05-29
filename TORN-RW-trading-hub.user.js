@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.34
+// @version      0.3.35
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.34';
+  const SCRIPT_VERSION = '0.3.35';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3467,10 +3467,11 @@
 
   // #300 — the bazaar floor is shown beside the market floor as a cross-check,
   // and a low-margin warning fires when they're "similar". The venue model
-  // treats bazaar as ~5% under market normally (see venueLadder), so we warn
-  // once the bazaar floor climbs to within 10% of the market floor — at that
-  // point the resale cushion you'd flip into is effectively gone. Bazaar stays
-  // OUT of the anchor/tiering math (PRD #296); this is display-only.
+  // treats bazaar as ~5% under market normally (see sellLadder), so we warn
+  // when the two floors sit within 10% of EACH OTHER (two-sided) — the normal
+  // resale cushion has collapsed. A bazaar floor far above market is a wide
+  // spread, not a thin one, and does NOT warn. Bazaar stays OUT of the
+  // anchor/tiering math (PRD #296); this is display-only.
   const SIMILAR_FLOORS_BAND = 0.10;
   function resolveMarketAnchor(listings, targetBonus, opts) {
     const threshold = (opts && Number.isFinite(Number(opts.jumpThreshold)))
@@ -4619,9 +4620,12 @@
     },
     _drillState: new WeakMap(),
     // #300 — bazaar floor beside the market floor as a cross-check, plus a
-    // low-margin warning when the two are "similar" (bazaar within
-    // SIMILAR_FLOORS_BAND of market — the resale cushion you'd flip into is
-    // gone). Display-only: bazaar never touches the anchor/tiering math (#296).
+    // low-margin warning when the two are "similar". Similar = the floors sit
+    // within SIMILAR_FLOORS_BAND of EACH OTHER (two-sided): the normal resale
+    // cushion (bazaar ~5% under market) has collapsed. A bazaar floor far
+    // ABOVE market is a *wide* spread, not a thin one, so it must NOT warn —
+    // the original one-sided test (bazaar ≥ 90% of market) mislabelled that.
+    // Display-only: bazaar never touches the anchor/tiering math (#296).
     // Returns [] when there's no bazaar floor to compare against.
     _floorCrossCheckEls(marketFloor, bazaarFloor) {
       const m = Number(marketFloor);
@@ -4636,13 +4640,13 @@
         line.textContent = `Cheapest on bazaar now — ${fmtChatPrice(b)}`;
       }
       els.push(line);
-      if (Number.isFinite(m) && m > 0 && b >= m * (1 - SIMILAR_FLOORS_BAND)) {
+      if (Number.isFinite(m) && m > 0 && Math.abs(b - m) <= m * SIMILAR_FLOORS_BAND) {
         const warn = document.createElement('div');
         warn.className = 'rwth-card-ref rwth-card-lowmargin';
-        const underPct = Math.max(0, Math.round((1 - b / m) * 100));
-        warn.textContent = underPct > 0
-          ? `Thin flip margin — bazaar is only ${underPct}% under market right now`
-          : 'Thin flip margin — bazaar floor is at or above market right now';
+        const diffPct = Math.round(Math.abs(b - m) / m * 100);
+        warn.textContent = diffPct <= 0
+          ? 'Thin flip margin — bazaar and market floors are level right now'
+          : `Thin flip margin — bazaar and market floors are within ${diffPct}% of each other right now`;
         els.push(warn);
       }
       return els;
