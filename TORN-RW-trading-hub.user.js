@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.35
+// @version      0.3.36
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.35';
+  const SCRIPT_VERSION = '0.3.36';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4626,18 +4626,22 @@
     // ABOVE market is a *wide* spread, not a thin one, so it must NOT warn —
     // the original one-sided test (bazaar ≥ 90% of market) mislabelled that.
     // Display-only: bazaar never touches the anchor/tiering math (#296).
-    // Returns [] when there's no bazaar floor to compare against.
-    _floorCrossCheckEls(marketFloor, bazaarFloor) {
+    // When `opts.bracketed` the floors are already restricted to the
+    // candidate's bonus tier (like-for-like), so the line says so; otherwise
+    // they're the raw cheapest listings. Returns [] when there's no bazaar
+    // floor to compare against.
+    _floorCrossCheckEls(marketFloor, bazaarFloor, opts) {
       const m = Number(marketFloor);
       const b = Number(bazaarFloor);
       if (!(Number.isFinite(b) && b > 0)) return [];
+      const lead = (opts && opts.bracketed) ? 'At your bonus level' : 'Cheapest now';
       const els = [];
       const line = document.createElement('div');
       line.className = 'rwth-card-ref rwth-card-crosscheck';
       if (Number.isFinite(m) && m > 0) {
-        line.textContent = `Cheapest now — market ${fmtChatPrice(m)} · bazaar ${fmtChatPrice(b)}`;
+        line.textContent = `${lead} — market ${fmtChatPrice(m)} · bazaar ${fmtChatPrice(b)}`;
       } else {
-        line.textContent = `Cheapest on bazaar now — ${fmtChatPrice(b)}`;
+        line.textContent = `${lead} — bazaar ${fmtChatPrice(b)}`;
       }
       els.push(line);
       if (Number.isFinite(m) && m > 0 && Math.abs(b - m) <= m * SIMILAR_FLOORS_BAND) {
@@ -4739,6 +4743,36 @@
       const bracket = resolveMarketAnchor(marketListings, s.primaryBonusValue);
       const anchorPrice = (bracket && bracket.anchor != null)
         ? bracket.anchor : s.marketCheapest;
+
+      // #300 follow-up — restrict the cross-check floors to the candidate's
+      // bonus bracket so market and bazaar are compared like-for-like (not a
+      // weak low-bonus market piece vs a strong high-bonus bazaar piece). The
+      // market side reuses the bracket anchor already shown as "Item market";
+      // the bazaar side is the cheapest bazaar listing whose bonus falls in the
+      // SAME tier window. Bazaar still never feeds the anchor/tiering math
+      // (#296) — this only filters which bazaar listing we display.
+      let crossMarketFloor, crossBazaarFloor, crossBracketed;
+      if (bracket && bracket.tier && Number.isFinite(Number(s.primaryBonusValue))) {
+        const lo = bracket.tier.thresholdBonus;
+        let hi = Infinity;
+        for (const t of (bracket.tiers || [])) {
+          if (t.thresholdBonus > lo && t.thresholdBonus < hi) hi = t.thresholdBonus;
+        }
+        const bazaarInBracket = (Array.isArray(s.askingComps) ? s.askingComps : [])
+          .filter(c => c.source === 'bazaar')
+          .map(c => ({ price: Number(c.price), bonus: Number(c.bonusValue) }))
+          .filter(c => Number.isFinite(c.price) && c.price > 0
+                       && Number.isFinite(c.bonus) && c.bonus >= lo && c.bonus < hi);
+        crossMarketFloor = anchorPrice;
+        crossBazaarFloor = bazaarInBracket.length
+          ? Math.min(...bazaarInBracket.map(c => c.price)) : null;
+        crossBracketed = true;
+      } else {
+        // No bracket / no bonus data → fall back to raw cheapest each side.
+        crossMarketFloor = s.marketCheapest;
+        crossBazaarFloor = s.bazaarCheapest;
+        crossBracketed = false;
+      }
 
       const buy = PricingEngine.buyTarget({
         itemClass: s.itemClass, comps: filtered,
@@ -4925,7 +4959,8 @@
       }
 
       // ── bazaar/market floor cross-check + low-margin warning (#300) ────
-      const crossEls = InlineRenderer._floorCrossCheckEls(s.marketCheapest, s.bazaarCheapest);
+      const crossEls = InlineRenderer._floorCrossCheckEls(
+        crossMarketFloor, crossBazaarFloor, { bracketed: crossBracketed });
       for (const el of crossEls) badge.appendChild(el);
 
       // ── typical days-to-clear (slice 10a, #275) ───────────────────────
