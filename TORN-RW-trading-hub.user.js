@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.33
+// @version      0.3.34
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.33';
+  const SCRIPT_VERSION = '0.3.34';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3857,14 +3857,27 @@
     },
 
     /**
-     * sellLadder({ itemClass, comps, marketCheapest, buyCost }) →
-     *   { auctionSafe, bazaar, market, forum, floor }
+     * sellLadder({ itemClass, comps, marketAnchor, marketCheapest, buyCost }) →
+     *   { auctionFloor, auctionClearing, bazaar, market, forum, floor }
      *
-     * Venue spread (PRD): bazaar < market = bazaar × 1.05 < forum.
-     * Anchor: `marketCheapest` when supplied, else comp median (the price
-     * column on cleared auctions). Forum heuristic: market × 1.10 (PRD —
-     * not fetched). Auction safe-bid: market × 0.85 (King: list-target
-     * minus 10–20%). Floor enforced ≥ buyCost so it never proposes a loss.
+     * Venue model (corrected — real-world structure, not the old PRD spread):
+     *   bazaar = forum  <  item market (~+5%)
+     * Bazaar and forum/trade-chat are the same "smart buyer" front — they take
+     * effort to reach, so they price the SAME and aggressively low. The item
+     * market sits ~5% above them yet clears fastest (built into Torn, biggest
+     * casual buyer pool, zero extra steps), so an attractive item-market price
+     * is always being trawled.
+     *
+     * Anchor: `marketAnchor` (the bonus-bracket price the buy-max already uses,
+     * #298) so the ladder and the headline tell ONE story. Falls back to the
+     * cheapest live listing, then the comp median. Anchoring on the global
+     * cheapest used to collide the bazaar rung with the buy-max → phantom
+     * zero-margin cards.
+     *
+     * Auction relist range: floor = anchor − ~15% (move-it price, King's
+     * list-target minus 10–20%); top = comp median (what comparable pieces
+     * actually clear for at auction). Floor enforced ≥ buyCost so it never
+     * proposes a loss.
      */
     sellLadder(args) {
       const a = args || {};
@@ -3872,18 +3885,22 @@
         .map(c => Number(c && c.price))
         .filter(p => Number.isFinite(p) && p > 0);
       const med = _median(prices);
+      const anchorIn = Number(a.marketAnchor);
       const mc  = Number(a.marketCheapest);
-      const anchor = Number.isFinite(mc) && mc > 0 ? mc : med;
+      const anchor = Number.isFinite(anchorIn) && anchorIn > 0 ? anchorIn
+        : (Number.isFinite(mc) && mc > 0 ? mc : med);
       if (anchor == null) {
-        return { auctionSafe: null, bazaar: null, market: null, forum: null, floor: null };
+        return { auctionFloor: null, auctionClearing: null,
+                 bazaar: null, market: null, forum: null, floor: null };
       }
       const market = Math.round(anchor);
       const bazaar = Math.round(market / 1.05);
-      const forum  = Math.round(market * 1.10);
-      const auctionSafe = Math.round(market * 0.85);
+      const forum  = bazaar; // same aggressive front as bazaar (see model above)
+      const auctionFloor    = Math.round(market * 0.85);
+      const auctionClearing = med != null ? Math.round(med) : null;
       const buyCost = Number(a.buyCost);
       const floor = Math.max(bazaar, Number.isFinite(buyCost) ? Math.round(buyCost) : 0);
-      return { auctionSafe, bazaar, market, forum, floor };
+      return { auctionFloor, auctionClearing, bazaar, market, forum, floor };
     },
 
     /**
@@ -4730,6 +4747,7 @@
       const thinReference = filtered.length > 0 && filtered.length < 5;
       const ladder = PricingEngine.sellLadder({
         itemClass: s.itemClass, comps: filtered,
+        marketAnchor: anchorPrice,
         marketCheapest: s.marketCheapest,
         buyCost: s.buyCost != null ? s.buyCost : (s.currentBid || 0),
       });
@@ -4919,22 +4937,33 @@
       }
 
       // ── ladder ────────────────────────────────────────────────────────
+      // Corrected venue model (see sellLadder): bazaar = forum < item market.
+      // Auction is a range — relist floor → typical clearing. All rungs anchor
+      // on the same bracket price the buy-max uses, so the card tells one story.
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
+      const fmtLadderRange = (lo, hi) => {
+        const a2 = (lo == null) ? null : Number(lo);
+        const b2 = (hi == null) ? null : Number(hi);
+        if (a2 == null && b2 == null) return null;
+        if (a2 == null) return fmtChatPrice(b2);
+        if (b2 == null) return fmtChatPrice(a2);
+        const loV = Math.min(a2, b2), hiV = Math.max(a2, b2);
+        return loV === hiV ? fmtChatPrice(loV) : `${fmtChatPrice(loV)}–${fmtChatPrice(hiV)}`;
+      };
       const rungs = [
-        ['Auction safe', ladder.auctionSafe],
-        ['Bazaar',       ladder.bazaar],
-        ['Market',       ladder.market],
-        ['Forum',        ladder.forum],
-        ['Floor',        ladder.floor],
+        ['Auction',        fmtLadderRange(ladder.auctionFloor, ladder.auctionClearing)],
+        ['Bazaar / Forum', ladder.bazaar != null ? fmtChatPrice(ladder.bazaar) : null],
+        ['Item market',    ladder.market != null ? fmtChatPrice(ladder.market) : null],
+        ['Floor',          ladder.floor  != null ? fmtChatPrice(ladder.floor)  : null],
       ];
-      for (const [label, value] of rungs) {
-        if (value == null) continue;
+      for (const [label, text] of rungs) {
+        if (text == null) continue;
         const span = document.createElement('span');
         const b = document.createElement('b');
         b.textContent = label;
         span.appendChild(b);
-        span.appendChild(document.createTextNode(fmtChatPrice(value)));
+        span.appendChild(document.createTextNode(text));
         ladderEl.appendChild(span);
       }
       if (s.askingCount && s.askingMedian != null) {
