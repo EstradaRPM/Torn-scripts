@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.31
+// @version      0.3.32
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.31';
+  const SCRIPT_VERSION = '0.3.32';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2030,8 +2030,11 @@
       itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
     }
 
-    const marketCheapest = askingShaped.length
-      ? Math.min(...askingShaped.map(c => c.price)) : null;
+    // Anchor fallback stays market-only — bazaar is excluded from anchor math
+    // (PRD #296), so a cheap bazaar piece must not pull the fallback floor down.
+    const marketAsking = askingComps.filter(c => (c.source || 'market') === 'market');
+    const marketCheapest = marketAsking.length
+      ? Math.min(...marketAsking.map(c => c.price)) : null;
     const primaryBonus = (item.bonuses || [])[0] || null;
     const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
 
@@ -3324,13 +3327,14 @@
   // market typically 15–25% above sellable). Slice 14 (#280).
   //
   // Returns { market, bazaar } arrays of normalised listings:
-  //   { price, bonusPct, qualityPct, sellerId, listingId, source }
+  //   { price, bonusPct, qualityPct, sellerId, sellerName, listingId, source }
   //
   // Cache: in-memory Map, 5-min TTL keyed by item id + bonus/quality criteria.
   // Listings move fast, so the long-TTL `Cache` (sold-comp store) is wrong here.
   //
-  // No new @connect hosts: market via existing weav3r; bazaar deferred until a
-  // permitted endpoint exists (returned as []).
+  // No new @connect hosts: a single weav3r ranked-weapons call returns both
+  // venues interleaved (bazaar rows carry playerId/playerName), so we split on
+  // source rather than fetching bazaar separately (#280).
   const LISTINGS_TTL_MS = 5 * 60 * 1000;
   const ListingsFetcher = {
     _cache: new Map(),
@@ -3354,15 +3358,22 @@
                    : w.bonusValue != null ? w.bonusValue : NaN);
       }
       const qualityPct = Number(w.quality != null ? w.quality : NaN);
+      // weav3r interleaves item-market and bazaar listings in one response.
+      // Bazaar rows carry the seller's playerId/playerName (the row links to
+      // their bazaar.php); item-market rows don't. This tag is load-bearing:
+      // downstream keeps bazaar OUT of the anchor/tiering math (PRD #296).
+      const isBazaar = w.playerId != null || w.playerName != null;
       return {
         price,
         bonusPct: Number.isFinite(bonusPct) ? bonusPct : null,
         qualityPct: Number.isFinite(qualityPct) ? qualityPct : null,
-        sellerId: w.sellerId != null ? w.sellerId
+        sellerId: w.playerId != null ? w.playerId
+                : w.sellerId != null ? w.sellerId
                 : w.seller != null ? w.seller : null,
+        sellerName: w.playerName != null ? w.playerName : null,
         listingId: w.listingId != null ? w.listingId
                  : w.id != null ? w.id : null,
-        source: 'market',
+        source: isBazaar ? 'bazaar' : 'market',
       };
     },
     _buildQuery(item) {
@@ -3395,13 +3406,18 @@
       const now   = Date.now();
       const hit   = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
+      // One weav3r call returns both venues interleaved; _shapeWeav3r tags each
+      // row's source so we split them here. Bazaar stays a separate array so the
+      // anchor/tiering math can exclude it (PRD #296) while the LISTED ladder +
+      // #300 cross-check still see it.
       let market = [];
+      let bazaar = [];
       try {
         const r = await Weav3rClient.search(query);
-        market = (r.weapons || []).map(ListingsFetcher._shapeWeav3r).filter(Boolean);
-      } catch { market = []; }
-      // Bazaar listings: no permitted bonus-searchable endpoint yet — see #280.
-      const bazaar = [];
+        const shaped = (r.weapons || []).map(ListingsFetcher._shapeWeav3r).filter(Boolean);
+        market = shaped.filter(l => l.source === 'market');
+        bazaar = shaped.filter(l => l.source === 'bazaar');
+      } catch { market = []; bazaar = []; }
       const data = { market, bazaar };
       ListingsFetcher._cache.set(key, { ts: now, data });
       return data;
@@ -5437,8 +5453,11 @@
             { bonusCount: (parsed.parsedBonuses || []).length })
         : null;
 
-      const marketCheapest = askingShaped.length
-        ? Math.min(...askingShaped.map(c => c.price)) : null;
+      // Market floor / anchor fallback stays market-only — bazaar is excluded
+      // from anchor math (PRD #296); a cheap bazaar piece must not pull it down.
+      const marketAsking = askingComps.filter(c => (c.source || 'market') === 'market');
+      const marketCheapest = marketAsking.length
+        ? Math.min(...marketAsking.map(c => c.price)) : null;
 
       // v0.3.0 slice 20a (#291) — no cleared comps. When asking listings still
       // exist, anchor a single-cut verdict on the asking floor instead of the
