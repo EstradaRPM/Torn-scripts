@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.32
+// @version      0.3.33
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.32';
+  const SCRIPT_VERSION = '0.3.33';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2035,6 +2035,11 @@
     const marketAsking = askingComps.filter(c => (c.source || 'market') === 'market');
     const marketCheapest = marketAsking.length
       ? Math.min(...marketAsking.map(c => c.price)) : null;
+    // Bazaar floor is display-only (#300) — a cross-check beside the market
+    // floor, never fed into the anchor/tiering math above.
+    const bazaarAsking = askingComps.filter(c => c.source === 'bazaar');
+    const bazaarCheapest = bazaarAsking.length
+      ? Math.min(...bazaarAsking.map(c => c.price)) : null;
     const primaryBonus = (item.bonuses || [])[0] || null;
     const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
 
@@ -2053,6 +2058,7 @@
         comps,
         askingComps,
         marketCheapest,
+        bazaarCheapest,
         askingMedian,
         askingCount,
         widenedBase: Array.isArray(composite.widenedBase) ? composite.widenedBase.slice() : [],
@@ -3077,6 +3083,9 @@
       /* v0.3.0 slice 19d — widened-base rows (SOLD ladder) + thin-ref label. */
       .rwth-card-ladder-table tr.rwth-card-ladder-widenedbase td { color: #d49ad4; font-style: italic; }
       .rwth-card-thin { color: #d49a78; font-style: italic; }
+      /* #300 — bazaar/market floor cross-check + low-margin warning */
+      .rwth-card-crosscheck { color: #9ab; }
+      .rwth-card-lowmargin { color: #e0b04a; font-weight: 700; }
 
       /* v0.3.0 slice 20d — per-listing quality annotation on floor listings */
       .rwth-card-askfloor { margin-top: 4px; font-size: 10px; }
@@ -3455,6 +3464,14 @@
   //      below the first jump (or no target) falls back to the global floor.
   // Pure: no DOM, no network, no globals.
   const BRACKET_JUMP_THRESHOLD = 0.10;
+
+  // #300 — the bazaar floor is shown beside the market floor as a cross-check,
+  // and a low-margin warning fires when they're "similar". The venue model
+  // treats bazaar as ~5% under market normally (see venueLadder), so we warn
+  // once the bazaar floor climbs to within 10% of the market floor — at that
+  // point the resale cushion you'd flip into is effectively gone. Bazaar stays
+  // OUT of the anchor/tiering math (PRD #296); this is display-only.
+  const SIMILAR_FLOORS_BAND = 0.10;
   function resolveMarketAnchor(listings, targetBonus, opts) {
     const threshold = (opts && Number.isFinite(Number(opts.jumpThreshold)))
       ? Number(opts.jumpThreshold) : BRACKET_JUMP_THRESHOLD;
@@ -4535,6 +4552,10 @@
         badge.appendChild(verd);
       }
 
+      // ── bazaar/market floor cross-check + low-margin warning (#300) ────
+      const crossEls = InlineRenderer._floorCrossCheckEls(s.marketFloor, s.bazaarCheapest);
+      for (const el of crossEls) badge.appendChild(el);
+
       // ── asking floor listings with per-listing quality annotation (#294) ──
       const askFloor = document.createElement('div');
       askFloor.className = 'rwth-card-askfloor';
@@ -4580,6 +4601,35 @@
       InlineRenderer._paintCard(badge, drill);
     },
     _drillState: new WeakMap(),
+    // #300 — bazaar floor beside the market floor as a cross-check, plus a
+    // low-margin warning when the two are "similar" (bazaar within
+    // SIMILAR_FLOORS_BAND of market — the resale cushion you'd flip into is
+    // gone). Display-only: bazaar never touches the anchor/tiering math (#296).
+    // Returns [] when there's no bazaar floor to compare against.
+    _floorCrossCheckEls(marketFloor, bazaarFloor) {
+      const m = Number(marketFloor);
+      const b = Number(bazaarFloor);
+      if (!(Number.isFinite(b) && b > 0)) return [];
+      const els = [];
+      const line = document.createElement('div');
+      line.className = 'rwth-card-ref rwth-card-crosscheck';
+      if (Number.isFinite(m) && m > 0) {
+        line.textContent = `Cheapest now — market ${fmtChatPrice(m)} · bazaar ${fmtChatPrice(b)}`;
+      } else {
+        line.textContent = `Cheapest on bazaar now — ${fmtChatPrice(b)}`;
+      }
+      els.push(line);
+      if (Number.isFinite(m) && m > 0 && b >= m * (1 - SIMILAR_FLOORS_BAND)) {
+        const warn = document.createElement('div');
+        warn.className = 'rwth-card-ref rwth-card-lowmargin';
+        const underPct = Math.max(0, Math.round((1 - b / m) * 100));
+        warn.textContent = underPct > 0
+          ? `Thin flip margin — bazaar is only ${underPct}% under market right now`
+          : 'Thin flip margin — bazaar floor is at or above market right now';
+        els.push(warn);
+      }
+      return els;
+    },
     _floorListingEls(askingComps, listingQuality, maxShow) {
       const sorted = (askingComps || [])
         .filter(c => Number.isFinite(Number(c.price)))
@@ -4851,6 +4901,10 @@
           badge.appendChild(verd);
         }
       }
+
+      // ── bazaar/market floor cross-check + low-margin warning (#300) ────
+      const crossEls = InlineRenderer._floorCrossCheckEls(s.marketCheapest, s.bazaarCheapest);
+      for (const el of crossEls) badge.appendChild(el);
 
       // ── typical days-to-clear (slice 10a, #275) ───────────────────────
       // Hidden until the class has ≥3 logged buy→sold sales; never blocks render.
@@ -5458,6 +5512,11 @@
       const marketAsking = askingComps.filter(c => (c.source || 'market') === 'market');
       const marketCheapest = marketAsking.length
         ? Math.min(...marketAsking.map(c => c.price)) : null;
+      // Bazaar floor is display-only (#300) — a cross-check beside the market
+      // floor, never fed into the anchor/tiering math.
+      const bazaarAsking = askingComps.filter(c => c.source === 'bazaar');
+      const bazaarCheapest = bazaarAsking.length
+        ? Math.min(...bazaarAsking.map(c => c.price)) : null;
 
       // v0.3.0 slice 20a (#291) — no cleared comps. When asking listings still
       // exist, anchor a single-cut verdict on the asking floor instead of the
@@ -5467,7 +5526,7 @@
         if (marketCheapest != null) {
           InlineRenderer.renderMarketFloorCard(info, {
             classTag, currentBid: listingPrice,
-            marketFloor: marketCheapest, askingMedian, askingCount,
+            marketFloor: marketCheapest, bazaarCheapest, askingMedian, askingCount,
             askingComps, listingQuality: parsed.quality,
           });
         } else {
@@ -5504,6 +5563,7 @@
         comps,
         askingComps,
         marketCheapest,
+        bazaarCheapest,
         askingMedian,
         askingCount,
         widenedBase: Array.isArray(r.widenedBase) ? r.widenedBase.slice() : [],
