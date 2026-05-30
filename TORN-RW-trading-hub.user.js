@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.38
+// @version      0.3.39
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.38';
+  const SCRIPT_VERSION = '0.3.39';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3002,6 +3002,11 @@
         font: 600 11px Consolas, monospace; line-height: 1.4;
         background: #0a1420; color: #cfe;
         border: 1px solid #00e5ff44;
+        /* #304 — the card is its OWN query container so it reflows to its own
+           width, not the viewport: the same card renders in a 360px ledger
+           panel, a maximized panel, and a wide auction row on one viewport. */
+        container-type: inline-size;
+        container-name: rwth-card;
       }
       .rwth-tier-good    { background: #103a1d; color: #7ed098; border-color: #2c5e3b; }
       .rwth-tier-fair    { background: #102232; color: #5dc6f0; border-color: #2a4d70; }
@@ -3109,6 +3114,62 @@
       .rwth-card-ladder-subtable td { padding: 1px 6px; color: #cfe; }
       .rwth-card-ladder-subtable a { color: #5dc6f0; text-decoration: none; }
       .rwth-card-ladder-subtable a:hover { text-decoration: underline; }
+
+      /* #304 slice 3 — container-query responsive system. Mobile-first: the
+         DEFAULT (and the fallback where @container is unsupported) is the narrow
+         STACKED layout — the unified ladder collapses to one block per bonus
+         level (label / sold / for-sale), each cell prefixed by its column name.
+         @container tiers then UPGRADE to the columnar table (mid) and reveal the
+         sold-range column (wide). Keyed off the card's own width, so the same
+         card is legible in the 360px ledger panel and a wide auction row alike.
+         Breakpoints are HITL — tuned by eye on laptop / Fold-7 unfolded/folded. */
+      .rwth-card-ladder-unified-table { width: 100%; }
+      .rwth-card-ladder-unified-table,
+      .rwth-card-ladder-unified-table > tbody,
+      .rwth-card-ladder-unified-table > tbody > tr,
+      .rwth-card-ladder-unified-table > tbody > tr > td { display: block; }
+      .rwth-card-ladder-unified-table > thead { display: none; }
+      .rwth-card-ladder-unified-table > tbody > tr.rwth-card-ladder-row {
+        border-top: 1px dashed #00e5ff22; padding: 3px 0 4px;
+      }
+      .rwth-card-ladder-unified-table > tbody > tr.rwth-card-ladder-row:first-child {
+        border-top: none; padding-top: 0;
+      }
+      /* In stacked mode each cell names its column ("sold: …", "for sale: …"). */
+      .rwth-card-ladder-unified-table td.rwth-card-ladder-cell::before {
+        content: attr(data-label) ': '; color: #8aa;
+      }
+      /* Wide-tier-only column (sold price range) — hidden at narrow + mid. */
+      .rwth-card-ladder-unified-table .rwth-card-ladder-range,
+      .rwth-card-ladder-unified-table .rwth-card-ladder-range-head { display: none; }
+      /* Drill-in detail scrolls rather than bursting the card at narrow width. */
+      .rwth-card-ladder-unified-table tr.rwth-card-ladder-detail > td { overflow-x: auto; }
+
+      /* MID tier — restore the columnar table with side-by-side sold/for-sale.
+         320px so the ~360px ledger panel reaches it; a Fold-7 folded stays below. */
+      @container rwth-card (min-width: 320px) {
+        .rwth-card-ladder-unified-table { display: table; }
+        .rwth-card-ladder-unified-table > thead { display: table-header-group; }
+        .rwth-card-ladder-unified-table > tbody { display: table-row-group; }
+        .rwth-card-ladder-unified-table > tbody > tr { display: table-row; }
+        .rwth-card-ladder-unified-table > tbody > tr > td { display: table-cell; }
+        .rwth-card-ladder-unified-table > tbody > tr.rwth-card-ladder-row {
+          border-top: none; padding: 0;
+        }
+        .rwth-card-ladder-unified-table td.rwth-card-ladder-cell::before { content: none; }
+        .rwth-card-ladder-unified-table tr.rwth-card-ladder-detail > td { overflow-x: visible; }
+        .rwth-card-headline { gap: 6px 14px; }
+        .rwth-card-ladder { gap: 2px 12px; }
+      }
+
+      /* WIDE tier — full column set: reveal the sold price-range column. */
+      @container rwth-card (min-width: 480px) {
+        .rwth-card-ladder-unified-table .rwth-card-ladder-range,
+        .rwth-card-ladder-unified-table .rwth-card-ladder-range-head { display: table-cell; }
+        .rwth-card-headline { gap: 6px 18px; }
+        .rwth-card-ladder { gap: 3px 16px; }
+      }
+      .rwth-card-ladder-range { color: #8aa; }
 
       /* Ledger per-row Price-check panel. */
       .rwth-price-panel {
@@ -5325,7 +5386,9 @@
       table.className = 'rwth-card-drill-table rwth-card-ladder-table rwth-card-ladder-unified-table';
       const thead = document.createElement('thead');
       const firstHead = useQuality ? 'quality' : 'bonus %';
-      thead.innerHTML = `<tr><th>${firstHead}</th><th>sold (typ · n)</th><th>for sale (low · n)</th></tr>`;
+      thead.innerHTML = `<tr><th>${firstHead}</th><th>sold (typ · n)</th>`
+        + `<th class="rwth-card-ladder-range-head">sold range</th>`
+        + `<th>for sale (low · n)</th></tr>`;
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
 
@@ -5344,7 +5407,7 @@
           e.stopPropagation();
           if (openId === id) { closeOpen(); return; }
           closeOpen();
-          const detail = InlineRenderer._buildLadderDetailRow(side, rows, 3);
+          const detail = InlineRenderer._buildLadderDetailRow(side, rows, 4);
           tr.classList.add('expanded');
           caret.textContent = '▾';
           tr.parentNode.insertBefore(detail, tr.nextSibling);
@@ -5397,6 +5460,7 @@
         // SOLD cell — drill target for past sales.
         const soldCell = document.createElement('td');
         soldCell.classList.add('rwth-card-ladder-cell');
+        soldCell.dataset.label = 'sold';
         if (b.sold) {
           const caret = document.createElement('span');
           caret.className = 'rwth-card-ladder-caret';
@@ -5410,9 +5474,25 @@
         }
         tr.appendChild(soldCell);
 
+        // SOLD-range cell — wide tier only (CSS-gated). Shows the spread of past
+        // sale prices behind the typical, so a wide screen exposes how tight the
+        // comp set is. min/max come straight from the mergeLadder sold summary.
+        const rangeCell = document.createElement('td');
+        rangeCell.className = 'rwth-card-ladder-range';
+        if (b.sold) {
+          rangeCell.textContent = b.sold.min === b.sold.max
+            ? fmtChatPrice(b.sold.min)
+            : `${fmtChatPrice(b.sold.min)}–${fmtChatPrice(b.sold.max)}`;
+        } else {
+          rangeCell.classList.add('rwth-card-ladder-blank');
+          rangeCell.textContent = '—';
+        }
+        tr.appendChild(rangeCell);
+
         // FOR-SALE cell — drill target for live listings.
         const listedCell = document.createElement('td');
         listedCell.classList.add('rwth-card-ladder-cell');
+        listedCell.dataset.label = 'for sale';
         if (b.listed) {
           const caret = document.createElement('span');
           caret.className = 'rwth-card-ladder-caret';
