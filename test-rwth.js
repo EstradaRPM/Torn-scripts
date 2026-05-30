@@ -824,3 +824,34 @@ test('mergeLadder: comps with no bonus value are skipped on the bonus axis', () 
   assert.strictEqual(out.length, 1);
   assert.strictEqual(out[0].key, 15);
 });
+
+// ── mergeLadder spread / flip-margin (#303) ──────────────────────────────────
+test('mergeLadder: spread = listedCheapest − soldMedian when both sides present', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps:   [{ price: 100, bonusValue: 15 }],   // sold median 100
+    listedComps: [{ price: 130, bonusValue: 15 }, { price: 150, bonusValue: 15 }], // cheapest 130
+    axis: 'bonus', ownKey: 15,
+  });
+  const b = out.find(x => x.key === 15);
+  assert.strictEqual(b.spread.abs, 30);
+  assert.strictEqual(b.spread.pct, 0.3);   // (130 − 100) / 100
+});
+
+test('mergeLadder: spread is null when the for-sale side is missing', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps: [{ price: 100, bonusValue: 15 }], listedComps: [],
+    axis: 'bonus', ownKey: 15,
+  });
+  assert.strictEqual(out.find(x => x.key === 15).spread, null);
+});
+
+test('mergeLadder: spread is null when the sold side is missing', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps: [], listedComps: [{ price: 130, bonusValue: 15 }],
+    axis: 'bonus', ownKey: 15,
+  });
+  assert.strictEqual(out.find(x => x.key === 15).spread, null);
+});

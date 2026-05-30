@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.37
+// @version      0.3.38
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.37';
+  const SCRIPT_VERSION = '0.3.38';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3071,6 +3071,9 @@
       .rwth-card-ladder-unified-table td.rwth-card-ladder-cell { white-space: nowrap; }
       .rwth-card-ladder-blank { color: #556; }
       .rwth-card-ladder-cheapest { color: #7ed098; }
+      /* #303 — flip-margin spread (own row in the table + verdict-zone echo). */
+      .rwth-card-ladder-spread { color: #e0b04a; font-weight: 700; }
+      .rwth-card-flip { color: #e0b04a; font-weight: 700; }
       /* v0.3.0 slice 19c — widened-bonus rows (SOLD ladder only). */
       .rwth-card-ladder-table tr.rwth-card-ladder-widened td { font-style: italic; color: #aab; }
       .rwth-card-ladder-table tr.rwth-card-ladder-widened-mixed td { color: #cbb482; }
@@ -3629,7 +3632,8 @@
    *   sorted (desc by `sort`) array of buckets, each:
    *     { key, label, sort, isOwn,
    *       sold:   { median, min, max, count, rows } | null,
-   *       listed: { cheapest, count, rows }         | null }
+   *       listed: { cheapest, count, rows }         | null,
+   *       spread: { abs, pct }                      | null }
    *
    * Absorbs the per-comp bucketing that used to be split across
    * _buildBonusLadder / _qualityBuckets / _qualityBucketIndex. A bucket appears
@@ -3637,6 +3641,11 @@
    * groups by exact bonus %; quality axis groups into the class-tiered bands.
    * `ownKey` is the candidate's own axis value (bonus % or raw quality %) and is
    * resolved to the matching bucket to flag `isOwn`.
+   *
+   * `spread` (#303) is the gap between the for-sale floor and the sold typical —
+   * the flip-margin King eyeballs by hand. Populated only when the bucket has
+   * BOTH a sold median and a for-sale cheapest: `abs = listedCheapest −
+   * soldMedian`, `pct = abs / soldMedian`. Null when either side is missing.
    */
   function mergeLadder({ soldComps, listedComps, axis, ownKey, itemClass } = {}) {
     const useQuality = axis === 'quality';
@@ -3693,6 +3702,14 @@
         listed = { cheapest: Math.min(...prices), count: listedRows.length, rows: listedRows };
       }
       if (!sold && !listed) continue;
+      // Spread (#303) — flip-margin: for-sale floor vs sold typical. Only when
+      // both sides are present; median is filtered to prices > 0 so it's safe
+      // as a divisor.
+      let spread = null;
+      if (sold && listed) {
+        const abs = listed.cheapest - sold.median;
+        spread = { abs, pct: sold.median ? abs / sold.median : null };
+      }
       out.push({
         key: g.key,
         label: g.label,
@@ -3700,6 +3717,7 @@
         isOwn: ownResolved != null && g.key === ownResolved,
         sold,
         listed,
+        spread,
       });
     }
     out.sort((a, b) => b.sort - a.sort);
@@ -5071,6 +5089,27 @@
         }
       }
 
+      // ── flip-margin echo (#303) ───────────────────────────────────────
+      // Surface the spread on the candidate's own bonus level (for-sale floor
+      // vs sold typical) right by the verdict, so the go/no-go gap is visible
+      // without opening the drilldown. Read from the same pure mergeLadder the
+      // table uses, on the bonus axis (the candidate's own bonus).
+      const flipBuckets = mergeLadder({
+        soldComps: filtered,
+        listedComps: Array.isArray(s.askingComps) ? s.askingComps : [],
+        axis: 'bonus',
+        ownKey: Number(s.primaryBonusValue),
+        itemClass: s.itemClass,
+      });
+      const ownFlip = flipBuckets.find(b => b.isOwn && b.spread);
+      if (ownFlip) {
+        const flip = document.createElement('div');
+        flip.className = 'rwth-card-ref rwth-card-flip';
+        flip.textContent = `Flip margin ${InlineRenderer._fmtSpreadPct(ownFlip.spread.pct)}`
+          + ` — for-sale floor ${fmtChatPrice(ownFlip.listed.cheapest)} vs sold typical ${fmtChatPrice(ownFlip.sold.median)} at your bonus`;
+        badge.appendChild(flip);
+      }
+
       // ── bazaar/market floor cross-check + low-margin warning (#300) ────
       const crossEls = InlineRenderer._floorCrossCheckEls(
         crossMarketFloor, crossBazaarFloor, { bracketed: crossBracketed });
@@ -5345,6 +5384,14 @@
         const labelCell = document.createElement('td');
         const tag = b.isOwn ? ' ← yours' : '';
         labelCell.textContent = `${b.label}${tag}${widenedSuffix}`;
+        // Spread (#303) — the flip-margin on the candidate's own level, the gap
+        // between for-sale floor and sold typical. Only the own row carries it.
+        if (b.isOwn && b.spread) {
+          const sp = document.createElement('span');
+          sp.className = 'rwth-card-ladder-spread';
+          sp.textContent = ` ${InlineRenderer._fmtSpreadPct(b.spread.pct)} to flip`;
+          labelCell.appendChild(sp);
+        }
         tr.appendChild(labelCell);
 
         // SOLD cell — drill target for past sales.
@@ -5448,6 +5495,14 @@
       td.appendChild(sub);
       tr.appendChild(td);
       return tr;
+    },
+    // #303 — signed, rounded spread %, shared by the unified-table own row and
+    // the verdict-zone flip-margin echo so they read identically.
+    _fmtSpreadPct(pct) {
+      const v = Number(pct);
+      if (!Number.isFinite(v)) return '—';
+      const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
+      return `${sign}${Math.abs(Math.round(v * 100))}%`;
     },
     _fmtDate(ts) {
       const n = Number(ts);
