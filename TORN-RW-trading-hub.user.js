@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.36
+// @version      0.3.37
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.36';
+  const SCRIPT_VERSION = '0.3.37';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3066,16 +3066,10 @@
       .rwth-card-drill-table tr.rwth-card-ladder-own td { color: #00e5ff; font-weight: 700; }
       .rwth-card-drill-empty { color: #8aa; font-style: italic; }
 
-      /* v0.3.0 slice 14 — SOLD vs LISTED ladders, side-by-side. */
-      .rwth-card-ladders {
-        display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-        margin-top: 4px;
-      }
-      .rwth-card-ladder-col { min-width: 0; }
-      .rwth-card-ladder-title {
-        color: #8aa; font-size: 10px; letter-spacing: 0.5px;
-        margin-bottom: 2px; text-transform: uppercase;
-      }
+      /* #302 slice 1 — unified evidence ladder (SOLD + FOR-SALE in one table). */
+      .rwth-card-ladder-unified { margin-top: 4px; min-width: 0; }
+      .rwth-card-ladder-unified-table td.rwth-card-ladder-cell { white-space: nowrap; }
+      .rwth-card-ladder-blank { color: #556; }
       .rwth-card-ladder-cheapest { color: #7ed098; }
       /* v0.3.0 slice 19c — widened-bonus rows (SOLD ladder only). */
       .rwth-card-ladder-table tr.rwth-card-ladder-widened td { font-style: italic; color: #aab; }
@@ -3097,9 +3091,9 @@
       /* v0.3.0 slice 10a — typical days-to-clear (VelocityTracker) */
       .rwth-card-velocity { color: #8ad0c0; }
 
-      /* v0.3.0 slice 16 — per-row drill-down inside the ladders. */
-      .rwth-card-ladder-table tr.rwth-card-ladder-row { cursor: pointer; }
-      .rwth-card-ladder-table tr.rwth-card-ladder-row:hover td { background: #0d1f2a; }
+      /* v0.3.0 slice 16 — per-cell drill-down inside the unified ladder. */
+      .rwth-card-ladder-table td.rwth-card-ladder-clickable { cursor: pointer; }
+      .rwth-card-ladder-table td.rwth-card-ladder-clickable:hover { background: #0d1f2a; }
       .rwth-card-ladder-table tr.rwth-card-ladder-row.expanded td { background: #0d1f2a; }
       .rwth-card-ladder-caret { color: #5dc6f0; display: inline-block; width: 9px; margin-right: 3px; }
       .rwth-card-ladder-detail td { padding: 0; background: #07111a; }
@@ -3591,6 +3585,125 @@
     const s = [...values].sort((a, b) => a - b);
     const m = Math.floor(s.length / 2);
     return s.length % 2 !== 0 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+
+  // ─── mergeLadder (pure) — #302 slice 1 ───────────────────────────────────────
+  // Class-tiered quality buckets (yellow default / orange / red), unchanged from
+  // the former InlineRenderer._qualityBuckets.
+  function _qualityBuckets(itemClass) {
+    const s = String(itemClass || '').toLowerCase();
+    if (s.includes('orange')) {
+      return [
+        { lo: 0,   hi: 150, label: '<150%' },
+        { lo: 150, hi: 200, label: '150–199%' },
+        { lo: 200, hi: 250, label: '200–249%' },
+        { lo: 250, hi: Infinity, label: '250%+' },
+      ];
+    }
+    if (s.includes('red')) {
+      return [
+        { lo: 0,   hi: 200, label: '<200%' },
+        { lo: 200, hi: 300, label: '200–299%' },
+        { lo: 300, hi: 400, label: '300–399%' },
+        { lo: 400, hi: Infinity, label: '400%+' },
+      ];
+    }
+    return [
+      { lo: 0,   hi: 100, label: '<100%' },
+      { lo: 100, hi: 130, label: '100–129%' },
+      { lo: 130, hi: 150, label: '130–149%' },
+      { lo: 150, hi: Infinity, label: '150%+' },
+    ];
+  }
+  function _qualityBucketIndex(q, buckets) {
+    const v = Number(q);
+    if (!Number.isFinite(v)) return -1;
+    for (let i = 0; i < buckets.length; i++) {
+      if (v >= buckets[i].lo && v < buckets[i].hi) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * mergeLadder({ soldComps, listedComps, axis, ownKey, itemClass }) →
+   *   sorted (desc by `sort`) array of buckets, each:
+   *     { key, label, sort, isOwn,
+   *       sold:   { median, min, max, count, rows } | null,
+   *       listed: { cheapest, count, rows }         | null }
+   *
+   * Absorbs the per-comp bucketing that used to be split across
+   * _buildBonusLadder / _qualityBuckets / _qualityBucketIndex. A bucket appears
+   * if it has priced data on either side; the missing side is null. Bonus axis
+   * groups by exact bonus %; quality axis groups into the class-tiered bands.
+   * `ownKey` is the candidate's own axis value (bonus % or raw quality %) and is
+   * resolved to the matching bucket to flag `isOwn`.
+   */
+  function mergeLadder({ soldComps, listedComps, axis, ownKey, itemClass } = {}) {
+    const useQuality = axis === 'quality';
+    const buckets = useQuality ? _qualityBuckets(itemClass) : null;
+    const keyOf = (c) => {
+      if (useQuality) {
+        const idx = _qualityBucketIndex(c && c.quality, buckets);
+        return idx < 0 ? null : idx;
+      }
+      if (!c || c.bonusValue == null) return null;
+      const k = Number(c.bonusValue);
+      return Number.isFinite(k) ? k : null;
+    };
+    const labelOf = (key) => (useQuality ? buckets[key].label : `${key}%`);
+    const map = new Map(); // key → { key, label, sort, soldRows, listedRows }
+    const add = (c, side) => {
+      if (!c) return;
+      const k = keyOf(c);
+      if (k == null) return;
+      if (!map.has(k)) map.set(k, { key: k, label: labelOf(k), sort: k, soldRows: [], listedRows: [] });
+      map.get(k)[side].push(c);
+    };
+    for (const c of (Array.isArray(soldComps) ? soldComps : [])) add(c, 'soldRows');
+    for (const c of (Array.isArray(listedComps) ? listedComps : [])) add(c, 'listedRows');
+
+    let ownResolved = null;
+    if (useQuality) {
+      const oi = _qualityBucketIndex(ownKey, buckets);
+      if (oi >= 0) ownResolved = oi;
+    } else {
+      const ob = Number(ownKey);
+      if (Number.isFinite(ob)) ownResolved = ob;
+    }
+
+    const priced = (rows) => rows.filter(c => Number.isFinite(Number(c.price)) && Number(c.price) > 0);
+    const out = [];
+    for (const g of map.values()) {
+      const soldRows = priced(g.soldRows);
+      const listedRows = priced(g.listedRows);
+      let sold = null;
+      if (soldRows.length) {
+        const prices = soldRows.map(c => Number(c.price));
+        sold = {
+          median: _median(prices),
+          min: Math.min(...prices),
+          max: Math.max(...prices),
+          count: soldRows.length,
+          rows: soldRows,
+        };
+      }
+      let listed = null;
+      if (listedRows.length) {
+        const prices = listedRows.map(c => Number(c.price));
+        listed = { cheapest: Math.min(...prices), count: listedRows.length, rows: listedRows };
+      }
+      if (!sold && !listed) continue;
+      out.push({
+        key: g.key,
+        label: g.label,
+        sort: g.sort,
+        isOwn: ownResolved != null && g.key === ownResolved,
+        sold,
+        listed,
+      });
+    }
+    out.sort((a, b) => b.sort - a.sort);
+    return out;
   }
 
   // ─── CompWidener (pure) ─────────────────────────────────────────────────────
@@ -5107,9 +5220,10 @@
       math.textContent = InlineRenderer._deductionMath(ctx, buy, reference, filtered);
       wrap.appendChild(math);
 
-      // bonus-% ladders — SOLD (cleared) and LISTED (asking) side-by-side.
-      // Verdict math uses SOLD only; LISTED informs spread (PRD #265 Story 5/6,
-      // slice 14 issue #280). King: item-market asks run 15–25% above sellable.
+      // Unified evidence ladder — one table keyed by bonus % (or quality bucket)
+      // co-locating each level's SOLD summary and FOR-SALE summary (#302 slice 1,
+      // PRD #301). Verdict math still uses SOLD only; the for-sale side informs
+      // spread (later slice). King: item-market asks run 15–25% above sellable.
       const axis = drill.axis === 'quality' ? 'quality' : 'bonus';
       const askingArr = Array.isArray(ctx.askingComps) ? ctx.askingComps : [];
       const cheapest = askingArr.reduce((m, c) => {
@@ -5117,11 +5231,6 @@
         if (!Number.isFinite(p) || p <= 0) return m;
         return m == null || p < m ? p : m;
       }, null);
-      const ladders = document.createElement('div');
-      ladders.className = 'rwth-card-ladders';
-      const soldEmpty = axis === 'quality'
-        ? (filtered.length ? 'no sales list a quality %' : 'nothing matches your filters')
-        : (filtered.length ? 'no sales list a bonus %'   : 'nothing matches your filters');
       // v0.3.15 slice 19c (#287) — when the ref line ran auto bonus filtering,
       // surface which ladder rows are strict-only vs widened. Predicate is
       // omitted (no marker) when the user manually overrode the bonus knob.
@@ -5133,149 +5242,94 @@
         ? (c) => c && c.bonusValue != null && Number.isFinite(Number(c.bonusValue))
                   && Math.abs(Number(c.bonusValue) - targetBonusNum) <= strictTolNum
         : null;
-      ladders.appendChild(InlineRenderer._buildBonusLadder({
-        title: 'Sold (completed)',
-        kind: 'sold',
-        comps: filtered,
+      const ownKey = axis === 'quality'
+        ? Number(ctx && ctx.listingQuality)
+        : Number(ctx && ctx.primaryBonusValue);
+      const merged = mergeLadder({
+        soldComps: filtered,
+        listedComps: askingArr,
         axis,
-        ctx,
-        cheapestPrice: null,
-        emptyText: soldEmpty,
-        isStrict: soldIsStrict,
-      }));
-      ladders.appendChild(InlineRenderer._buildBonusLadder({
-        title: 'For sale now',
-        kind: 'listed',
-        comps: askingArr,
+        ownKey,
+        itemClass: ctx && ctx.itemClass,
+      });
+      const emptyText = (filtered.length || askingArr.length)
+        ? (axis === 'quality' ? 'no comps list a quality %' : 'no comps list a bonus %')
+        : 'nothing matches your filters';
+      wrap.appendChild(InlineRenderer._buildUnifiedLadder({
+        buckets: merged,
         axis,
-        ctx,
         cheapestPrice: cheapest,
-        emptyText: 'nothing for sale right now',
+        isStrict: soldIsStrict,
+        emptyText,
       }));
-      wrap.appendChild(ladders);
 
       return wrap;
     },
-    _qualityBuckets(itemClass) {
-      const s = String(itemClass || '').toLowerCase();
-      if (s.includes('orange')) {
-        return [
-          { lo: 0,   hi: 150, label: '<150%' },
-          { lo: 150, hi: 200, label: '150–199%' },
-          { lo: 200, hi: 250, label: '200–249%' },
-          { lo: 250, hi: Infinity, label: '250%+' },
-        ];
-      }
-      if (s.includes('red')) {
-        return [
-          { lo: 0,   hi: 200, label: '<200%' },
-          { lo: 200, hi: 300, label: '200–299%' },
-          { lo: 300, hi: 400, label: '300–399%' },
-          { lo: 400, hi: Infinity, label: '400%+' },
-        ];
-      }
-      return [
-        { lo: 0,   hi: 100, label: '<100%' },
-        { lo: 100, hi: 130, label: '100–129%' },
-        { lo: 130, hi: 150, label: '130–149%' },
-        { lo: 150, hi: Infinity, label: '150%+' },
-      ];
-    },
-    _qualityBucketIndex(q, buckets) {
-      const v = Number(q);
-      if (!Number.isFinite(v)) return -1;
-      for (let i = 0; i < buckets.length; i++) {
-        if (v >= buckets[i].lo && v < buckets[i].hi) return i;
-      }
-      return -1;
-    },
-    _buildBonusLadder({ title, kind, comps, axis, ctx, cheapestPrice, emptyText, isStrict }) {
-      const col = document.createElement('div');
-      col.className = 'rwth-card-ladder-col';
-      const h = document.createElement('div');
-      h.className = 'rwth-card-ladder-title';
-      h.textContent = title;
-      col.appendChild(h);
-
+    // One unified table from mergeLadder output. Each row co-locates the level's
+    // SOLD summary (median · count) and FOR-SALE summary (cheapest · count); the
+    // sold and for-sale cells are independent drill targets, each with its own
+    // caret, sharing one-open-at-a-time behaviour across the whole table.
+    _buildUnifiedLadder({ buckets, axis, cheapestPrice, isStrict, emptyText }) {
+      const wrap = document.createElement('div');
+      wrap.className = 'rwth-card-ladder-unified';
       const useQuality = axis === 'quality';
-      const buckets = useQuality ? InlineRenderer._qualityBuckets(ctx && ctx.itemClass) : null;
-      const arr = Array.isArray(comps) ? comps : [];
-      const groups = new Map(); // key → { label, sort, rows }
-      if (useQuality) {
-        for (const c of arr) {
-          if (!c) continue;
-          const idx = InlineRenderer._qualityBucketIndex(c.quality, buckets);
-          if (idx < 0) continue;
-          if (!groups.has(idx)) groups.set(idx, { label: buckets[idx].label, sort: idx, rows: [] });
-          groups.get(idx).rows.push(c);
-        }
-      } else {
-        for (const c of arr) {
-          if (!c || c.bonusValue == null) continue;
-          const k = Number(c.bonusValue);
-          if (!Number.isFinite(k)) continue;
-          if (!groups.has(k)) groups.set(k, { label: `${k}%`, sort: k, rows: [] });
-          groups.get(k).rows.push(c);
-        }
-      }
-      if (!groups.size) {
+
+      if (!Array.isArray(buckets) || !buckets.length) {
         const empty = document.createElement('div');
         empty.className = 'rwth-card-drill-empty';
         empty.textContent = emptyText;
-        col.appendChild(empty);
-        return col;
+        wrap.appendChild(empty);
+        return wrap;
       }
-      // own marker — bucket index when grouping by quality, raw bonus % otherwise.
-      let ownKey = null;
-      if (useQuality) {
-        const ownIdx = InlineRenderer._qualityBucketIndex(ctx && ctx.listingQuality, buckets);
-        if (ownIdx >= 0) ownKey = ownIdx;
-      } else {
-        const ownBv = Number(ctx && ctx.primaryBonusValue);
-        if (Number.isFinite(ownBv)) ownKey = ownBv;
-      }
-      const entries = Array.from(groups.entries()).sort((a, b) => b[1].sort - a[1].sort);
+
       const table = document.createElement('table');
-      table.className = 'rwth-card-drill-table rwth-card-ladder-table';
+      table.className = 'rwth-card-drill-table rwth-card-ladder-table rwth-card-ladder-unified-table';
       const thead = document.createElement('thead');
       const firstHead = useQuality ? 'quality' : 'bonus %';
-      thead.innerHTML = `<tr><th>${firstHead}</th><th>typical</th><th>cheapest</th><th>priciest</th><th>count</th></tr>`;
+      thead.innerHTML = `<tr><th>${firstHead}</th><th>sold (typ · n)</th><th>for sale (low · n)</th></tr>`;
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
-      // One row expanded at a time (acceptance: ephemeral, popup-local).
-      let openKey = null;
-      let openDetail = null;
-      let openRow = null;
-      for (const [k, group] of entries) {
-        const rows = group.rows.filter(c => Number.isFinite(Number(c.price)) && Number(c.price) > 0);
-        if (!rows.length) continue;
-        const prices = rows.map(c => Number(c.price));
-        const med = _median(prices);
-        const mn  = Math.min(...prices);
-        const mx  = Math.max(...prices);
+
+      // One detail open at a time across the table (ephemeral, popup-local).
+      let openId = null, openDetail = null, openCaret = null, openRow = null;
+      const closeOpen = () => {
+        if (openDetail) openDetail.remove();
+        if (openCaret) openCaret.textContent = '▸';
+        if (openRow) openRow.classList.remove('expanded');
+        openId = null; openDetail = null; openCaret = null; openRow = null;
+      };
+      const wireCell = (cell, caret, tr, side, rows, id) => {
+        cell.classList.add('rwth-card-ladder-clickable');
+        cell.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (openId === id) { closeOpen(); return; }
+          closeOpen();
+          const detail = InlineRenderer._buildLadderDetailRow(side, rows, 3);
+          tr.classList.add('expanded');
+          caret.textContent = '▾';
+          tr.parentNode.insertBefore(detail, tr.nextSibling);
+          openId = id; openDetail = detail; openCaret = caret; openRow = tr;
+        });
+      };
+
+      for (const b of buckets) {
         const tr = document.createElement('tr');
         tr.classList.add('rwth-card-ladder-row');
-        const td = (txt) => { const x = document.createElement('td'); x.textContent = txt; return x; };
-        const isOwn = ownKey != null && k === ownKey;
-        if (isOwn) tr.classList.add('rwth-card-ladder-own');
-        const hasCheapest = cheapestPrice != null && mn === cheapestPrice;
-        const tag = isOwn ? ' ← yours' : '';
-        // Provenance marker (slice 19c). Per-row: all strict → no marker;
-        // none strict → italic + tooltip "widened"; mixed → fraction.
-        // v0.3.0 slice 19d (#288): rows composed entirely of widened-base
-        // comps take precedence over the bonus-widen marker so the user sees
-        // the source-base call-out (e.g. "Samurai Sword 11% (widened base)").
+        if (b.isOwn) tr.classList.add('rwth-card-ladder-own');
+
+        // Provenance markers — derived from the SOLD rows only (the for-sale
+        // side is never widened). Mirrors the former per-row logic (19c/19d).
+        const sRows = b.sold ? b.sold.rows : [];
         let widenedSuffix = '';
-        const baseWidenedRows = rows.filter(c => c && c.provenance === 'widenedBase');
-        if (rows.length && baseWidenedRows.length === rows.length) {
+        const baseWidenedRows = sRows.filter(c => c && c.provenance === 'widenedBase');
+        if (sRows.length && baseWidenedRows.length === sRows.length) {
           tr.classList.add('rwth-card-ladder-widenedbase');
           const baseNames = Array.from(new Set(baseWidenedRows.map(c => c.baseName).filter(Boolean)));
           tr.title = baseNames.length ? `also using ${baseNames.join(', ')}` : 'other base weapons';
-          widenedSuffix = baseNames.length
-            ? ` (${baseNames.join(', ')})`
-            : ' (other base)';
-        } else if (typeof isStrict === 'function') {
-          const sameBaseRows = rows.filter(c => !(c && c.provenance === 'widenedBase'));
+          widenedSuffix = baseNames.length ? ` (${baseNames.join(', ')})` : ' (other base)';
+        } else if (typeof isStrict === 'function' && sRows.length) {
+          const sameBaseRows = sRows.filter(c => !(c && c.provenance === 'widenedBase'));
           const strictRows = sameBaseRows.filter(isStrict).length;
           if (sameBaseRows.length && strictRows === 0) {
             tr.classList.add('rwth-card-ladder-widened');
@@ -5287,47 +5341,52 @@
             widenedSuffix = ` (${strictRows}/${sameBaseRows.length} close)`;
           }
         }
-        const bonusCell = document.createElement('td');
-        const caret = document.createElement('span');
-        caret.className = 'rwth-card-ladder-caret';
-        caret.textContent = '▸';
-        bonusCell.appendChild(caret);
-        bonusCell.appendChild(document.createTextNode(`${group.label}${tag}${widenedSuffix}`));
-        tr.appendChild(bonusCell);
-        tr.appendChild(td(fmtChatPrice(med)));
-        const minCell = td(fmtChatPrice(mn) + (hasCheapest ? ' ← cheapest for sale' : ''));
-        if (hasCheapest) minCell.classList.add('rwth-card-ladder-cheapest');
-        tr.appendChild(minCell);
-        tr.appendChild(td(fmtChatPrice(mx)));
-        tr.appendChild(td(String(rows.length)));
-        tr.addEventListener('click', () => {
-          if (openKey === k) {
-            if (openDetail) openDetail.remove();
-            if (openRow) {
-              openRow.classList.remove('expanded');
-              const c = openRow.querySelector('.rwth-card-ladder-caret');
-              if (c) c.textContent = '▸';
-            }
-            openKey = null; openDetail = null; openRow = null;
-            return;
-          }
-          if (openDetail) openDetail.remove();
-          if (openRow) {
-            openRow.classList.remove('expanded');
-            const c = openRow.querySelector('.rwth-card-ladder-caret');
-            if (c) c.textContent = '▸';
-          }
-          const detail = InlineRenderer._buildLadderDetailRow(kind, rows, 5);
-          tr.classList.add('expanded');
-          caret.textContent = '▾';
-          tr.parentNode.insertBefore(detail, tr.nextSibling);
-          openKey = k; openDetail = detail; openRow = tr;
-        });
+
+        const labelCell = document.createElement('td');
+        const tag = b.isOwn ? ' ← yours' : '';
+        labelCell.textContent = `${b.label}${tag}${widenedSuffix}`;
+        tr.appendChild(labelCell);
+
+        // SOLD cell — drill target for past sales.
+        const soldCell = document.createElement('td');
+        soldCell.classList.add('rwth-card-ladder-cell');
+        if (b.sold) {
+          const caret = document.createElement('span');
+          caret.className = 'rwth-card-ladder-caret';
+          caret.textContent = '▸';
+          soldCell.appendChild(caret);
+          soldCell.appendChild(document.createTextNode(`${fmtChatPrice(b.sold.median)} · ${b.sold.count}`));
+          wireCell(soldCell, caret, tr, 'sold', b.sold.rows, `${b.key}|sold`);
+        } else {
+          soldCell.classList.add('rwth-card-ladder-blank');
+          soldCell.textContent = '—';
+        }
+        tr.appendChild(soldCell);
+
+        // FOR-SALE cell — drill target for live listings.
+        const listedCell = document.createElement('td');
+        listedCell.classList.add('rwth-card-ladder-cell');
+        if (b.listed) {
+          const caret = document.createElement('span');
+          caret.className = 'rwth-card-ladder-caret';
+          caret.textContent = '▸';
+          listedCell.appendChild(caret);
+          const hasCheapest = cheapestPrice != null && b.listed.cheapest === cheapestPrice;
+          listedCell.appendChild(document.createTextNode(
+            `${fmtChatPrice(b.listed.cheapest)} · ${b.listed.count}${hasCheapest ? ' ← low' : ''}`));
+          if (hasCheapest) listedCell.classList.add('rwth-card-ladder-cheapest');
+          wireCell(listedCell, caret, tr, 'listed', b.listed.rows, `${b.key}|listed`);
+        } else {
+          listedCell.classList.add('rwth-card-ladder-blank');
+          listedCell.textContent = '—';
+        }
+        tr.appendChild(listedCell);
+
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
-      col.appendChild(table);
-      return col;
+      wrap.appendChild(table);
+      return wrap;
     },
     _buildLadderDetailRow(kind, rows, colspan) {
       const tr = document.createElement('tr');
@@ -5711,6 +5770,7 @@
     velocityClass,
     velocityBaseline,
     VELOCITY_MIN_SAMPLES,
+    mergeLadder,
   };
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────────

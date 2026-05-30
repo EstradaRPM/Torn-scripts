@@ -705,3 +705,122 @@ test('resolveMarketAnchor: no valid listings returns a null anchor', () => {
   assert.deepStrictEqual(resolveMarketAnchor([], 20), { anchor: null, tier: null, tiers: [] });
   assert.strictEqual(resolveMarketAnchor([{ price: 0, bonusValue: 20 }], 20).anchor, null);
 });
+
+// ── mergeLadder (#302 slice 1) ───────────────────────────────────────────────
+test('mergeLadder: bonus-axis groups by exact bonus %, sorted descending', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const sold = [
+    { price: 100, bonusValue: 15 },
+    { price: 120, bonusValue: 15 },
+    { price: 300, bonusValue: 20 },
+  ];
+  const out = mergeLadder({ soldComps: sold, listedComps: [], axis: 'bonus', ownKey: 15 });
+  assert.deepStrictEqual(out.map(b => b.sort), [20, 15]);   // descending
+  assert.deepStrictEqual(out.map(b => b.label), ['20%', '15%']);
+  const b15 = out.find(b => b.key === 15);
+  assert.strictEqual(b15.sold.count, 2);
+});
+
+test('mergeLadder: sold summary stats (median/min/max/count)', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const sold = [
+    { price: 100, bonusValue: 15 },
+    { price: 200, bonusValue: 15 },
+    { price: 300, bonusValue: 15 },
+  ];
+  const [b] = mergeLadder({ soldComps: sold, listedComps: [], axis: 'bonus', ownKey: null });
+  assert.deepStrictEqual(b.sold, { median: 200, min: 100, max: 300, count: 3, rows: b.sold.rows });
+  assert.strictEqual(b.listed, null);
+});
+
+test('mergeLadder: listed summary is cheapest + count', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const listed = [
+    { price: 500, bonusValue: 15 },
+    { price: 450, bonusValue: 15 },
+    { price: 600, bonusValue: 15 },
+  ];
+  const [b] = mergeLadder({ soldComps: [], listedComps: listed, axis: 'bonus', ownKey: null });
+  assert.strictEqual(b.listed.cheapest, 450);
+  assert.strictEqual(b.listed.count, 3);
+  assert.strictEqual(b.sold, null);
+});
+
+test('mergeLadder: co-locates sold + listed at the same bonus level', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps:   [{ price: 100, bonusValue: 15 }],
+    listedComps: [{ price: 130, bonusValue: 15 }],
+    axis: 'bonus', ownKey: null,
+  });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].sold.median, 100);
+  assert.strictEqual(out[0].listed.cheapest, 130);
+});
+
+test('mergeLadder: missing-side buckets still appear with null on the empty side', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps:   [{ price: 100, bonusValue: 15 }],   // sold only at 15
+    listedComps: [{ price: 200, bonusValue: 20 }],   // listed only at 20
+    axis: 'bonus', ownKey: null,
+  });
+  const b15 = out.find(b => b.key === 15);
+  const b20 = out.find(b => b.key === 20);
+  assert.ok(b15 && b20, 'both buckets present');
+  assert.strictEqual(b15.listed, null);
+  assert.strictEqual(b20.sold, null);
+});
+
+test('mergeLadder: own-row marking on the bonus axis', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps: [{ price: 100, bonusValue: 15 }, { price: 300, bonusValue: 20 }],
+    listedComps: [], axis: 'bonus', ownKey: 20,
+  });
+  assert.strictEqual(out.find(b => b.key === 20).isOwn, true);
+  assert.strictEqual(out.find(b => b.key === 15).isOwn, false);
+});
+
+test('mergeLadder: quality-axis buckets comps into class-tiered bands (default yellow)', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const sold = [
+    { price: 100, quality: 90 },    // <100%  → idx 0
+    { price: 110, quality: 120 },   // 100–129 → idx 1
+    { price: 120, quality: 125 },   // 100–129 → idx 1
+    { price: 200, quality: 175 },   // 150%+  → idx 3
+  ];
+  const out = mergeLadder({ soldComps: sold, listedComps: [], axis: 'quality', ownKey: 120, itemClass: 'yellowWeapon' });
+  // sorted desc by bucket index
+  assert.deepStrictEqual(out.map(b => b.key), [3, 1, 0]);
+  assert.deepStrictEqual(out.map(b => b.label), ['150%+', '100–129%', '<100%']);
+  assert.strictEqual(out.find(b => b.key === 1).sold.count, 2);
+  assert.strictEqual(out.find(b => b.key === 1).isOwn, true);   // ownKey 120 falls in idx 1
+});
+
+test('mergeLadder: quality-axis honours the orange class bands', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const sold = [{ price: 100, quality: 175 }];   // 150–199% → idx 1 for orange
+  const [b] = mergeLadder({ soldComps: sold, listedComps: [], axis: 'quality', ownKey: null, itemClass: 'orangeWeapon' });
+  assert.strictEqual(b.label, '150–199%');
+});
+
+test('mergeLadder: drops zero/invalid-price rows and empty buckets', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps:   [{ price: 0, bonusValue: 15 }, { price: NaN, bonusValue: 15 }],
+    listedComps: [{ price: -5, bonusValue: 15 }],
+    axis: 'bonus', ownKey: null,
+  });
+  assert.strictEqual(out.length, 0);   // no priced data anywhere → no buckets
+});
+
+test('mergeLadder: comps with no bonus value are skipped on the bonus axis', () => {
+  const { mergeLadder } = globalThis.__RwthPure;
+  const out = mergeLadder({
+    soldComps: [{ price: 100, bonusValue: null }, { price: 200, bonusValue: 15 }],
+    listedComps: [], axis: 'bonus', ownKey: null,
+  });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].key, 15);
+});
