@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.39
+// @version      0.3.40
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.39';
+  const SCRIPT_VERSION = '0.3.40';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3115,6 +3115,19 @@
       .rwth-card-ladder-subtable a { color: #5dc6f0; text-decoration: none; }
       .rwth-card-ladder-subtable a:hover { text-decoration: underline; }
 
+      /* #305 slice 4 — drill-in detail collapses to stacked chips at the narrow
+         container tier (the 7-column listing table overflows a phone), and the
+         columnar sub-table returns at mid/wide. Both live in the DOM; the 320px
+         container query below toggles which shows, keyed off the card's width.
+         DEFAULT (narrow / @container-unsupported) = chips, table hidden. */
+      .rwth-card-ladder-subtable { display: none; }
+      .rwth-card-chips { display: block; margin: 2px 0 4px 14px; font-size: 10px; line-height: 1.5; }
+      .rwth-card-chip { color: #cfe; padding: 2px 0; border-top: 1px dotted #00e5ff22; word-break: break-word; }
+      .rwth-card-chip:first-child { border-top: none; }
+      .rwth-card-chip-meta { color: #8aa; }
+      .rwth-card-chips a { color: #5dc6f0; text-decoration: none; }
+      .rwth-card-chips a:hover { text-decoration: underline; }
+
       /* #304 slice 3 — container-query responsive system. Mobile-first: the
          DEFAULT (and the fallback where @container is unsupported) is the narrow
          STACKED layout — the unified ladder collapses to one block per bonus
@@ -3158,6 +3171,9 @@
         }
         .rwth-card-ladder-unified-table td.rwth-card-ladder-cell::before { content: none; }
         .rwth-card-ladder-unified-table tr.rwth-card-ladder-detail > td { overflow-x: visible; }
+        /* #305 — at mid/wide the drill-in detail is the columnar table, not chips. */
+        .rwth-card-chips { display: none; }
+        .rwth-card-ladder-subtable { display: table; }
         .rwth-card-headline { gap: 6px 14px; }
         .rwth-card-ladder { gap: 2px 12px; }
       }
@@ -5572,6 +5588,46 @@
       }
       sub.appendChild(thead);
       sub.appendChild(tbody);
+
+      // #305 slice 4 — narrow-tier representation. The columnar sub-table above
+      // overflows a phone, so build a compact stacked chip per row from the same
+      // sorted data. One DOM carries both; the container query (≥320px) toggles
+      // which shows — chips at the narrow tier, the table at mid/wide.
+      const chips = document.createElement('div');
+      chips.className = 'rwth-card-chips';
+      const cround = v => Number.isFinite(Number(v)) ? Math.round(Number(v)) : null;
+      for (const r of sorted) {
+        const chip = document.createElement('div');
+        chip.className = 'rwth-card-chip';
+        const q = cround(r.quality), bo = cround(r.bonusValue);
+        if (kind === 'listed') {
+          const head = [fmtChatPrice(Number(r.price))];
+          if (q != null) head.push(`${q}%q`);
+          if (bo != null) head.push(`${bo}%b`);
+          chip.textContent = head.join(' · ');
+          const meta = document.createElement('span');
+          meta.className = 'rwth-card-chip-meta';
+          meta.textContent = ` — seller ${r.sellerId != null ? r.sellerId : '—'}`;
+          chip.appendChild(meta);
+          if (r.sellerId != null) {
+            chip.appendChild(document.createTextNode(' · '));
+            const a = document.createElement('a');
+            a.href = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(r.sellerId)}`;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = 'open ↗';
+            chip.appendChild(a);
+          }
+        } else {
+          const parts = [InlineRenderer._fmtDate(r.timestamp), fmtChatPrice(Number(r.price))];
+          if (q != null) parts.push(`${q}%q`);
+          if (bo != null) parts.push(`${bo}%b`);
+          chip.textContent = parts.join(' · ');
+        }
+        chips.appendChild(chip);
+      }
+
+      td.appendChild(chips);
       td.appendChild(sub);
       tr.appendChild(td);
       return tr;
