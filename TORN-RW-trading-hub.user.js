@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.40
+// @version      0.3.41
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.40';
+  const SCRIPT_VERSION = '0.3.41';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -28,6 +28,18 @@
     // gag (the brand is a film rating). Finalised with the user for slice 7.
     footerTagline: 'Contains explicit deals, weapons, and depictions of violence',
   };
+
+  // Item-market mode notice — injected into the forum post and profile
+  // signature so buyers understand why a listing they find on the item market
+  // is priced above the advertised (net) deal. Plain HTML; <br/> is honoured by
+  // both surfaces. The forum textarea is editable before posting if tweaked.
+  const ITEM_MARKET_NOTICE =
+    'Some items may be listed on item market with purposeful markup.<br/>'
+    + 'Message me for any of the deals below.';
+
+  // Torn's item-market sale fee. net = gross × (1 − fee). Matches the 5% used
+  // throughout the pricing engine (PricingEngine FEE, sellLadder tax default).
+  const MARKET_FEE = 0.05;
 
   // Display-name abbreviation map for the trade-chat blurb — keeps chat lines
   // narrow. Static display dictionary (not faction data); seeded from common
@@ -74,6 +86,8 @@
     advertise: {
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
       imgEditId: null,        // null | itemId — the row whose [IMG] popover is open
+      mode: 'standard',       // 'standard' | 'itemMarket' — advertise output mode
+                              // ('displayCase' reserved). Persisted to rwth_adv_mode.
       transactions: [],
       outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
@@ -130,6 +144,9 @@
 
     const transactions = Store.get('rwth_transactions');
     if (Array.isArray(transactions)) MEM.advertise.transactions = transactions;
+
+    const advMode = Store.get('rwth_adv_mode');
+    if (advMode === 'standard' || advMode === 'itemMarket') MEM.advertise.mode = advMode;
 
     const settings = Store.get('rwth_settings');
     if (settings && typeof settings === 'object') {
@@ -993,6 +1010,34 @@
     return '$' + v;
   }
 
+  // Item-market mode: given the advertised (net) list price, the gross price to
+  // actually list at on the item market so that, after the market fee, the
+  // seller nets within ~1% of the list price. Among all such grosses, the
+  // *roundest* is chosen (1-2-5 ×10ⁿ steps, largest first) — the 1% tolerance
+  // exists precisely to allow a clean, round listing number. Returns null for a
+  // missing/non-positive list price. Pure.
+  function itemMarketListPrice(listPrice, fee) {
+    const net = Number(listPrice);
+    if (!Number.isFinite(net) || net <= 0) return null;
+    const f = fee != null ? fee : MARKET_FEE;
+    const ideal = net / (1 - f);
+    const lo = (net * 0.99) / (1 - f);   // gross whose net is 1% under list
+    const hi = (net * 1.01) / (1 - f);   // gross whose net is 1% over list
+    // Walk 1-2-5 ×10ⁿ steps from coarse to fine; the first step with a multiple
+    // inside [lo, hi] is the roundest. Snap to the multiple nearest the ideal.
+    for (let p = 1e12; p >= 1; p /= 10) {
+      for (const step of [5 * p, 2 * p, p]) {
+        const loM = Math.ceil(lo / step);
+        const hiM = Math.floor(hi / step);
+        if (loM <= hiM) {
+          const cand = Math.round(ideal / step);
+          return Math.min(hiM, Math.max(loM, cand)) * step;
+        }
+      }
+    }
+    return Math.round(ideal);
+  }
+
   // One chat-blurb item line. Name is abbreviated via ITEM_ABBREV; the parens
   // default to the primary bonus, falling back to quality % when there is none.
   // withPrice=false drops the price tail — used to claw back characters so an
@@ -1252,7 +1297,7 @@
 
     // Output — full forum post HTML. Item-driven from the selected `listed`
     // rows + Recent Transactions; cards grouped under category dividers.
-    toForumHtml(items, transactions, settings) {
+    toForumHtml(items, transactions, settings, mode) {
       const s = settings || {};
       const txs = transactions || [];
       const rows = [];
@@ -1268,6 +1313,16 @@
         + `Rotating collection of RW weapons/gear and other useful items.</span><br/><br/>`
         + `<span style="color: #9ab5a5; font-size: 13px;">`
         + `If something below isn't currently listed, message me.</span></td></tr>`);
+      // Item-market mode — a markup-notice callout so buyers expect a listing
+      // priced above the advertised (net) deal.
+      if (mode === 'itemMarket') {
+        rows.push(`<tr><td style="background: #080e18; padding: 0 22px 14px; border: 0;">`
+          + `<table ${TBL} width="100%" style="background: #0c1422; border: 0; border-collapse: collapse;"><tbody><tr>`
+          + `<td style="width: 3px; background: #e0a85a; font-size: 0; line-height: 0; padding: 0; border: 0;">&nbsp;</td>`
+          + `<td style="padding: 10px 14px; text-align: center; border: 0;">`
+          + `<span style="color: #e0c08a; font-size: 12px; line-height: 1.6;">${ITEM_MARKET_NOTICE}</span>`
+          + `</td></tr></tbody></table></td></tr>`);
+      }
       rows.push(forumSectionHeader('Currently Available'));
       for (const group of groupByCategory(items)) {
         rows.push(forumCategoryDivider(group.category));
@@ -1357,7 +1412,7 @@
     // banner up top, slim category dividers, one metric-rich card per item
     // (accent rail + name/rarity + bonus/quality chips + price), and a link
     // strip along the foot.
-    toSignatureHtml(items, settings) {
+    toSignatureHtml(items, settings, mode) {
       const s = settings || {};
       const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
       // Header — the configured banner image; a wordmark bar only if none set.
@@ -1370,6 +1425,13 @@
           + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
           + `text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`;
       const bodyRows = [];
+      // Item-market mode — a slim markup-notice strip under the banner.
+      if (mode === 'itemMarket') {
+        bodyRows.push(`<tr><td colspan="2" style="background: #0c1422; padding: 8px 14px; `
+          + `text-align: center; border: 0;">`
+          + `<span style="color: #e0c08a; font-size: 10px; line-height: 1.5;">${ITEM_MARKET_NOTICE}</span>`
+          + `</td></tr>`);
+      }
       for (const group of groupByCategory(items)) {
         const accent = CATEGORY_ACCENT[group.category] || CATEGORY_ACCENT.Other;
         // Category divider — accent-dotted label over a hairline.
@@ -1404,7 +1466,7 @@
     },
     // Output 3 — trade-chat blurb. Sorted by list price descending so the
     // highest-value items lead the blurb rather than alphabetised filler.
-    toChat(items, settings) {
+    toChat(items, settings, mode) {
       const s = settings || {};
       const header = [
         `🔹🔷 <u>${BRAND.mark}</u> 🔷🔹`,
@@ -1414,9 +1476,16 @@
       // part of the hotlink.
       const linkLines = [];
       const pid = (s.playerId || '').trim();
-      if (pid) linkLines.push(`[<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>]`);
       const forum = (s.forumThreadUrl || '').trim();
-      if (forum) linkLines.push(`[<a href="${forum}">Forum</a>]`);
+      if (mode === 'itemMarket') {
+        // Item-market mode — funnel buyers to the forum to message for a deal:
+        // drop the bazaar link and give the forum link a marker + bold so it
+        // reads as the call-to-action, without upstaging the Floor Prices head.
+        if (forum) linkLines.push(`📩 [<a href="${forum}"><b>Forum</b></a>]`);
+      } else {
+        if (pid) linkLines.push(`[<a href="https://www.torn.com/bazaar.php?userId=${pid}#/">Bazaar</a>]`);
+        if (forum) linkLines.push(`[<a href="${forum}">Forum</a>]`);
+      }
       // Chat is a teaser, not a catalogue — show at most the 3 priciest, then a
       // "+N more listed" line so the blurb stays short enough to actually post.
       const CHAT_LIMIT = 3;
@@ -1456,9 +1525,21 @@
 
   // One checkbox-selected ledger item on the Advertise tab. The list-price and
   // image-URL inputs persist straight onto the ledger row via syncAdvertiseEdit.
-  function buildAdvItemRow(item, checked, imgOpen) {
+  function buildAdvItemRow(item, checked, imgOpen, mode) {
     const bonus = fmtBonuses(item);
     const hasImg = !!(item.gyazoUrl && String(item.gyazoUrl).trim());
+    // Item-market mode — a read-only hint: the marked-up gross to list at on
+    // the item market, plus the net it clears (≈ the advertised list price).
+    let marketHint = '';
+    if (mode === 'itemMarket') {
+      const gross = itemMarketListPrice(item.listPrice);
+      if (gross != null) {
+        marketHint = `<div class="rwth-adv-market">Item market: `
+          + `<b>${escapeAttr(fmtMoney(gross))}</b> `
+          + `<span class="rwth-adv-market-net">(nets ${escapeAttr(fmtMoney(Math.round(gross * (1 - MARKET_FEE))))})</span>`
+          + `</div>`;
+      }
+    }
     const pop = imgOpen
       ? `<div class="rwth-img-pop">
           <span class="rwth-field-label">Screenshot URL</span>
@@ -1479,6 +1560,7 @@
           <span class="rwth-field-label">List price</span>
           <input class="rwth-field-input" type="number" data-adv-field="listPrice"
                  value="${escapeAttr(item.listPrice)}" placeholder="e.g. 118000000">
+          ${marketHint}
         </label>
         <div class="rwth-adv-img">
           <button class="rwth-btn-sm${hasImg ? ' rwth-btn-on' : ''}" type="button"
@@ -1547,6 +1629,7 @@
     const A = (mem && mem.advertise) || {};
     const L = (mem && mem.ledger) || {};
     const settings = (mem && mem.settings) || {};
+    const mode = A.mode === 'itemMarket' ? 'itemMarket' : 'standard';
     const items = L.items || [];
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
@@ -1560,13 +1643,23 @@
 
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     const itemRows = listed.length
-      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id)).join('')
+      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id, mode)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
     const txRows = transactions.length
       ? transactions.map(buildTxRow).join('')
       : `<div class="rwth-placeholder">No recent transactions yet.</div>`;
 
     return `<div class="rwth-advertise">
+      <div class="rwth-adv-section">
+        <label class="rwth-field rwth-adv-mode">
+          <span class="rwth-field-label">Mode</span>
+          <select class="rwth-field-input" data-adv-mode>
+            <option value="standard"${mode === 'standard' ? ' selected' : ''}>Standard</option>
+            <option value="itemMarket"${mode === 'itemMarket' ? ' selected' : ''}>Item Market</option>
+            <option value="displayCase" disabled>Display Case (soon)</option>
+          </select>
+        </label>
+      </div>
       <div class="rwth-adv-section">
         ${collapseHead(`Advertised items${listed.length ? ` (${listed.length})` : ''}`,
                        'advItems', fold.advItems)}
@@ -1585,13 +1678,13 @@
         ${buildOutputBox('Forum title', 'rwth-out-title',
                          AdvertiseGenerator.toForumTitle(), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
-                         AdvertiseGenerator.toChat(selectedItems, settings), true)}
+                         AdvertiseGenerator.toChat(selectedItems, settings, mode), true)}
         ${buildOutputBox('Forum post HTML', 'rwth-out-forum',
-                         AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings), true, 12)}
+                         AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings, mode), true, 12)}
         ${buildOutputBox('Bazaar description HTML', 'rwth-out-bazaar',
                          AdvertiseGenerator.toBazaarHtml(settings), true, 10)}
         ${buildOutputBox('Profile signature HTML', 'rwth-out-signature',
-                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}`}
+                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings, mode), true, 8)}`}
       </div>
     </div>`;
   }
@@ -1709,6 +1802,12 @@
   // list-price / image-URL write onto the ledger row (rwth_ledger). A list-price
   // change re-renders on `change` so the chat blurb output picks up the new price.
   function syncAdvertiseEdit(e) {
+    if (e.target.matches && e.target.matches('[data-adv-mode]')) {
+      const mode = e.target.value === 'itemMarket' ? 'itemMarket' : 'standard';
+      Store.set('rwth_adv_mode', mode);
+      setState({ advertise: { ...MEM.advertise, mode } });
+      return;
+    }
     const txRow = e.target.closest && e.target.closest('[data-tx-row]');
     if (txRow) {
       const tx = (MEM.advertise.transactions || []).find(t => t.id === txRow.dataset.txRow);
@@ -2962,6 +3061,9 @@
         display: flex; flex-direction: column; gap: 8px;
         border: 1px solid #00e5ff22; border-radius: 4px; padding: 8px;
       }
+      .rwth-adv-mode { max-width: 220px; }
+      .rwth-adv-market { margin-top: 6px; font: 11px Consolas, monospace; color: #e0a85a; }
+      .rwth-adv-market-net { color: #8aa; }
       .rwth-adv-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
       .rwth-adv-check input { accent-color: #39ff14; }
       .rwth-adv-img { position: relative; display: flex; align-items: flex-end; }
@@ -5930,6 +6032,7 @@
     matchSell,
     summarizeSells,
     AdvertiseGenerator,
+    itemMarketListPrice,
     BonusTrashGuard,
     similarity,
     resolveMarketAnchor,
