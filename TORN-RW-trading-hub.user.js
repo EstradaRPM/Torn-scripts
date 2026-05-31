@@ -71,7 +71,7 @@
     },
     ledger: {
       items: [],
-      statusFilter: 'all',
+      statusFilter: 'listed',
       editingId: null,        // null | 'new' | itemId — drives the add/edit form
       expandedId: null,       // null | itemId — the tap-expanded row
       scanResults: [],        // ScanHit[] from the last scan, awaiting confirm
@@ -421,25 +421,55 @@
     return b.map(x => (x.value != null ? `${x.name} ${x.value}%` : x.name)).join(', ');
   }
 
-  function buildLedgerRow(item, expanded, ctx) {
-    const bonus = fmtBonuses(item);
-    let statusCell;
-    if (item.status === 'sold') {
-      const roi = ROI.compute(item);
-      const cls = roi >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-      statusCell = `<span class="rwth-roi ${cls}">${roi >= 0 ? '+' : ''}${fmtMoney(roi)}</span>`;
-    } else {
-      statusCell = `<span class="rwth-status rwth-status-${item.status}">${item.status}</span>`;
+  // Whole-day span between two epoch-ms stamps, or null when either is missing /
+  // non-finite / out of order. Mirrors LedgerStats's buy→sold span guard so the
+  // row figure and the dashboard agree.
+  function spanDays(from, to) {
+    const a = Number(from), b = Number(to);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+    return Math.round((b - a) / DAY_MS);
+  }
+
+  // Status-aware figure cluster for a row head: the numbers that matter for the
+  // item's state. Listed → ask + pending; sold → net + realized + days-to-clear;
+  // held → buy price + aging. Money figures reuse the hub's $ / -$ formatting.
+  function rowFigs(item, now) {
+    const roiCls = n => (n >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg');
+    const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
+    const fig = (k, v, cls) =>
+      `<span class="rwth-fig${cls ? ' ' + cls : ''}">${
+        k ? `<span class="rwth-fig-k">${k}</span> ` : ''}${v}</span>`;
+
+    if (item.status === 'listed') {
+      const ask = item.listPrice;
+      if (ask == null) return fig('ask', '—');
+      const pending = (Number(ask) || 0) - (item.buyPrice || 0);
+      return fig('ask', fmtMoney(ask))
+        + fig('', signed(pending), 'rwth-roi ' + roiCls(pending));
     }
+    if (item.status === 'sold') {
+      const realized = ROI.compute(item);
+      const days = spanDays(item.buyTimestamp, item.soldTimestamp);
+      return fig('net', item.saleNet != null ? fmtMoney(item.saleNet) : '—')
+        + (realized != null ? fig('', signed(realized), 'rwth-roi ' + roiCls(realized)) : '')
+        + (days != null ? fig('', days + 'd', 'rwth-fig-muted') : '');
+    }
+    // held
+    const age = spanDays(item.buyTimestamp, now);
+    return fig('buy', fmtMoney(item.buyPrice))
+      + (age != null ? fig('', age + 'd held', 'rwth-fig-muted') : '');
+  }
+
+  function buildLedgerRow(item, expanded, ctx) {
+    const c = ctx || {};
+    const bonus = fmtBonuses(item);
     const head = `<div class="rwth-row-head" data-row-toggle="${item.id}">
         <span class="rwth-row-name">${escapeAttr(item.itemName)}${
           bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''} ${
           rarityChip(item.rarity)}</span>
-        <span class="rwth-row-price">${fmtMoney(item.buyPrice)}</span>
-        ${statusCell}
+        <span class="rwth-row-figs">${rowFigs(item, c.now || Date.now())}</span>
       </div>`;
     if (!expanded) return `<div class="rwth-row">${head}</div>`;
-    const c = ctx || {};
     const ledgerIntelOn = c.intelLedger !== false;
     const panelOpen = ledgerIntelOn && c.priceCheckId === item.id;
     const detail = `<div class="rwth-row-detail">
@@ -813,9 +843,9 @@
   }
 
   function buildLedgerTab(mem) {
-    const L = (mem && mem.ledger) || { items: [], statusFilter: 'all' };
+    const L = (mem && mem.ledger) || { items: [], statusFilter: 'listed' };
     const items = L.items || [];
-    const filter = L.statusFilter || 'all';
+    const filter = L.statusFilter || 'listed';
     const filtered = filter === 'all' ? items : items.filter(i => i.status === filter);
 
     const filterBtns = STATUS_FILTERS.map(f =>
@@ -827,6 +857,7 @@
       intelLedger: !!(intel.enabled && intel.enabled.ledger),
       priceCheckId: L.priceCheckId,
       priceCheckResults: L.priceCheckResults || {},
+      now: Date.now(),
     };
     const list = filtered.length
       ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId, rowCtx)).join('')
@@ -3171,6 +3202,15 @@
       .rwth-row-name { flex: 1; font: 600 12px Verdana, sans-serif; color: #cfe; }
       .rwth-row-bonus { font: 400 11px Consolas, monospace; color: #00e5ff; }
       .rwth-row-price { font: 600 11px Consolas, monospace; color: #cfe; }
+      .rwth-row-figs {
+        display: flex; align-items: baseline; gap: 10px;
+        font: 600 11px Consolas, monospace; color: #cfe; white-space: nowrap;
+      }
+      .rwth-fig-k {
+        font-weight: 400; color: #8aa; text-transform: uppercase;
+        letter-spacing: .3px; font-size: 9px;
+      }
+      .rwth-fig-muted { color: #8aa; font-weight: 400; }
       .rwth-status {
         font: 700 10px Consolas, monospace; text-transform: uppercase;
         padding: 2px 6px; border-radius: 3px;
