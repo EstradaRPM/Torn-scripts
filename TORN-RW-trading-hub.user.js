@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.42
+// @version      0.3.43
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.42';
+  const SCRIPT_VERSION = '0.3.43';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -712,6 +712,106 @@
     </div>`;
   }
 
+  // ─── LedgerStats — pure portfolio aggregation (#307) ─────────────────────────
+  // Folds the ledger items[] into the headline figures the dashboard cards show.
+  // Pure and deterministic: items in, plain numbers out — no DOM, Store, or
+  // wall-clock reads. Any time-based figure uses the injected `now` (unused in
+  // slice 1; aging arrives with the mini-charts). Every figure is guarded so an
+  // empty or partial ledger — no sold rows, missing timestamps, a list price
+  // below cost — yields finite numbers, never NaN and never a throw into
+  // render(). Days-to-clear anchors buy→sold, matching VelocityTracker: the user
+  // lists/de-lists constantly, so a list stamp would be noise.
+  const DAY_MS = 86_400_000;
+  function round1(n) { return Math.round(n * 10) / 10; }
+
+  const LedgerStats = {
+    summarize(items, _now) {
+      const list = Array.isArray(items) ? items : [];
+      // null/'' are the codebase's "not set" sentinels (e.g. an unsold row's
+      // saleNet) — Number() would coerce them to 0, so reject them up front.
+      const fin  = v => {
+        if (v == null || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      const cost = it => fin(it.buyPrice) || 0;
+
+      const sold   = list.filter(i => i && i.status === 'sold' && fin(i.saleNet) != null);
+      const listed = list.filter(i => i && i.status === 'listed');
+      const open   = list.filter(i => i && (i.status === 'held' || i.status === 'listed'));
+
+      // Realized P/L + ROI, win count, fees, best/worst flip over sold rows.
+      let realized = 0, soldCost = 0, wins = 0, feesPaid = 0;
+      let best = null, worst = null;
+      for (const it of sold) {
+        const profit = fin(it.saleNet) - cost(it);
+        realized += profit;
+        soldCost += cost(it);
+        feesPaid += fin(it.saleFees) || 0;
+        if (profit > 0) wins++;
+        if (!best  || profit > best.profit)  best  = { name: it.itemName, profit };
+        if (!worst || profit < worst.profit) worst = { name: it.itemName, profit };
+      }
+      const realizedRoiPct = soldCost > 0 ? round1((realized / soldCost) * 100) : 0;
+      const winRate = sold.length ? Math.round((wins / sold.length) * 100) : 0;
+
+      // Pending P/L at list — listed rows carrying a finite list price only.
+      let pending = 0;
+      for (const it of listed) {
+        const lp = fin(it.listPrice);
+        if (lp != null) pending += lp - cost(it);
+      }
+
+      // Capital deployed: cash tied up in unsold stock (held + listed).
+      let capitalDeployed = 0;
+      for (const it of open) capitalDeployed += cost(it);
+
+      // Avg days-to-clear: buy→sold spans over sold rows with both stamps sane.
+      const spans = [];
+      for (const it of sold) {
+        const b = fin(it.buyTimestamp), s = fin(it.soldTimestamp);
+        if (b != null && s != null && s >= b) spans.push((s - b) / DAY_MS);
+      }
+      const avgDaysToClear = spans.length
+        ? round1(spans.reduce((a, b) => a + b, 0) / spans.length) : 0;
+
+      return {
+        realized, realizedRoiPct, pending, capitalDeployed,
+        winRate, avgDaysToClear, feesPaid,
+        soldCount: sold.length, listedCount: listed.length,
+        best, worst,
+      };
+    },
+  };
+
+  // Headline stat-card row for the Ledger dashboard (#307). Shallow HTML-string
+  // glue over LedgerStats — the cockpit "big picture" above the inventory list.
+  // Recomputes on every render() since buildLedgerTab calls it fresh.
+  function buildLedgerDashboard(items, now) {
+    const s = LedgerStats.summarize(items, now);
+    const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
+    const cls    = n => (n >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg');
+    const card = (label, value, sub, valCls) =>
+      `<div class="rwth-stat">
+         <span class="rwth-stat-label">${label}</span>
+         <span class="rwth-stat-value${valCls ? ' ' + valCls : ''}">${value}</span>
+         ${sub ? `<span class="rwth-stat-sub">${sub}</span>` : ''}
+       </div>`;
+
+    const roiSub = `${s.realizedRoiPct >= 0 ? '+' : ''}${s.realizedRoiPct}% ROI`
+      + (s.feesPaid ? ` · ${fmtMoney(s.feesPaid)} fees` : '');
+    const velSub = s.soldCount
+      ? `${s.winRate}% win · ${s.avgDaysToClear}d to clear`
+      : 'no sales yet';
+
+    return `<div class="rwth-stats">
+      ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
+      ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
+      ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
+      ${card('Win rate', s.soldCount ? s.winRate + '%' : '—', velSub)}
+    </div>`;
+  }
+
   function buildLedgerTab(mem) {
     const L = (mem && mem.ledger) || { items: [], statusFilter: 'all' };
     const items = L.items || [];
@@ -735,6 +835,7 @@
     const scanning = !!L.scanning;
     const err = mem && mem.fetchError;
     return `<div class="rwth-ledger">
+      ${buildLedgerDashboard(items, Date.now())}
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
         <div class="rwth-ledger-actions">
@@ -3043,6 +3144,21 @@
         background: none; color: #00e5ff; border: 1px solid #00e5ff44;
       }
       .rwth-btn-ghost:hover { box-shadow: none; color: #39ff14; border-color: #39ff14; }
+
+      .rwth-stats {
+        display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+      }
+      .rwth-stat {
+        display: flex; flex-direction: column; gap: 3px;
+        border: 1px solid #00e5ff33; border-radius: 6px; padding: 9px 11px;
+        background: #00e5ff0a;
+      }
+      .rwth-stat-label {
+        font: 700 9px Consolas, monospace; text-transform: uppercase;
+        letter-spacing: .5px; color: #8aa;
+      }
+      .rwth-stat-value { font: 700 16px Consolas, monospace; color: #cfe; }
+      .rwth-stat-sub { font: 11px Consolas, monospace; color: #8aa; }
 
       .rwth-rows { display: flex; flex-direction: column; gap: 4px; }
       .rwth-row { border: 1px solid #00e5ff22; border-radius: 4px; }
@@ -6060,6 +6176,8 @@
   // Pure functions exposed for the Node test runner. More are added in later slices.
   globalThis.__RwthPure = {
     buildLedgerTab,
+    buildLedgerDashboard,
+    LedgerStats,
     buildAdvertiseTab,
     buildSettingsTab,
     buildScanChecklist,
