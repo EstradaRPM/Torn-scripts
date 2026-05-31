@@ -207,6 +207,50 @@ console.log('\nmixed realistic ledger');
   assertEq('soldCount', s.soldCount, 2);
 }
 
+// ── cumulative-profit series (hero chart dataset, #309) ──────────────────────
+
+console.log('\ncumulativeProfit — empty / no sold');
+{
+  assertEq('empty ledger → empty series', LedgerStats.summarize([], NOW).cumulativeProfit.length, 0);
+  assertEq('held + listed only → empty series',
+    LedgerStats.summarize([held(), listed()], NOW).cumulativeProfit.length, 0);
+}
+
+console.log('\ncumulativeProfit — single sold');
+{
+  const s = LedgerStats.summarize([sold({ buyPrice: 1000, saleNet: 1500, soldTimestamp: NOW })], NOW);
+  assertEq('one point', s.cumulativeProfit.length, 1);
+  assertEq('point keyed by soldTimestamp', s.cumulativeProfit[0].t, NOW);
+  assertEq('cumulative = its profit', s.cumulativeProfit[0].cumulative, 500);
+}
+
+console.log('\ncumulativeProfit — ordered + accumulated');
+{
+  // Fed out of time order; series must sort ascending by soldTimestamp.
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, saleNet: 1300, soldTimestamp: NOW + 2 * DAY }),   // +300 (latest)
+    sold({ buyPrice: 1000, saleNet: 1500, soldTimestamp: NOW }),             // +500 (earliest)
+    sold({ buyPrice: 2000, saleNet: 1200, soldTimestamp: NOW + DAY }),       // -800 (middle)
+  ], NOW);
+  assertEq('three points', s.cumulativeProfit.length, 3);
+  assert('sorted ascending by t',
+    s.cumulativeProfit[0].t < s.cumulativeProfit[1].t && s.cumulativeProfit[1].t < s.cumulativeProfit[2].t);
+  assertEq('running total p1', s.cumulativeProfit[0].cumulative, 500);
+  assertEq('running total p2', s.cumulativeProfit[1].cumulative, 500 - 800);
+  assertEq('running total p3', s.cumulativeProfit[2].cumulative, 500 - 800 + 300);
+  assertEq('final cumulative == realized', s.cumulativeProfit[2].cumulative, s.realized);
+}
+
+console.log('\ncumulativeProfit — drops rows missing soldTimestamp');
+{
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, saleNet: 1500, soldTimestamp: undefined }),  // no stamp → off-curve
+    sold({ buyPrice: 1000, saleNet: 1400, soldTimestamp: NOW }),
+  ], NOW);
+  assertEq('only the stamped sale plots', s.cumulativeProfit.length, 1);
+  assertEq('but both still count as sold', s.soldCount, 2);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

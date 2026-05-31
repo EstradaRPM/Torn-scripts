@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.44
+// @version      0.3.45
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.44';
+  const SCRIPT_VERSION = '0.3.45';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -805,18 +805,106 @@
       const avgDaysToClear = spans.length
         ? round1(spans.reduce((a, b) => a + b, 0) / spans.length) : 0;
 
+      // Cumulative realized-profit series for the hero chart: sold rows with a
+      // finite soldTimestamp, in time order, accumulating (saleNet − buyPrice)
+      // into a running total. Rows missing a sold stamp can't be placed on the
+      // time axis, so they're excluded from the curve (still counted in totals).
+      const cumulativeProfit = sold
+        .filter(it => fin(it.soldTimestamp) != null)
+        .map(it => ({ t: fin(it.soldTimestamp), profit: fin(it.saleNet) - cost(it) }))
+        .sort((a, b) => a.t - b.t)
+        .reduce((acc, p) => {
+          const prev = acc.length ? acc[acc.length - 1].cumulative : 0;
+          acc.push({ t: p.t, cumulative: prev + p.profit });
+          return acc;
+        }, []);
+
       return {
         realized, realizedRoiPct, pending, capitalDeployed,
         winRate, avgDaysToClear, feesPaid,
         soldCount: sold.length, listedCount: listed.length,
-        best, worst,
+        best, worst, cumulativeProfit,
       };
     },
   };
 
-  // Headline stat-card row for the Ledger dashboard (#307). Shallow HTML-string
-  // glue over LedgerStats — the cockpit "big picture" above the inventory list.
-  // Recomputes on every render() since buildLedgerTab calls it fresh.
+  // ─── ChartGeom — pure SVG projection (#309) ──────────────────────────────────
+  // Projects a series of {x,y} into an SVG viewbox (width×height, with padding)
+  // and returns pixel coords plus line + area path strings. Pure: numbers in,
+  // strings/numbers out — no DOM. Degenerate inputs never yield NaN: empty → empty
+  // paths; a single point or a flat/zero-range series spans a horizontal segment
+  // so the SVG always has a valid `d`. The y-range always includes 0 so the area
+  // fills to a real baseline. Kept separate from LedgerStats (which shapes the
+  // data) so the positioning math is verifiable in isolation. NOT unit-tested per
+  // the PRD — eyeballed live.
+  function round2(n) { return Math.round(n * 100) / 100; }
+
+  const ChartGeom = {
+    project(points, width, height, opts = {}) {
+      const pad = opts.pad != null ? Number(opts.pad) : 4;
+      const w = Number(width) || 0, h = Number(height) || 0;
+      const innerW = Math.max(0, w - pad * 2);
+      const innerH = Math.max(0, h - pad * 2);
+      const pts = (Array.isArray(points) ? points : [])
+        .filter(p => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)))
+        .map(p => ({ x: Number(p.x), y: Number(p.y) }));
+
+      if (!pts.length) {
+        return { coords: [], line: '', area: '', baselineY: round2(pad + innerH), width: w, height: h };
+      }
+
+      const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(0, ...ys), maxY = Math.max(0, ...ys);
+      const spanX = (maxX - minX) || 1;
+      const spanY = (maxY - minY) || 1;
+      const sx = x => pad + ((x - minX) / spanX) * innerW;
+      const sy = y => pad + innerH - ((y - minY) / spanY) * innerH;
+
+      const coords = pts.map(p => ({ x: round2(sx(p.x)), y: round2(sy(p.y)) }));
+      // One point → draw a flat segment across the full width so the line shows.
+      const draw = coords.length === 1
+        ? [{ x: round2(pad), y: coords[0].y }, { x: round2(pad + innerW), y: coords[0].y }]
+        : coords;
+      const line = draw.map((c, i) => `${i ? 'L' : 'M'}${c.x} ${c.y}`).join(' ');
+      const baselineY = round2(sy(0));
+      const first = draw[0], last = draw[draw.length - 1];
+      const area = `${line} L${last.x} ${baselineY} L${first.x} ${baselineY} Z`;
+      return { coords, line, area, baselineY, width: w, height: h };
+    },
+  };
+
+  // Hero chart: cumulative realized profit over time as hand-rolled inline SVG
+  // (#309). No external library — Torn PDA's CSP must not be a factor. A
+  // non-scaling stroke keeps line width even though the viewBox stretches to the
+  // container width. Empty (no realized sales) shows a muted prompt; a single
+  // sale renders ChartGeom's flat segment.
+  function buildLedgerHeroChart(series) {
+    const pts = (Array.isArray(series) ? series : []).map(p => ({ x: p.t, y: p.cumulative }));
+    if (!pts.length) {
+      return `<div class="rwth-hero-empty">No realized profit yet — log a sale to start the curve.</div>`;
+    }
+    const W = 300, H = 80;
+    const g = ChartGeom.project(pts, W, H, { pad: 6 });
+    const last = series[series.length - 1].cumulative;
+    const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+    return `<div class="rwth-hero">
+      <div class="rwth-hero-head">
+        <span class="rwth-hero-label">Cumulative realized P/L</span>
+        <span class="rwth-hero-val ${cls}">${last >= 0 ? '+' : ''}${fmtMoney(last)}</span>
+      </div>
+      <svg class="rwth-hero-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <line class="rwth-hero-base" x1="0" y1="${g.baselineY}" x2="${W}" y2="${g.baselineY}" vector-effect="non-scaling-stroke"></line>
+        <path class="rwth-hero-area" d="${g.area}"></path>
+        <path class="rwth-hero-line" d="${g.line}" vector-effect="non-scaling-stroke"></path>
+      </svg>
+    </div>`;
+  }
+
+  // Dashboard for the Ledger tab (#306): headline stat cards + hero profit chart,
+  // the cockpit "big picture" above the inventory list. Shallow HTML-string glue
+  // over LedgerStats; recomputes on every render() since buildLedgerTab calls it
+  // fresh.
   function buildLedgerDashboard(items, now) {
     const s = LedgerStats.summarize(items, now);
     const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
@@ -834,11 +922,14 @@
       ? `${s.winRate}% win · ${s.avgDaysToClear}d to clear`
       : 'no sales yet';
 
-    return `<div class="rwth-stats">
-      ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
-      ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
-      ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
-      ${card('Win rate', s.soldCount ? s.winRate + '%' : '—', velSub)}
+    return `<div class="rwth-dash">
+      <div class="rwth-stats">
+        ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
+        ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
+        ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
+        ${card('Win rate', s.soldCount ? s.winRate + '%' : '—', velSub)}
+      </div>
+      ${buildLedgerHeroChart(s.cumulativeProfit)}
     </div>`;
   }
 
@@ -3176,6 +3267,7 @@
       }
       .rwth-btn-ghost:hover { box-shadow: none; color: #39ff14; border-color: #39ff14; }
 
+      .rwth-dash { display: flex; flex-direction: column; gap: 8px; }
       .rwth-stats {
         display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
       }
@@ -3190,6 +3282,31 @@
       }
       .rwth-stat-value { font: 700 16px Consolas, monospace; color: #cfe; }
       .rwth-stat-sub { font: 11px Consolas, monospace; color: #8aa; }
+
+      .rwth-hero {
+        display: flex; flex-direction: column; gap: 6px;
+        border: 1px solid #00e5ff33; border-radius: 6px; padding: 10px 11px;
+        background: #00e5ff0a;
+      }
+      .rwth-hero-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+      }
+      .rwth-hero-label {
+        font: 700 9px Consolas, monospace; text-transform: uppercase;
+        letter-spacing: .5px; color: #8aa;
+      }
+      .rwth-hero-val { font: 700 14px Consolas, monospace; color: #cfe; }
+      .rwth-hero-svg { width: 100%; height: 80px; display: block; overflow: visible; }
+      .rwth-hero-line {
+        fill: none; stroke: #39ff14; stroke-width: 2;
+        stroke-linejoin: round; stroke-linecap: round;
+      }
+      .rwth-hero-area { fill: #39ff1418; stroke: none; }
+      .rwth-hero-base { stroke: #00e5ff33; stroke-width: 1; stroke-dasharray: 3 3; }
+      .rwth-hero-empty {
+        border: 1px solid #00e5ff22; border-radius: 6px; padding: 16px 11px;
+        font: 11px Consolas, monospace; color: #8aa; font-style: italic; text-align: center;
+      }
 
       .rwth-rows { display: flex; flex-direction: column; gap: 4px; }
       .rwth-row { border: 1px solid #00e5ff22; border-radius: 4px; }
@@ -6218,6 +6335,7 @@
     buildLedgerTab,
     buildLedgerDashboard,
     LedgerStats,
+    ChartGeom,
     buildAdvertiseTab,
     buildSettingsTab,
     buildScanChecklist,
