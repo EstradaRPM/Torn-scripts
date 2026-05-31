@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.41
+// @version      0.3.42
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.41';
+  const SCRIPT_VERSION = '0.3.42';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -228,7 +228,7 @@
   // excluded first so a sale's own embedded numbers can't be misread as a date.
   function parseTimestampLine(line) {
     const text = String(line || '');
-    if (/\bsold a\b/i.test(text)) return null;
+    if (/\bsold an?\b/i.test(text)) return null;
     if (/^\d{9,13}$/.test(text)) {
       const n = Number(text);
       return n < 1e12 ? n * 1000 : n;
@@ -238,12 +238,13 @@
   }
 
   // Pure: one Torn sell-log line → ParsedSell, or null if it is not a sell line.
-  // Grammar: optional "anonymously"; "sold a" / "sold a pair of"; venue
+  // Grammar: optional "anonymously"; "sold a" / "sold an" / "sold a pair of"
+  // (Torn picks the article from the item name, e.g. "an MP5k"); venue
   // "on your bazaar" | "on the item market"; "at $X each for a total of $Y"
   // ($Y = net proceeds); optional "after $Z in fees" (absent = 0, e.g. bazaar).
   function parseSellLine(line) {
     const raw = String(line || '');
-    if (!/\bsold a\b/i.test(raw)) return null;
+    if (!/\bsold an?\b/i.test(raw)) return null;
     const anonymous = /\banonymously\b/i.test(raw);
     // Strip "anonymously" so it can't leak into the item-name capture.
     const text = raw.replace(/\s*\banonymously\b/i, '');
@@ -253,7 +254,7 @@
     else if (/on the item market/i.test(text)) venue = 'market';
 
     let itemName = '', bonusName = null;
-    const m = text.match(/sold a (?:pair of )?(.+?)\s+on (?:your bazaar|the item market)/i);
+    const m = text.match(/sold an? (?:pair of )?(.+?)\s+on (?:your bazaar|the item market)/i);
     if (m) {
       const nm = m[1].trim();
       const bm = nm.match(/^(.*\S)\s*\(([^)]+)\)$/);
@@ -318,12 +319,29 @@
     return candidates[0];
   }
 
-  // Pure: counts for the pre-commit confirmation summary. rows = [{ matchedId }].
+  // Pure: stable identity for a Recent Transaction, so re-pasting a log that's
+  // already logged can't double-post (logs are the source of truth). Built from
+  // the fields a buyer verifies: item, bonus, buyer, net price, sale time.
+  // Accepts a ParsedSell (saleNet) or a stored tx (price) interchangeably.
+  function txKey(t) {
+    const price = (t && t.price != null) ? t.price : (t ? t.saleNet : null);
+    return [
+      norm(t && t.itemName), norm(t && t.bonusName), norm(t && t.buyer),
+      price == null ? '' : price,
+      (t && t.timestamp != null) ? t.timestamp : '',
+    ].join('|');
+  }
+
+  // Pure: counts for the pre-commit confirmation summary.
+  // rows = [{ matchedId, duplicate }]. Every non-duplicate sale posts to Recent
+  // Transactions (matched ones also close their ledger row); duplicates are
+  // already logged and skipped.
   function summarizeSells(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const parsed = list.length;
     const matched = list.filter(r => r && r.matchedId).length;
-    return { parsed, matched, recent: parsed - matched };
+    const duplicate = list.filter(r => r && r.duplicate).length;
+    return { parsed, matched, duplicate, recent: parsed - duplicate };
   }
 
   // First finite, present number among the candidates; 0 if none.
@@ -659,9 +677,11 @@
       const rows = (preview.rows || []).map(r => {
         const s = r.sell || {};
         const bonus = s.bonusName ? ` <span class="rwth-row-bonus">${escapeAttr(s.bonusName)}</span>` : '';
-        const dest = r.matchedId
-          ? `<span class="rwth-sell-matched">matched</span>`
-          : `<span class="rwth-sell-recent">→ Recent</span>`;
+        const dest = r.duplicate
+          ? `<span class="rwth-sell-dup">already logged</span>`
+          : r.matchedId
+            ? `<span class="rwth-sell-matched">matched</span>`
+            : `<span class="rwth-sell-recent">→ Recent</span>`;
         return `<div class="rwth-sell-line">
           <span class="rwth-row-name">${escapeAttr(s.itemName) || 'Unparsed line'}${bonus}</span>
           <span class="rwth-row-price">${fmtMoney(s.saleNet)}</span>
@@ -2558,23 +2578,48 @@
       return;
     }
     const open = MEM.ledger.items.filter(i => i.status === 'held' || i.status === 'listed');
+    // Seed with already-logged transactions; flag re-pastes (and intra-batch
+    // repeats) as duplicates so the preview matches what commit will skip.
+    const seen = new Set((MEM.advertise.transactions || []).map(txKey));
     const rows = sells.map((sell) => {
       const match = matchSell(sell, open);
-      return { sell, matchedId: match ? match.id : null };
+      const key = txKey(sell);
+      const duplicate = seen.has(key);
+      if (!duplicate) seen.add(key);
+      return { sell, matchedId: match ? match.id : null, duplicate };
     });
     const s = summarizeSells(rows);
     const summaryText = `${s.parsed} sale${s.parsed === 1 ? '' : 's'} parsed, `
-                      + `${s.matched} matched, ${s.recent} → Recent Transactions`;
+                      + `${s.matched} matched, ${s.recent} → Recent Transactions`
+                      + (s.duplicate ? `, ${s.duplicate} already logged` : '');
     setState({ ledger: { ...MEM.ledger, sellPreview: { rows, summary: s, summaryText }, sellMessage: '' } });
   }
 
-  // Commit the staged sells: matched sells close their ledger row to `sold`;
-  // unmatched (historical) sells go straight into Recent Transactions and never
-  // touch the ledger. One setState — the whole batch lands atomically.
+  // A ParsedSell → Recent Transactions record. The timestamp mirrors the sell
+  // exactly (not the commit clock) so a matched sale and a later re-paste of the
+  // same log produce identical txKeys and dedup cleanly.
+  function sellToTx(sell) {
+    return {
+      id: makeId(),
+      itemName: sell.itemName,
+      bonusName: sell.bonusName,
+      buyer: sell.buyer,
+      price: sell.saleNet,
+      timestamp: sell.timestamp,
+      origin: 'paste',
+    };
+  }
+
+  // Commit the staged sells. Every parsed sale becomes proof-of-sale in Recent
+  // Transactions (the forum/social-proof block) — logs are the source of truth.
+  // Matched sells additionally close their ledger row to `sold`. Re-pastes are
+  // deduped by txKey, so re-importing a log already recorded is a no-op. One
+  // setState — the whole batch lands atomically.
   function commitSells() {
     const preview = MEM.ledger.sellPreview;
     if (!preview) return;
     let items = MEM.ledger.items;
+    const seen = new Set((MEM.advertise.transactions || []).map(txKey));
     const newTx = [];
     for (const row of preview.rows) {
       const sell = row.sell;
@@ -2589,16 +2634,11 @@
           soldTimestamp: soldAt,
           soldVenue: sell.venue, buyer: sell.buyer,
         } : i));
-      } else {
-        newTx.push({
-          id: makeId(),
-          itemName: sell.itemName,
-          bonusName: sell.bonusName,
-          buyer: sell.buyer,
-          price: sell.saleNet,
-          timestamp: sell.timestamp,
-          origin: 'paste',
-        });
+      }
+      const key = txKey(sell);
+      if (!seen.has(key)) {
+        seen.add(key);
+        newTx.push(sellToTx(sell));
       }
     }
     Store.set('rwth_ledger', items);
@@ -3054,6 +3094,7 @@
       }
       .rwth-sell-matched { font: 700 10px Consolas, monospace; color: #39ff14; }
       .rwth-sell-recent  { font: 700 10px Consolas, monospace; color: #00e5ff; }
+      .rwth-sell-dup     { font: 700 10px Consolas, monospace; color: #6b7280; }
 
       .rwth-advertise { display: flex; flex-direction: column; gap: 14px; }
       .rwth-adv-section { display: flex; flex-direction: column; gap: 8px; }
