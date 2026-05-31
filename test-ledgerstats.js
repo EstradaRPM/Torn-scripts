@@ -251,6 +251,92 @@ console.log('\ncumulativeProfit — drops rows missing soldTimestamp');
   assertEq('but both still count as sold', s.soldCount, 2);
 }
 
+// ── margin spread buckets (#310) ─────────────────────────────────────────────
+
+function bucketCount(buckets, label) {
+  const b = buckets.find(x => x.label === label);
+  return b ? b.count : undefined;
+}
+
+console.log('\nmarginBuckets — empty / no sold');
+{
+  const s = LedgerStats.summarize([held(), listed()], NOW);
+  assertEq('five buckets even when empty', s.marginBuckets.length, 5);
+  assertEq('all zero with no sales', s.marginBuckets.reduce((a, b) => a + b.count, 0), 0);
+}
+
+console.log('\nmarginBuckets — populated across ranges');
+{
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, saleNet: 800 }),    // -20%  → loss
+    sold({ buyPrice: 1000, saleNet: 1100 }),   // +10%  → 0–25
+    sold({ buyPrice: 1000, saleNet: 1300 }),   // +30%  → 25–50
+    sold({ buyPrice: 1000, saleNet: 1700 }),   // +70%  → 50–100
+    sold({ buyPrice: 1000, saleNet: 2500 }),   // +150% → 100+
+    sold({ buyPrice: 0, saleNet: 500 }),       // no cost basis → excluded
+  ], NOW);
+  assertEq('loss bucket', bucketCount(s.marginBuckets, 'loss'), 1);
+  assertEq('0–25 bucket', bucketCount(s.marginBuckets, '0–25'), 1);
+  assertEq('25–50 bucket', bucketCount(s.marginBuckets, '25–50'), 1);
+  assertEq('50–100 bucket', bucketCount(s.marginBuckets, '50–100'), 1);
+  assertEq('100+ bucket', bucketCount(s.marginBuckets, '100+'), 1);
+  assertEq('zero-cost row excluded from margin', s.marginBuckets.reduce((a, b) => a + b.count, 0), 5);
+}
+
+// ── inventory aging buckets (#310) ───────────────────────────────────────────
+
+console.log('\nagingBuckets — empty / no held+listed');
+{
+  const s = LedgerStats.summarize([sold()], NOW);
+  assertEq('five buckets even when empty', s.agingBuckets.length, 5);
+  assertEq('all zero with nothing held/listed', s.agingBuckets.reduce((a, b) => a + b.count, 0), 0);
+}
+
+console.log('\nagingBuckets — buy-anchored via injected now');
+{
+  const s = LedgerStats.summarize([
+    held({ buyTimestamp: NOW - 1 * DAY }),    // 1d   → 0–3d
+    listed({ buyTimestamp: NOW - 5 * DAY }),  // 5d   → 3–7d
+    held({ buyTimestamp: NOW - 10 * DAY }),   // 10d  → 7–14d
+    listed({ buyTimestamp: NOW - 20 * DAY }), // 20d  → 14–30d
+    held({ buyTimestamp: NOW - 45 * DAY }),   // 45d  → 30d+
+    sold({ buyTimestamp: NOW - 99 * DAY }),   // sold → not in aging
+    held({ buyTimestamp: undefined }),        // no stamp → dropped
+  ], NOW);
+  assertEq('0–3d', bucketCount(s.agingBuckets, '0–3d'), 1);
+  assertEq('3–7d', bucketCount(s.agingBuckets, '3–7d'), 1);
+  assertEq('7–14d', bucketCount(s.agingBuckets, '7–14d'), 1);
+  assertEq('14–30d', bucketCount(s.agingBuckets, '14–30d'), 1);
+  assertEq('30d+', bucketCount(s.agingBuckets, '30d+'), 1);
+  assertEq('only held+listed with stamps counted', s.agingBuckets.reduce((a, b) => a + b.count, 0), 5);
+}
+
+// ── venue split (#310) ────────────────────────────────────────────────────────
+
+console.log('\nvenueSplit — empty');
+{
+  const s = LedgerStats.summarize([held(), listed()], NOW);
+  assertEq('market count 0', s.venueSplit.market.count, 0);
+  assertEq('bazaar count 0', s.venueSplit.bazaar.count, 0);
+  assertEq('other count 0', s.venueSplit.other.count, 0);
+}
+
+console.log('\nvenueSplit — populated by count and value');
+{
+  const s = LedgerStats.summarize([
+    sold({ soldVenue: 'market', buyPrice: 1000, saleNet: 1500 }),
+    sold({ soldVenue: 'market', buyPrice: 1000, saleNet: 2000 }),
+    sold({ soldVenue: 'bazaar', buyPrice: 1000, saleNet: 1200 }),
+    sold({ soldVenue: null,     buyPrice: 1000, saleNet: 900 }),
+  ], NOW);
+  assertEq('market count', s.venueSplit.market.count, 2);
+  assertEq('market value', s.venueSplit.market.value, 3500);
+  assertEq('bazaar count', s.venueSplit.bazaar.count, 1);
+  assertEq('bazaar value', s.venueSplit.bazaar.value, 1200);
+  assertEq('unknown venue → other', s.venueSplit.other.count, 1);
+  assertEq('other value', s.venueSplit.other.value, 900);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

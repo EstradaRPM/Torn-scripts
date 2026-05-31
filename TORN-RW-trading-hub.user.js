@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.45
+// @version      0.3.46
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.45';
+  const SCRIPT_VERSION = '0.3.46';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -67,7 +67,7 @@
       activeTab: 'ledger', // 'ledger' | 'advertise' | 'settings'
       // Per-section fold state, persisted under rwth_collapsed. Outputs and the
       // sale-log box start collapsed; the advertised-items list starts open.
-      collapsed: { advItems: false, advOutputs: true, saleLog: true },
+      collapsed: { advItems: false, advOutputs: true, saleLog: true, analytics: true },
     },
     ledger: {
       items: [],
@@ -745,17 +745,17 @@
   // ─── LedgerStats — pure portfolio aggregation (#307) ─────────────────────────
   // Folds the ledger items[] into the headline figures the dashboard cards show.
   // Pure and deterministic: items in, plain numbers out — no DOM, Store, or
-  // wall-clock reads. Any time-based figure uses the injected `now` (unused in
-  // slice 1; aging arrives with the mini-charts). Every figure is guarded so an
-  // empty or partial ledger — no sold rows, missing timestamps, a list price
-  // below cost — yields finite numbers, never NaN and never a throw into
-  // render(). Days-to-clear anchors buy→sold, matching VelocityTracker: the user
-  // lists/de-lists constantly, so a list stamp would be noise.
+  // wall-clock reads. Any time-based figure uses the injected `now` (inventory
+  // aging). Every figure is guarded so an empty or partial ledger — no sold rows,
+  // missing timestamps, a list price below cost — yields finite numbers, never
+  // NaN and never a throw into render(). Days-to-clear and aging anchor buy→sold,
+  // matching VelocityTracker: the user lists/de-lists constantly, so a list stamp
+  // would be noise.
   const DAY_MS = 86_400_000;
   function round1(n) { return Math.round(n * 10) / 10; }
 
   const LedgerStats = {
-    summarize(items, _now) {
+    summarize(items, now) {
       const list = Array.isArray(items) ? items : [];
       // null/'' are the codebase's "not set" sentinels (e.g. an unsold row's
       // saleNet) — Number() would coerce them to 0, so reject them up front.
@@ -819,11 +819,55 @@
           return acc;
         }, []);
 
+      // Margin spread — per-item ROI% on sold rows with a positive cost basis
+      // (a zero/absent buy price has no defined margin), bucketed for the
+      // distribution mini-chart.
+      const marginVals = sold
+        .filter(it => cost(it) > 0)
+        .map(it => ((fin(it.saleNet) - cost(it)) / cost(it)) * 100);
+      const marginBuckets = [
+        { label: 'loss',   count: marginVals.filter(m => m < 0).length },
+        { label: '0–25',   count: marginVals.filter(m => m >= 0 && m < 25).length },
+        { label: '25–50',  count: marginVals.filter(m => m >= 25 && m < 50).length },
+        { label: '50–100', count: marginVals.filter(m => m >= 50 && m < 100).length },
+        { label: '100+',   count: marginVals.filter(m => m >= 100).length },
+      ];
+
+      // Inventory aging — how long held + listed items have sat (buy-anchored,
+      // now − buyTimestamp via injected `now`), bucketed. Rows without a finite
+      // buy stamp (or a `now` in the future-relative sense) drop out.
+      const ageVals = open
+        .map(it => spanDays(it.buyTimestamp, now))
+        .filter(d => d != null);
+      const agingBuckets = [
+        { label: '0–3d',   count: ageVals.filter(d => d < 3).length },
+        { label: '3–7d',   count: ageVals.filter(d => d >= 3 && d < 7).length },
+        { label: '7–14d',  count: ageVals.filter(d => d >= 7 && d < 14).length },
+        { label: '14–30d', count: ageVals.filter(d => d >= 14 && d < 30).length },
+        { label: '30d+',   count: ageVals.filter(d => d >= 30).length },
+      ];
+
+      // Venue split — market vs bazaar share of realized sales, by count and net
+      // value. An unknown/missing soldVenue falls into `other` so it's never lost.
+      const venueSplit = {
+        market: { count: 0, value: 0 },
+        bazaar: { count: 0, value: 0 },
+        other:  { count: 0, value: 0 },
+      };
+      for (const it of sold) {
+        const v = norm(it.soldVenue);
+        const bucket = v === 'market' ? venueSplit.market
+          : v === 'bazaar' ? venueSplit.bazaar : venueSplit.other;
+        bucket.count += 1;
+        bucket.value += fin(it.saleNet) || 0;
+      }
+
       return {
         realized, realizedRoiPct, pending, capitalDeployed,
         winRate, avgDaysToClear, feesPaid,
         soldCount: sold.length, listedCount: listed.length,
         best, worst, cumulativeProfit,
+        marginBuckets, agingBuckets, venueSplit,
       };
     },
   };
@@ -872,6 +916,33 @@
       const area = `${line} L${last.x} ${baselineY} L${first.x} ${baselineY} Z`;
       return { coords, line, area, baselineY, width: w, height: h };
     },
+
+    // Histogram geometry: evenly-spaced bars across the width, heights scaled to
+    // the max value. Negative/non-finite values clamp to 0; an all-zero or empty
+    // series yields zero-height rects (a clean empty state, never NaN).
+    bars(values, width, height, opts = {}) {
+      const pad = opts.pad != null ? Number(opts.pad) : 4;
+      const gap = opts.gap != null ? Number(opts.gap) : 3;
+      const w = Number(width) || 0, h = Number(height) || 0;
+      const innerW = Math.max(0, w - pad * 2);
+      const innerH = Math.max(0, h - pad * 2);
+      const vals = (Array.isArray(values) ? values : [])
+        .map(v => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; });
+      if (!vals.length) return { rects: [], width: w, height: h };
+      const max = Math.max(1, ...vals);
+      const slot = innerW / vals.length;
+      const bw = Math.max(0, slot - gap);
+      const rects = vals.map((v, i) => {
+        const bh = (v / max) * innerH;
+        return {
+          x: round2(pad + i * slot + gap / 2),
+          y: round2(pad + innerH - bh),
+          w: round2(bw),
+          h: round2(bh),
+        };
+      });
+      return { rects, width: w, height: h };
+    },
   };
 
   // Hero chart: cumulative realized profit over time as hand-rolled inline SVG
@@ -901,11 +972,60 @@
     </div>`;
   }
 
+  // One labelled bar mini-chart (#310): a small inline-SVG histogram over
+  // `buckets` ([{label, count}]) via ChartGeom.bars, with a per-bucket label row
+  // beneath that doubles as the data readout. Empty (all counts 0) shows a muted
+  // "no data" line rather than blank bars.
+  function buildLedgerMiniChart(title, buckets) {
+    const data = Array.isArray(buckets) ? buckets : [];
+    const total = data.reduce((a, b) => a + (b.count || 0), 0);
+    if (!total) {
+      return `<div class="rwth-mini">
+        <div class="rwth-mini-title">${title}</div>
+        <div class="rwth-mini-empty">no data yet</div>
+      </div>`;
+    }
+    const W = 300, H = 48;
+    const g = ChartGeom.bars(data.map(b => b.count), W, H, { pad: 2, gap: 6 });
+    const rects = g.rects.map(r =>
+      `<rect class="rwth-mini-bar" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="1"></rect>`
+    ).join('');
+    const labels = data.map(b =>
+      `<span class="rwth-mini-cell"><b>${b.count}</b>${escapeAttr(b.label)}</span>`
+    ).join('');
+    return `<div class="rwth-mini">
+      <div class="rwth-mini-title">${title}</div>
+      <svg class="rwth-mini-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">${rects}</svg>
+      <div class="rwth-mini-labels">${labels}</div>
+    </div>`;
+  }
+
+  // Collapsible "more analytics" drawer (#310): the three secondary mini-charts
+  // below the hero, collapsed by default so the panel stays short on mobile.
+  // Follows the hub's existing collapseHead / toggle-collapse idiom.
+  function buildLedgerAnalytics(stats, collapsed) {
+    const v = stats.venueSplit || {};
+    const venueBuckets = [
+      { label: 'market', count: (v.market || {}).count || 0 },
+      { label: 'bazaar', count: (v.bazaar || {}).count || 0 },
+    ];
+    if ((v.other || {}).count) venueBuckets.push({ label: 'other', count: v.other.count });
+    return `<div class="rwth-analytics">
+      ${collapseHead('More analytics', 'analytics', collapsed)}
+      ${collapsed ? '' : `
+      <div class="rwth-mini-grid">
+        ${buildLedgerMiniChart('Margin spread', stats.marginBuckets)}
+        ${buildLedgerMiniChart('Inventory aging', stats.agingBuckets)}
+        ${buildLedgerMiniChart('Venue split', venueBuckets)}
+      </div>`}
+    </div>`;
+  }
+
   // Dashboard for the Ledger tab (#306): headline stat cards + hero profit chart,
   // the cockpit "big picture" above the inventory list. Shallow HTML-string glue
   // over LedgerStats; recomputes on every render() since buildLedgerTab calls it
   // fresh.
-  function buildLedgerDashboard(items, now) {
+  function buildLedgerDashboard(items, now, analyticsCollapsed = true) {
     const s = LedgerStats.summarize(items, now);
     const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
     const cls    = n => (n >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg');
@@ -930,6 +1050,7 @@
         ${card('Win rate', s.soldCount ? s.winRate + '%' : '—', velSub)}
       </div>
       ${buildLedgerHeroChart(s.cumulativeProfit)}
+      ${buildLedgerAnalytics(s, analyticsCollapsed)}
     </div>`;
   }
 
@@ -956,8 +1077,9 @@
 
     const scanning = !!L.scanning;
     const err = mem && mem.fetchError;
+    const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     return `<div class="rwth-ledger">
-      ${buildLedgerDashboard(items, Date.now())}
+      ${buildLedgerDashboard(items, Date.now(), fold.analytics)}
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
         <div class="rwth-ledger-actions">
@@ -3307,6 +3429,26 @@
         border: 1px solid #00e5ff22; border-radius: 6px; padding: 16px 11px;
         font: 11px Consolas, monospace; color: #8aa; font-style: italic; text-align: center;
       }
+
+      .rwth-analytics {
+        display: flex; flex-direction: column; gap: 8px;
+        border: 1px solid #00e5ff22; border-radius: 6px; padding: 9px 11px;
+      }
+      .rwth-mini-grid { display: flex; flex-direction: column; gap: 12px; }
+      .rwth-mini { display: flex; flex-direction: column; gap: 4px; }
+      .rwth-mini-title {
+        font: 700 9px Consolas, monospace; text-transform: uppercase;
+        letter-spacing: .5px; color: #8aa;
+      }
+      .rwth-mini-svg { width: 100%; height: 48px; display: block; }
+      .rwth-mini-bar { fill: #00e5ff66; }
+      .rwth-mini-labels { display: flex; }
+      .rwth-mini-cell {
+        flex: 1; display: flex; flex-direction: column; align-items: center;
+        gap: 1px; font: 9px Consolas, monospace; color: #8aa; text-align: center;
+      }
+      .rwth-mini-cell b { font-size: 11px; color: #cfe; }
+      .rwth-mini-empty { font: 11px Consolas, monospace; color: #8aa; font-style: italic; }
 
       .rwth-rows { display: flex; flex-direction: column; gap: 4px; }
       .rwth-row { border: 1px solid #00e5ff22; border-radius: 4px; }
