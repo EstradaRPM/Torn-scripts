@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.47
+// @version      0.3.48
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.47';
+  const SCRIPT_VERSION = '0.3.48';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -67,7 +67,12 @@
       activeTab: 'ledger', // 'ledger' | 'advertise' | 'settings'
       // Per-section fold state, persisted under rwth_collapsed. Outputs and the
       // sale-log box start collapsed; the advertised-items list starts open.
-      collapsed: { advItems: false, advOutputs: true, saleLog: true, analytics: true },
+      collapsed: {
+        advItems: false, advOutputs: true, saleLog: true, analytics: true,
+        // Settings-tab sections (#311). Only "Advanced lists" starts folded.
+        setAccount: false, setReach: false, setPics: false, setPricing: false,
+        setAdvanced: true, setDiag: false,
+      },
     },
     ledger: {
       items: [],
@@ -1117,16 +1122,162 @@
     },
   };
 
-  // Settings fields — order is the on-screen order.
-  const SETTINGS_FIELDS = [
-    { key: 'playerId',            label: 'Player ID',            type: 'text', placeholder: 'e.g. 1234567' },
-    { key: 'forumThreadUrl',      label: 'Forum thread URL',     type: 'url',  placeholder: 'https://www.torn.com/forums.php#/p=threads&f=...' },
-    { key: 'weav3rPricelistUrl',  label: 'Weav3r pricelist URL', type: 'url',  placeholder: 'https://...' },
-    { key: 'bannerImageUrl',      label: 'Bazaar banner image URL',  type: 'url', placeholder: 'https://...' },
-    { key: 'forumHeaderImageUrl', label: 'Forum header image URL',   type: 'url', placeholder: 'https://...' },
-    { key: 'viewCounterUrl',      label: 'View counter URL',     type: 'url',  placeholder: 'https://CODE.goatcounter.com/count' },
-    { key: 'apiKey',              label: 'Torn API key',         type: 'password', placeholder: '###PDA-APIKEY###' },
+  // Settings tab as declarative data (#311). The tab is an ordered list of
+  // collapsible, plain-language SECTIONS; each section holds typed FIELDS that
+  // the renderer turns into markup. Adding a setting — or a whole new section,
+  // e.g. a future "Appearance" theme picker that surfaces the design tokens via
+  // layman display labels — means adding a schema entry here, never writing new
+  // render code. Field-type vocabulary: text | url | password | image | number
+  // | toggle | textarea | action.
+  //   - text/url/password/image bind to MEM.settings[key]  via data-setting.
+  //   - number/toggle           bind to MEM.intel           via a dotted data-intel path.
+  //   - textarea                binds to a fixed element id + a value(intel) serializer.
+  //   - action                  renders a delegated data-action button (no value).
+  // Section `key` indexes MEM.ui.collapsed; only "Advanced lists" is seeded
+  // collapsed (see the MEM default). Render order = on-screen order.
+  const SETTINGS_SCHEMA = [
+    {
+      title: 'Your Torn account', key: 'setAccount',
+      fields: [
+        { type: 'text', key: 'playerId', label: 'Your player ID',
+          placeholder: 'e.g. 1234567',
+          help: 'The number in your Torn profile link — used to tag your listings as yours.' },
+        { type: 'password', key: 'apiKey', label: 'Torn API key',
+          placeholder: '###PDA-APIKEY###',
+          help: 'Lets the hub look up prices and your items for you. Stays on this device only.' },
+      ],
+    },
+    {
+      title: 'Where people find you', key: 'setReach',
+      fields: [
+        { type: 'url', key: 'forumThreadUrl', label: 'Your forum sales thread link',
+          placeholder: 'https://www.torn.com/forums.php#/p=threads&f=...',
+          help: 'The thread buyers visit. Dropped into your posts so people can jump straight to it.' },
+        { type: 'url', key: 'weav3rPricelistUrl', label: 'Your weav3r price-list link',
+          placeholder: 'https://weav3r.dev/...',
+          help: 'Your public price list on weav3r, if you keep one. Optional.' },
+        { type: 'url', key: 'viewCounterUrl', label: 'View-counter link',
+          placeholder: 'https://CODE.goatcounter.com/count',
+          help: 'Optional. Counts how many people open your posts. Leave blank to skip.' },
+      ],
+    },
+    {
+      title: 'Pictures', key: 'setPics',
+      fields: [
+        { type: 'image', key: 'bannerImageUrl', label: 'Bazaar banner picture',
+          placeholder: 'https://...',
+          help: 'Image shown across the top of your bazaar advert.' },
+        { type: 'image', key: 'forumHeaderImageUrl', label: 'Forum header picture',
+          placeholder: 'https://...',
+          help: 'Image shown at the top of your forum post (replaces the text banner).' },
+      ],
+    },
+    {
+      title: 'Pricing brain', key: 'setPricing',
+      fields: [
+        { type: 'toggle', path: 'enabled.auction', label: 'Suggest prices while browsing auctions',
+          help: 'Show buy/sell guidance as you look through RW auctions.' },
+        { type: 'toggle', path: 'enabled.ledger', label: 'Suggest prices on items you own',
+          help: 'Show the same guidance on your ledger items.' },
+        { type: 'number', path: 'mugBuffer', label: 'Mug safety cushion (%)',
+          min: 0, max: 100, step: 1,
+          help: 'Extra wiggle room so a price still works even if the seller could be mugged. Higher = more cautious.' },
+        { type: 'number', path: 'marginTarget', label: 'Profit goal (%)',
+          min: 0, max: 200, step: 1,
+          help: 'How much profit over what you paid before the hub calls something a good buy.' },
+        { type: 'number', path: 'markup', label: 'Sell-price multiplier (×)',
+          min: 1, max: 10, step: 0.01,
+          help: 'What to multiply an item’s value by when suggesting a sell price. 1.5 = list 50% above value.' },
+        { type: 'toggle', path: 'defaults.ignoreQuality', label: 'Ignore item quality by default',
+          help: 'Treat all qualities as comparable when pricing, unless you change it on a single item.' },
+        { type: 'toggle', path: 'qualityClampDefault', label: 'Match exact quality by default',
+          help: 'Start new items pinned to their exact quality bracket when finding comparable sales.' },
+      ],
+    },
+    {
+      title: 'Advanced lists', key: 'setAdvanced',
+      fields: [
+        { type: 'textarea', id: 'rwth-intel-trash', label: 'Bonuses to always skip', rows: 2,
+          placeholder: 'cupid, achilles, …',
+          help: 'Items with any of these bonuses are ignored before any price lookup. Comma- or line-separated.',
+          value: (intel) => fmtTrashList(intel.excludedBonuses) },
+        { type: 'textarea', id: 'rwth-intel-bonus-change-dates', label: 'Bonus change dates', rows: 3,
+          placeholder: 'puncture: 2026-02-01',
+          help: 'When a bonus was reworked, list it as "bonus: YYYY-MM-DD". Sales older than that date are dropped from price comparisons.',
+          value: (intel) => fmtBonusChangeDates(BONUS_CHANGE_DATES_SEED, intel.bonusChangeDates) },
+        { type: 'textarea', id: 'rwth-intel-similar-bases', label: 'Similar-item groups', rows: 4,
+          placeholder: 'macana, dbk, metal_nunchakus, kodachi, samurai, yasukuni, katana',
+          help: 'Group look-alike items (one group per line) so the hub can borrow a stronger and a weaker neighbour when its own sales are thin.',
+          value: (intel) => fmtSimilarBases(SIMILAR_BASES_SEED, intel.similarBases) },
+      ],
+    },
+    {
+      title: 'Diagnostics', key: 'setDiag',
+      fields: [
+        { type: 'action', action: 'smoke-weav3r', label: 'Test weav3r connection', ghost: true,
+          title: 'Fires one request to weav3r and logs the response to the console (ADR-0003).',
+          help: 'For troubleshooting only — checks the hub can reach weav3r. The result shows in the browser console.' },
+      ],
+    },
   ];
+
+  // Resolve a dotted intel path, e.g. 'enabled.auction' → intel.enabled.auction.
+  function readIntelPath(intel, path) {
+    return String(path).split('.')
+      .reduce((o, k) => (o == null ? undefined : o[k]), intel);
+  }
+
+  // The single field-type → HTML site. Every field in SETTINGS_SCHEMA is pure
+  // data routed through here; adding a field of an existing type needs no new
+  // code. `image` renders as a URL input for now (#312 turns it into a popover).
+  function renderSettingField(f, s, intel) {
+    const help = f.help ? `<span class="rwth-field-help">${f.help}</span>` : '';
+    switch (f.type) {
+      case 'text': case 'url': case 'password': case 'image': {
+        const inputType = f.type === 'image' ? 'url' : f.type;
+        return `<label class="rwth-field">
+          <span class="rwth-field-label">${f.label}</span>
+          <input class="rwth-field-input" type="${inputType}" data-setting="${f.key}"
+                 value="${escapeAttr(s[f.key])}" placeholder="${escapeAttr(f.placeholder || '')}"
+                 autocomplete="off" spellcheck="false">
+          ${help}
+        </label>`;
+      }
+      case 'number':
+        return `<label class="rwth-field">
+          <span class="rwth-field-label">${f.label}</span>
+          <input class="rwth-field-input" type="number" min="${f.min}" max="${f.max}" step="${f.step}"
+                 data-intel="${f.path}" value="${escapeAttr(readIntelPath(intel, f.path))}">
+          ${help}
+        </label>`;
+      case 'toggle':
+        return `<div class="rwth-field">
+          <label class="rwth-intel-check">
+            <input type="checkbox" data-intel="${f.path}" ${readIntelPath(intel, f.path) ? 'checked' : ''}>
+            ${f.label}
+          </label>
+          ${help}
+        </div>`;
+      case 'textarea':
+        return `<div class="rwth-field">
+          <span class="rwth-field-label">${f.label}</span>
+          ${help}
+          <textarea class="rwth-field-input" id="${f.id}" rows="${f.rows || 2}"
+                    style="width:100%;font-family:inherit;"
+                    placeholder="${escapeAttr(f.placeholder || '')}">${escapeAttr(f.value(intel))}</textarea>
+        </div>`;
+      case 'action':
+        return `<div class="rwth-field">
+          <div class="rwth-settings-actions">
+            <button class="rwth-btn${f.ghost ? ' rwth-btn-ghost' : ''}" type="button"
+                    data-action="${f.action}"${f.title ? ` title="${escapeAttr(f.title)}"` : ''}>${f.label}</button>
+          </div>
+          ${help}
+        </div>`;
+      default:
+        return '';
+    }
+  }
 
   function escapeAttr(s) {
     return String(s == null ? '' : s)
@@ -1249,86 +1400,20 @@
   function buildSettingsTab(mem) {
     const s = (mem && mem.settings) || {};
     const intel = (mem && mem.intel) || MEM.intel;
-    const rows = SETTINGS_FIELDS.map(f => `
-      <label class="rwth-field">
-        <span class="rwth-field-label">${f.label}</span>
-        <input class="rwth-field-input" type="${f.type}" data-setting="${f.key}"
-               value="${escapeAttr(s[f.key])}" placeholder="${escapeAttr(f.placeholder)}"
-               autocomplete="off" spellcheck="false">
-      </label>`).join('');
+    const fold = (mem && mem.ui && mem.ui.collapsed) || {};
+    const sections = SETTINGS_SCHEMA.map((sec) => {
+      const collapsed = Boolean(fold[sec.key]);
+      const body = collapsed ? '' :
+        `<div class="rwth-settings-section-body">${
+          sec.fields.map(f => renderSettingField(f, s, intel)).join('')}</div>`;
+      return `<div class="rwth-settings-section">${
+        collapseHead(sec.title, sec.key, collapsed)}${body}</div>`;
+    }).join('');
     return `<div class="rwth-settings">
-      ${rows}
-      <hr class="rwth-settings-divider">
-      <p class="rwth-form-title" style="margin:0 0 6px;">Intel</p>
-      <div class="rwth-intel-row">
-        <label class="rwth-intel-check">
-          <input type="checkbox" data-intel="enabled.auction"
-                 ${intel.enabled.auction ? 'checked' : ''}>
-          Enable on Auction scanner
-        </label>
-        <label class="rwth-intel-check">
-          <input type="checkbox" data-intel="enabled.ledger"
-                 ${intel.enabled.ledger ? 'checked' : ''}>
-          Enable on Ledger
-        </label>
-      </div>
-      <div class="rwth-intel-grid">
-        <label class="rwth-field">
-          <span class="rwth-field-label">Mug buffer %</span>
-          <input class="rwth-field-input" type="number" min="0" max="100" step="1"
-                 data-intel="mugBuffer"
-                 value="${escapeAttr(intel.mugBuffer)}">
-        </label>
-        <label class="rwth-field">
-          <span class="rwth-field-label">Margin target %</span>
-          <input class="rwth-field-input" type="number" min="0" max="200" step="1"
-                 data-intel="marginTarget"
-                 value="${escapeAttr(intel.marginTarget)}">
-        </label>
-        <label class="rwth-field">
-          <span class="rwth-field-label">Markup ×</span>
-          <input class="rwth-field-input" type="number" min="1" max="10" step="0.01"
-                 data-intel="markup"
-                 value="${escapeAttr(intel.markup)}">
-        </label>
-      </div>
-      <label class="rwth-intel-check" style="margin-top:4px;">
-        <input type="checkbox" data-intel="defaults.ignoreQuality"
-               ${intel.defaults.ignoreQuality ? 'checked' : ''}>
-        Any Quality (ignore quality for all items by default)
-      </label>
-      <label class="rwth-intel-check" style="margin-top:4px;">
-        <input type="checkbox" data-intel="qualityClampDefault"
-               ${intel.qualityClampDefault ? 'checked' : ''}>
-        Quality clamp ON by default (seed new cards to exact-bucket filter)
-      </label>
-
-      <p class="rwth-form-title" style="margin:14px 0 4px;">Trash bonus list</p>
-      <p class="rwth-intel-empty" style="margin:0 0 4px;">Bonuses to skip entirely — comma- or newline-separated. Items carrying any of these short-circuit before any comp fetch.</p>
-      <textarea class="rwth-field-input" id="rwth-intel-trash" rows="2"
-                style="width:100%;font-family:inherit;"
-                placeholder="cupid, achilles, …">${escapeAttr(fmtTrashList(intel.excludedBonuses))}</textarea>
-
-      <p class="rwth-form-title" style="margin:14px 0 4px;">Reference tables</p>
-      <p class="rwth-intel-empty" style="margin:0 0 4px;">Bonus-mechanic change dates — one per line as <code>bonus: YYYY-MM-DD</code>. Cleared sales older than the date for that bonus are suppressed from the comp set (King example 4 — puncture nerf).</p>
-      <textarea class="rwth-field-input" id="rwth-intel-bonus-change-dates" rows="3"
-                style="width:100%;font-family:inherit;"
-                placeholder="puncture: 2026-02-01">${escapeAttr(fmtBonusChangeDates(BONUS_CHANGE_DATES_SEED, intel.bonusChangeDates))}</textarea>
-
-      <p class="rwth-intel-empty" style="margin:8px 0 4px;">Similar-base clusters — one cluster per line, comma-separated tokens (lower-case, underscores for spaces). When same-base comps are thin, the script pulls one stronger + one weaker neighbour from the cluster (King example 3 — yasukuni weaken cross-checked vs kodachi + samurai).</p>
-      <textarea class="rwth-field-input" id="rwth-intel-similar-bases" rows="4"
-                style="width:100%;font-family:inherit;"
-                placeholder="macana, dbk, metal_nunchakus, kodachi, samurai, yasukuni, katana">${escapeAttr(fmtSimilarBases(SIMILAR_BASES_SEED, intel.similarBases))}</textarea>
-
+      ${sections}
       <div class="rwth-settings-actions">
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
         <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
-      </div>
-      <div class="rwth-settings-actions" style="margin-top:8px;opacity:0.6;">
-        <button class="rwth-btn rwth-btn-ghost" type="button" data-action="smoke-weav3r"
-                title="v0.2.0 plumbing smoke test — fires one GM_xmlhttpRequest to weav3r and logs the response to the console (ADR-0003).">
-          Smoke: weav3r ping
-        </button>
       </div>
     </div>`;
   }
@@ -3216,23 +3301,30 @@
          '--rwth-accent', '#ff0066')); nothing else needs to change. Declared
          on :root (all names are --rwth-* so collision with Torn's page CSS is
          impossible). Domain status colours (rarity badges, verdict tiers, the
-         launcher gradient) stay literal for now — they're a later tier. */
+         launcher gradient) stay literal for now — they're a later tier.
+
+         Token names are ROLE-based (the job the colour does), never hue-based —
+         so re-theming to a non-cyan secondary doesn't leave a token literally
+         named "cyan". Design note for the future Appearance picker (#311): keep
+         these internal names developer-facing/semantic (e.g. --rwth-danger);
+         the picker surfaces them to users through separate layman display
+         labels ("Error / alert colour"), never the raw variable name. */
       :root {
         --rwth-bg: #0a0a0a;                  /* panel background            */
         --rwth-accent: #39ff14;              /* primary action / brand green */
         --rwth-accent-fill: #39ff1418;       /* hero chart area fill         */
-        --rwth-cyan: #00e5ff;                /* secondary / labels / links  */
+        --rwth-secondary: #00e5ff;           /* secondary / labels / links  */
         --rwth-text: #cfe;                   /* body text                   */
         --rwth-muted: #8aa;                  /* secondary / muted text      */
         --rwth-danger: #ff5d5d;              /* errors / destructive        */
-        /* Cyan-tinted borders & fills, faint → bright. */
+        /* Secondary-tinted borders & fills, faint → bright. */
         --rwth-fill-faint: #00e5ff0a;
         --rwth-fill-hover: #00e5ff11;
         --rwth-border-soft: #00e5ff22;
         --rwth-border: #00e5ff33;
         --rwth-border-strong: #00e5ff44;
         --rwth-border-bright: #00e5ff55;
-        --rwth-cyan-strong: #00e5ff66;
+        --rwth-secondary-strong: #00e5ff66;
         /* Danger-tinted fills & borders. */
         --rwth-danger-bg: #ff5d5d11;
         --rwth-danger-border: #ff5d5d44;
@@ -3245,17 +3337,17 @@
       #rwth-launcher.rwth-launcher-chat { cursor: pointer; }
       #rwth-launcher.rwth-launcher-chat svg { display: block; }
       #rwth-launcher.rwth-launcher-chat svg path { fill: url(#rwth-grad); }
-      #rwth-launcher.rwth-launcher-chat:hover svg { filter: drop-shadow(0 0 3px var(--rwth-cyan)); }
+      #rwth-launcher.rwth-launcher-chat:hover svg { filter: drop-shadow(0 0 3px var(--rwth-secondary)); }
       #rwth-launcher.rwth-launcher-chat.rwth-launcher-open svg path { fill: url(#rwth-grad-flip); }
       #rwth-launcher.rwth-launcher-chat.rwth-launcher-open svg { filter: drop-shadow(0 0 3px var(--rwth-accent)); }
       .rwth-launcher-fixed.rwth-launcher-open { color: var(--rwth-bg); background: var(--rwth-accent); }
       .rwth-launcher-fixed {
         position: fixed; bottom: 12px; right: 12px; z-index: 2147483646;
         font: 700 12px/1 var(--rwth-font-mono); letter-spacing: 1px;
-        color: var(--rwth-accent); background: var(--rwth-bg); border: 1px solid var(--rwth-cyan);
+        color: var(--rwth-accent); background: var(--rwth-bg); border: 1px solid var(--rwth-secondary);
         border-radius: 6px; cursor: pointer; padding: 6px 9px;
       }
-      .rwth-launcher-fixed:hover { box-shadow: 0 0 6px var(--rwth-cyan); }
+      .rwth-launcher-fixed:hover { box-shadow: 0 0 6px var(--rwth-secondary); }
 
       #rwth-panel {
         position: fixed;
@@ -3268,7 +3360,7 @@
         flex-direction: column;
         background: var(--rwth-bg);
         color: var(--rwth-text);
-        border: 1px solid var(--rwth-cyan);
+        border: 1px solid var(--rwth-secondary);
         border-radius: 8px;
         font: 13px/1.4 var(--rwth-font-ui);
         transform: scale(0);
@@ -3289,10 +3381,10 @@
         padding: 8px 10px; border-bottom: 1px solid var(--rwth-border);
       }
       #rwth-title { font: 700 13px var(--rwth-font-ui); color: var(--rwth-accent); letter-spacing: .3px; }
-      #rwth-version { font: 10px var(--rwth-font-mono); color: var(--rwth-cyan); margin-left: 8px; }
+      #rwth-version { font: 10px var(--rwth-font-mono); color: var(--rwth-secondary); margin-left: 8px; }
       #rwth-header-actions { display: flex; align-items: center; gap: 6px; }
       #rwth-max, #rwth-close {
-        background: none; border: none; color: var(--rwth-cyan);
+        background: none; border: none; color: var(--rwth-secondary);
         cursor: pointer; line-height: 1; padding: 0;
       }
       #rwth-close { font-size: 18px; }
@@ -3310,10 +3402,16 @@
       #rwth-content { flex: 1; overflow-y: auto; padding: 12px; }
       .rwth-placeholder { color: var(--rwth-muted); font-style: italic; }
 
-      .rwth-settings { display: flex; flex-direction: column; gap: 12px; }
+      .rwth-settings { display: flex; flex-direction: column; gap: 6px; }
+      .rwth-settings-section { display: flex; flex-direction: column; }
+      .rwth-settings-section-body {
+        display: flex; flex-direction: column; gap: 12px;
+        padding: 8px 2px 12px; border-bottom: 1px solid var(--rwth-border-soft);
+      }
       .rwth-field { display: flex; flex-direction: column; gap: 4px; }
+      .rwth-field-help { font: 11px var(--rwth-font-ui); color: var(--rwth-muted); line-height: 1.4; }
       .rwth-field-label {
-        font: 600 11px var(--rwth-font-mono); color: var(--rwth-cyan); letter-spacing: .3px;
+        font: 600 11px var(--rwth-font-mono); color: var(--rwth-secondary); letter-spacing: .3px;
       }
       .rwth-field-input {
         background: #111; color: var(--rwth-text); border: 1px solid var(--rwth-border-strong);
@@ -3346,7 +3444,7 @@
         display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: 6px 8px; margin-bottom: 4px;
       }
-      .rwth-intel-bonus-name { font: 600 11px var(--rwth-font-mono); color: var(--rwth-cyan); min-width: 80px; }
+      .rwth-intel-bonus-name { font: 600 11px var(--rwth-font-mono); color: var(--rwth-secondary); min-width: 80px; }
       .rwth-intel-bonus-field { display: flex; align-items: center; gap: 4px;
         font: 11px var(--rwth-font-ui); color: var(--rwth-muted); }
       .rwth-intel-bonus-field .rwth-field-input { width: 60px; }
@@ -3381,7 +3479,7 @@
       .rwth-scan-price { font: 600 11px var(--rwth-font-mono); color: var(--rwth-text); }
       .rwth-scan-meta { font: 11px var(--rwth-font-mono); color: var(--rwth-muted); }
       .rwth-scan-note { font: 11px var(--rwth-font-mono); color: var(--rwth-muted); }
-      .rwth-scan-note strong { color: var(--rwth-cyan); }
+      .rwth-scan-note strong { color: var(--rwth-secondary); }
       .rwth-rarity {
         font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
         color: var(--rwth-bg); padding: 1px 5px; border-radius: 3px;
@@ -3418,7 +3516,7 @@
       .rwth-form-error:empty { display: none; }
       .rwth-form-actions { display: flex; gap: 8px; }
       .rwth-btn-ghost {
-        background: none; color: var(--rwth-cyan); border: 1px solid var(--rwth-border-strong);
+        background: none; color: var(--rwth-secondary); border: 1px solid var(--rwth-border-strong);
       }
       .rwth-btn-ghost:hover { box-shadow: none; color: var(--rwth-accent); border-color: var(--rwth-accent); }
 
@@ -3474,7 +3572,7 @@
         letter-spacing: .5px; color: var(--rwth-muted);
       }
       .rwth-mini-svg { width: 100%; height: 48px; display: block; }
-      .rwth-mini-bar { fill: var(--rwth-cyan-strong); }
+      .rwth-mini-bar { fill: var(--rwth-secondary-strong); }
       .rwth-mini-labels { display: flex; }
       .rwth-mini-cell {
         flex: 1; display: flex; flex-direction: column; align-items: center;
@@ -3492,7 +3590,7 @@
       }
       .rwth-row-head:hover { background: var(--rwth-fill-hover); }
       .rwth-row-name { flex: 1; font: 600 12px var(--rwth-font-ui); color: var(--rwth-text); }
-      .rwth-row-bonus { font: 400 11px var(--rwth-font-mono); color: var(--rwth-cyan); }
+      .rwth-row-bonus { font: 400 11px var(--rwth-font-mono); color: var(--rwth-secondary); }
       .rwth-row-price { font: 600 11px var(--rwth-font-mono); color: var(--rwth-text); }
       .rwth-row-figs {
         display: flex; align-items: baseline; gap: 10px;
@@ -3508,7 +3606,7 @@
         padding: 2px 6px; border-radius: 3px;
       }
       .rwth-status-held   { color: var(--rwth-muted); border: 1px solid #8AA66; }
-      .rwth-status-listed { color: var(--rwth-cyan); border: 1px solid var(--rwth-cyan-strong); }
+      .rwth-status-listed { color: var(--rwth-secondary); border: 1px solid var(--rwth-secondary-strong); }
       .rwth-roi { font: 700 11px var(--rwth-font-mono); }
       .rwth-roi-pos { color: var(--rwth-accent); }
       .rwth-roi-neg { color: var(--rwth-danger); }
@@ -3523,7 +3621,7 @@
       .rwth-row-actions { display: flex; gap: 6px; }
       .rwth-btn-sm {
         background: none; border: 1px solid var(--rwth-border-strong); border-radius: 3px;
-        color: var(--rwth-cyan); cursor: pointer; padding: 3px 8px;
+        color: var(--rwth-secondary); cursor: pointer; padding: 3px 8px;
         font: 600 10px var(--rwth-font-mono);
       }
       .rwth-btn-sm:hover { color: var(--rwth-accent); border-color: var(--rwth-accent); }
@@ -3535,13 +3633,13 @@
         border: 1px solid var(--rwth-border); border-radius: 6px; padding: 10px;
       }
       .rwth-sell-input { resize: vertical; min-height: 60px; }
-      .rwth-sell-summary { font: 600 11px var(--rwth-font-mono); color: var(--rwth-cyan); }
+      .rwth-sell-summary { font: 600 11px var(--rwth-font-mono); color: var(--rwth-secondary); }
       .rwth-sell-line {
         display: flex; align-items: center; gap: 8px;
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: 6px 8px;
       }
       .rwth-sell-matched { font: 700 10px var(--rwth-font-mono); color: var(--rwth-accent); }
-      .rwth-sell-recent  { font: 700 10px var(--rwth-font-mono); color: var(--rwth-cyan); }
+      .rwth-sell-recent  { font: 700 10px var(--rwth-font-mono); color: var(--rwth-secondary); }
       .rwth-sell-dup     { font: 700 10px var(--rwth-font-mono); color: #6b7280; }
 
       .rwth-advertise { display: flex; flex-direction: column; gap: 14px; }
@@ -3560,7 +3658,7 @@
       .rwth-img-pop {
         position: absolute; top: 100%; right: 0; z-index: 5; width: 230px;
         display: flex; flex-direction: column; gap: 6px; margin-top: 4px;
-        background: #0c1422; border: 1px solid var(--rwth-cyan-strong); border-radius: 4px; padding: 8px;
+        background: #0c1422; border: 1px solid var(--rwth-secondary-strong); border-radius: 4px; padding: 8px;
         box-shadow: 0 4px 12px #000a;
       }
       .rwth-img-pop .rwth-btn-sm { align-self: flex-end; }
@@ -3659,7 +3757,7 @@
       .rwth-card-drill-table td { padding: 2px 6px; text-align: left; }
       .rwth-card-drill-table th { color: var(--rwth-muted); font-weight: 400; border-bottom: 1px dashed var(--rwth-border-strong); }
       .rwth-card-drill-table tr.dim td { color: #667; }
-      .rwth-card-drill-table tr.rwth-card-ladder-own td { color: var(--rwth-cyan); font-weight: 700; }
+      .rwth-card-drill-table tr.rwth-card-ladder-own td { color: var(--rwth-secondary); font-weight: 700; }
       .rwth-card-drill-empty { color: var(--rwth-muted); font-style: italic; }
 
       /* #302 slice 1 — unified evidence ladder (SOLD + FOR-SALE in one table). */
