@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.52
+// @version      0.3.53
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.52';
+  const SCRIPT_VERSION = '0.3.53';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1146,8 +1146,8 @@
           help: 'The number in your Torn profile link — used to tag your listings as yours.' },
         { type: 'password', key: 'apiKey', label: 'Torn API key (full access)',
           placeholder: 'Paste your full-access key', testable: true,
-          help: 'Needs a full-access key — make one at Settings → API Keys on torn.com. '
-            + 'A limited key will not work. Stays on this device only; hit Test to check it.' },
+          help: 'Needs a full-access key (a limited one will not work). Make one under '
+            + 'Settings → API Keys, paste it here, then hit Test. Stays on this device only.' },
       ],
     },
     {
