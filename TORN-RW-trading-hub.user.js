@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.55
+// @version      0.3.56
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.55';
+  const SCRIPT_VERSION = '0.3.56';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -101,6 +101,7 @@
     settings: {
       playerId: '',
       forumThreadUrl: '',
+      weav3rAuto: true,       // #314 — build the weav3r link from playerId; off = use the manual field below
       weav3rPricelistUrl: '',
       bannerImageUrl: '',
       forumHeaderImageUrl: '',
@@ -1132,7 +1133,8 @@
   // render code. Field-type vocabulary: text | url | password | image | number
   // | toggle | textarea | action.
   //   - text/url/password/image bind to MEM.settings[key]  via data-setting.
-  //   - number/toggle           bind to MEM.intel           via a dotted data-intel path.
+  //   - number                  binds to MEM.intel          via a dotted data-intel path.
+  //   - toggle                  binds to MEM.intel via `path`, OR MEM.settings via `key`.
   //   - textarea                binds to a fixed element id + a value(intel) serializer.
   //   - action                  renders a delegated data-action button (no value).
   // Section `key` indexes MEM.ui.collapsed; only "Advanced lists" is seeded
@@ -1155,9 +1157,11 @@
         { type: 'url', key: 'forumThreadUrl', label: 'Your forum sales thread link',
           placeholder: 'https://www.torn.com/forums.php#/p=threads&f=...',
           help: 'The thread buyers visit. Dropped into your posts so people can jump straight to it.' },
+        { type: 'toggle', key: 'weav3rAuto', label: 'Build my weav3r price-list link for me',
+          help: 'On: your weav3r link is made automatically from your player ID — no typing needed. Off: paste your own link below.' },
         { type: 'url', key: 'weav3rPricelistUrl', label: 'Your weav3r price-list link',
           placeholder: 'https://weav3r.dev/...',
-          help: 'Your public price list on weav3r, if you keep one. Optional.' },
+          help: 'Only used when the toggle above is off. Paste your public weav3r price list here. Optional.' },
         { type: 'url', key: 'viewCounterUrl', label: 'View-counter link',
           placeholder: 'https://CODE.goatcounter.com/count',
           help: 'Optional. Counts how many people open your posts. Leave blank to skip.' },
@@ -1295,14 +1299,20 @@
                  data-intel="${f.path}" value="${escapeAttr(readIntelPath(intel, f.path))}">
           ${help}
         </label>`;
-      case 'toggle':
+      case 'toggle': {
+        // A toggle binds to MEM.intel via a dotted `path`, or to MEM.settings
+        // via `key` (#314 — the weav3r auto-build switch lives in settings).
+        const bind = f.key
+          ? { attr: `data-setting="${f.key}"`, on: Boolean(s[f.key]) }
+          : { attr: `data-intel="${f.path}"`, on: Boolean(readIntelPath(intel, f.path)) };
         return `<div class="rwth-field">
           <label class="rwth-intel-check">
-            <input type="checkbox" data-intel="${f.path}" ${readIntelPath(intel, f.path) ? 'checked' : ''}>
+            <input type="checkbox" ${bind.attr} ${bind.on ? 'checked' : ''}>
             ${f.label}
           </label>
           ${help}
         </div>`;
+      }
       case 'textarea':
         return `<div class="rwth-field">
           <span class="rwth-field-label">${f.label}</span>
@@ -1336,6 +1346,20 @@
   function hasRealApiKey(key) {
     const k = String(key == null ? '' : key).trim();
     return Boolean(k) && k !== '###PDA-APIKEY###';
+  }
+
+  // #314 — the effective weav3r price-list link for the Advertise outputs.
+  // Auto mode (toggle on) builds it from the player ID in the confirmed
+  // `https://weav3r.dev/pricelist/{playerId}` shape, so the user never types it;
+  // with no player ID yet there is nothing to build, so the link is hidden
+  // (returns ''). Manual mode (toggle off) falls back to the typed-in URL.
+  function resolveWeav3rUrl(settings) {
+    const s = settings || {};
+    if (s.weav3rAuto) {
+      const pid = String(s.playerId || '').trim();
+      return pid ? `https://weav3r.dev/pricelist/${pid}` : '';
+    }
+    return String(s.weav3rPricelistUrl || '').trim();
   }
 
   // Invisible view-counter pixel appended to advertise HTML. Each render of a
@@ -1896,7 +1920,7 @@
       // Link buttons — forum thread and live pricelist, when configured.
       const links = [];
       const forumUrl = (s.forumThreadUrl || '').trim();
-      const priceUrl = (s.weav3rPricelistUrl || '').trim();
+      const priceUrl = resolveWeav3rUrl(s);
       if (forumUrl) links.push(bazaarLink(forumUrl, 'Forum Thread'));
       if (priceUrl) links.push(bazaarLink(priceUrl, 'Live Pricelist'));
       if (links.length) {
@@ -1954,7 +1978,7 @@
         + `text-transform: uppercase; text-decoration: none;">${escapeAttr(label)} &#8599;</a>`;
       const links = [];
       const forumUrl = (s.forumThreadUrl || '').trim();
-      const priceUrl = (s.weav3rPricelistUrl || '').trim();
+      const priceUrl = resolveWeav3rUrl(s);
       const pid = (s.playerId || '').trim();
       if (forumUrl) links.push(sigLink(forumUrl, 'Forum'));
       if (priceUrl) links.push(sigLink(priceUrl, 'Pricelist'));
@@ -2386,7 +2410,7 @@
   function saveSettings() {
     const next = { ...MEM.settings };
     document.querySelectorAll('#rwth-content [data-setting]').forEach((input) => {
-      next[input.dataset.setting] = input.value;
+      next[input.dataset.setting] = input.type === 'checkbox' ? input.checked : input.value;
     });
     Store.set('rwth_settings', next);
 
@@ -6809,6 +6833,7 @@
     resolveBonusChangeEpoch,
     parseBonusChangeDates,
     fmtBonusChangeDates,
+    resolveWeav3rUrl,
     velocityClass,
     velocityBaseline,
     VELOCITY_MIN_SAMPLES,
