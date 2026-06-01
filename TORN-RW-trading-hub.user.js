@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.48
+// @version      0.3.49
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.48';
+  const SCRIPT_VERSION = '0.3.49';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1187,7 +1187,7 @@
           help: 'How much profit over what you paid before the hub calls something a good buy.' },
         { type: 'number', path: 'markup', label: 'Sell-price multiplier (×)',
           min: 1, max: 10, step: 0.01,
-          help: 'What to multiply an item’s value by when suggesting a sell price. 1.5 = list 50% above value.' },
+          help: 'What to multiply the value by when suggesting a sell price. 1.5 = list 50% above value.' },
         { type: 'toggle', path: 'defaults.ignoreQuality', label: 'Ignore item quality by default',
           help: 'Treat all qualities as comparable when pricing, unless you change it on a single item.' },
         { type: 'toggle', path: 'qualityClampDefault', label: 'Match exact quality by default',
