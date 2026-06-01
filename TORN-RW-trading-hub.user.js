@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.50
+// @version      0.3.51
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.50';
+  const SCRIPT_VERSION = '0.3.51';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1142,10 +1142,10 @@
       title: 'Your Torn account', key: 'setAccount',
       fields: [
         { type: 'text', key: 'playerId', label: 'Your player ID',
-          placeholder: 'e.g. 1234567',
+          placeholder: 'e.g. 1234567', lockWhenKey: true,
           help: 'The number in your Torn profile link — used to tag your listings as yours.' },
         { type: 'password', key: 'apiKey', label: 'Torn API key',
-          placeholder: '###PDA-APIKEY###',
+          placeholder: '###PDA-APIKEY###', testable: true,
           help: 'Lets the hub look up prices and your items for you. Stays on this device only.' },
       ],
     },
@@ -1238,12 +1238,30 @@
     const help = f.help ? `<span class="rwth-field-help">${f.help}</span>` : '';
     switch (f.type) {
       case 'text': case 'url': case 'password': {
+        // #313 — the Player ID field locks (read-only) while a real key is
+        // present, because Test fills it in for you; clearing the key frees it.
+        const keyPresent = hasRealApiKey(s.apiKey);
+        const locked = Boolean(f.lockWhenKey && keyPresent);
+        const lockNote = f.lockWhenKey
+          ? `<span class="rwth-field-help rwth-key-lock-note"${locked ? '' : ' hidden'}>`
+            + 'Filled in from your API key — clear the key to edit this by hand.</span>'
+          : '';
+        // #313 — the API-key field carries a Test button + inline status that
+        // checks the key against Torn v2 /user and auto-fills the Player ID.
+        const test = f.testable
+          ? `<div class="rwth-key-test">
+              <button class="rwth-btn-sm" type="button" data-action="test-key">Test</button>
+              <span id="rwth-key-test-status" class="rwth-key-test-status" role="status" aria-live="polite"></span>
+            </div>`
+          : '';
         return `<label class="rwth-field">
           <span class="rwth-field-label">${f.label}</span>
           <input class="rwth-field-input" type="${f.type}" data-setting="${f.key}"
                  value="${escapeAttr(s[f.key])}" placeholder="${escapeAttr(f.placeholder || '')}"
-                 autocomplete="off" spellcheck="false">
+                 autocomplete="off" spellcheck="false"${locked ? ' readonly' : ''}>
+          ${test}
           ${help}
+          ${lockNote}
         </label>`;
       }
       case 'image': {
@@ -1309,6 +1327,15 @@
   function escapeAttr(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  // #313 — a "real" key is any non-empty value other than the PDA placeholder
+  // token. On Torn PDA that token is swapped for the live key before the
+  // script runs, so it reads as real; on desktop the unsubstituted token does
+  // not, leaving the Player ID field editable until a key is pasted.
+  function hasRealApiKey(key) {
+    const k = String(key == null ? '' : key).trim();
+    return Boolean(k) && k !== '###PDA-APIKEY###';
   }
 
   // Invisible view-counter pixel appended to advertise HTML. Each render of a
@@ -2242,6 +2269,7 @@
         case 'close':         setState({ ui: { ...MEM.ui, open: false } }); break;
         case 'maximize':      setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } }); break;
         case 'save-settings': saveSettings(); break;
+        case 'test-key':      testApiKey(); break;
         case 'smoke-weav3r':  smokeWeav3r(); break;
         case 'add-item':      setState({ ledger: { ...MEM.ledger, editingId: 'new' } }); break;
         case 'edit-item':     setState({ ledger: { ...MEM.ledger, editingId: id, expandedId: id } }); break;
@@ -2273,8 +2301,20 @@
     // Scan-checklist edits → write straight back into MEM.ledger.scanResults and
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
-    root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); });
-    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); });
+    root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); });
+  }
+
+  // #313 — keep the Player ID field's locked state in step with the key field
+  // as the user types, without a full re-render (which would interrupt typing).
+  // Clearing the key re-enables manual editing; entering one locks it again.
+  function syncKeyLock(e) {
+    if (!e.target.matches || !e.target.matches('[data-setting="apiKey"]')) return;
+    const locked = hasRealApiKey(e.target.value);
+    const pid = document.querySelector('#rwth-content [data-setting="playerId"]');
+    if (pid) pid.readOnly = locked;
+    const note = document.querySelector('#rwth-content .rwth-key-lock-note');
+    if (note) note.hidden = !locked;
   }
 
   // Advertise-tab inline edits → write straight back into state and persist,
@@ -2398,6 +2438,67 @@
       const el = document.getElementById('rwth-settings-status');
       if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
     }, 2200);
+  }
+
+  // #313 — verify the API key against Torn v2 /user (v2 only). On success the
+  // status reads "Connected as <Name> [<ID>]", the Player ID is auto-filled
+  // from the response and the field locks, and both the key and the ID are
+  // persisted. On failure a plain-language message is shown. DOM is patched in
+  // place (no render) so the status line survives.
+  function pickUserIdentity(d) {
+    const src = d && (d.profile || d.basic || d.user || d);
+    if (!src || typeof src !== 'object') return null;
+    const id = src.player_id != null ? src.player_id : src.id;
+    const name = src.name;
+    if (id == null && !name) return null;
+    return { id, name: name || 'you' };
+  }
+
+  async function testApiKey() {
+    const status = document.getElementById('rwth-key-test-status');
+    const setStatus = (text, tone) => {
+      if (!status) return;
+      status.textContent = text;
+      status.classList.remove('rwth-key-test-ok', 'rwth-key-test-err');
+      if (tone) status.classList.add(tone);
+    };
+    const keyEl = document.querySelector('#rwth-content [data-setting="apiKey"]');
+    const key = keyEl ? keyEl.value.trim() : '';
+    if (!hasRealApiKey(key)) {
+      setStatus('Enter your API key first, then hit Test.', 'rwth-key-test-err');
+      return;
+    }
+    setStatus('Checking your key…', null);
+
+    let d;
+    try {
+      const res = await fetch(
+        `${API_BASE}/v2/user?key=${encodeURIComponent(key)}&comment=rwth-test`);
+      d = await res.json();
+    } catch {
+      setStatus('Could not reach Torn just now — check your connection and try again.',
+                'rwth-key-test-err');
+      return;
+    }
+    const who = (d && !d.error) ? pickUserIdentity(d) : null;
+    if (!who) {
+      setStatus('That key did not work — double-check you pasted the whole thing.',
+                'rwth-key-test-err');
+      return;
+    }
+
+    const pid = who.id == null ? '' : String(who.id);
+    setStatus(`✓ Connected as ${who.name} [${pid}]`, 'rwth-key-test-ok');
+
+    // Persist the verified key + auto-filled Player ID, then lock the field in
+    // place so the success status is not wiped by a re-render.
+    const settings = { ...MEM.settings, apiKey: key, playerId: pid };
+    Store.set('rwth_settings', settings);
+    MEM.settings = settings;
+    const pidEl = document.querySelector('#rwth-content [data-setting="playerId"]');
+    if (pidEl) { pidEl.value = pid; pidEl.readOnly = true; }
+    const note = document.querySelector('#rwth-content .rwth-key-lock-note');
+    if (note) note.hidden = false;
   }
 
   // #312 — Toggle which Settings `image` field has its URL popover open. Pass a
@@ -3482,6 +3583,11 @@
         opacity: 0; transition: opacity .15s ease-out;
       }
       .rwth-settings-status.rwth-saved-show { opacity: 1; }
+      .rwth-key-test { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .rwth-key-test-status { font: 600 11px var(--rwth-font-mono); color: var(--rwth-muted); }
+      .rwth-key-test-status.rwth-key-test-ok { color: var(--rwth-accent); }
+      .rwth-key-test-status.rwth-key-test-err { color: var(--rwth-danger); }
+      .rwth-key-lock-note { font-style: italic; }
       .rwth-settings-divider { border: none; border-top: 1px solid var(--rwth-border-soft); margin: 8px 0; }
       .rwth-intel-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
       .rwth-intel-check { display: flex; align-items: center; gap: 6px; cursor: pointer;
