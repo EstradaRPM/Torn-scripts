@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.51
+// @version      0.3.52
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.51';
+  const SCRIPT_VERSION = '0.3.52';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -105,7 +105,7 @@
       bannerImageUrl: '',
       forumHeaderImageUrl: '',
       viewCounterUrl: '',
-      apiKey: '###PDA-APIKEY###',
+      apiKey: '',
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -1144,9 +1144,10 @@
         { type: 'text', key: 'playerId', label: 'Your player ID',
           placeholder: 'e.g. 1234567', lockWhenKey: true,
           help: 'The number in your Torn profile link — used to tag your listings as yours.' },
-        { type: 'password', key: 'apiKey', label: 'Torn API key',
-          placeholder: '###PDA-APIKEY###', testable: true,
-          help: 'Lets the hub look up prices and your items for you. Stays on this device only.' },
+        { type: 'password', key: 'apiKey', label: 'Torn API key (full access)',
+          placeholder: 'Paste your full-access key', testable: true,
+          help: 'Needs a full-access key — make one at Settings → API Keys on torn.com. '
+            + 'A limited key will not work. Stays on this device only; hit Test to check it.' },
       ],
     },
     {
@@ -1329,10 +1330,10 @@
       .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   }
 
-  // #313 — a "real" key is any non-empty value other than the PDA placeholder
-  // token. On Torn PDA that token is swapped for the live key before the
-  // script runs, so it reads as real; on desktop the unsubstituted token does
-  // not, leaving the Player ID field editable until a key is pasted.
+  // #313 — the hub needs a full-access key, so it never relies on the PDA
+  // auto-injected key (almost always limited). A "real" key is any non-empty
+  // value; the stray ###PDA-APIKEY### token left by older installs is rejected
+  // so it cannot falsely lock the Player ID field.
   function hasRealApiKey(key) {
     const k = String(key == null ? '' : key).trim();
     return Boolean(k) && k !== '###PDA-APIKEY###';
