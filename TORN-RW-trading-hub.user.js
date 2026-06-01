@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.49
+// @version      0.3.50
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.49';
+  const SCRIPT_VERSION = '0.3.50';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -73,6 +73,8 @@
         setAccount: false, setReach: false, setPics: false, setPricing: false,
         setAdvanced: true, setDiag: false,
       },
+      // #312 — which Settings `image` field has its URL popover open (null = none).
+      settingsImgEdit: null,
     },
     ledger: {
       items: [],
@@ -1229,19 +1231,44 @@
 
   // The single field-type → HTML site. Every field in SETTINGS_SCHEMA is pure
   // data routed through here; adding a field of an existing type needs no new
-  // code. `image` renders as a URL input for now (#312 turns it into a popover).
-  function renderSettingField(f, s, intel) {
+  // code. `image` renders as a button + toggled URL popover (#312), reusing the
+  // Advertise tab's `rwth-img-pop` pattern so a picture link never eats a full
+  // row of vertical space; `ui.settingsImgEdit` tracks which one is open.
+  function renderSettingField(f, s, intel, ui) {
     const help = f.help ? `<span class="rwth-field-help">${f.help}</span>` : '';
     switch (f.type) {
-      case 'text': case 'url': case 'password': case 'image': {
-        const inputType = f.type === 'image' ? 'url' : f.type;
+      case 'text': case 'url': case 'password': {
         return `<label class="rwth-field">
           <span class="rwth-field-label">${f.label}</span>
-          <input class="rwth-field-input" type="${inputType}" data-setting="${f.key}"
+          <input class="rwth-field-input" type="${f.type}" data-setting="${f.key}"
                  value="${escapeAttr(s[f.key])}" placeholder="${escapeAttr(f.placeholder || '')}"
                  autocomplete="off" spellcheck="false">
           ${help}
         </label>`;
+      }
+      case 'image': {
+        const val = s[f.key];
+        const hasImg = !!String(val == null ? '' : val).trim();
+        const open = ui && ui.settingsImgEdit === f.key;
+        const pop = open
+          ? `<div class="rwth-img-pop">
+              <span class="rwth-field-label">Picture link (web address)</span>
+              <input class="rwth-field-input" type="url" data-setting="${f.key}"
+                     value="${escapeAttr(val)}" placeholder="${escapeAttr(f.placeholder || '')}"
+                     autocomplete="off" spellcheck="false">
+              <button class="rwth-btn-sm" type="button" data-action="close-setimg">Done</button>
+            </div>`
+          : '';
+        return `<div class="rwth-field">
+          <span class="rwth-field-label">${f.label}</span>
+          <div class="rwth-set-img">
+            <button class="rwth-btn-sm${hasImg ? ' rwth-btn-on' : ''}" type="button"
+                    data-action="toggle-setimg" data-key="${escapeAttr(f.key)}">${
+              hasImg ? '● Picture set' : '+ Add a picture'}</button>
+            ${pop}
+          </div>
+          ${help}
+        </div>`;
       }
       case 'number':
         return `<label class="rwth-field">
@@ -1400,12 +1427,13 @@
   function buildSettingsTab(mem) {
     const s = (mem && mem.settings) || {};
     const intel = (mem && mem.intel) || MEM.intel;
-    const fold = (mem && mem.ui && mem.ui.collapsed) || {};
+    const ui = (mem && mem.ui) || MEM.ui;
+    const fold = (ui && ui.collapsed) || {};
     const sections = SETTINGS_SCHEMA.map((sec) => {
       const collapsed = Boolean(fold[sec.key]);
       const body = collapsed ? '' :
         `<div class="rwth-settings-section-body">${
-          sec.fields.map(f => renderSettingField(f, s, intel)).join('')}</div>`;
+          sec.fields.map(f => renderSettingField(f, s, intel, ui)).join('')}</div>`;
       return `<div class="rwth-settings-section">${
         collapseHead(sec.title, sec.key, collapsed)}${body}</div>`;
     }).join('');
@@ -2236,6 +2264,8 @@
         case 'toggle-img':    setState({ advertise: { ...MEM.advertise,
                                 imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
         case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
+        case 'toggle-setimg': toggleSettingsImg(actionEl.dataset.key); break;
+        case 'close-setimg':  toggleSettingsImg(null); break;
         case 'toggle-collapse':     toggleCollapse(actionEl.dataset.collapse); break;
       }
     });
@@ -2368,6 +2398,25 @@
       const el = document.getElementById('rwth-settings-status');
       if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
     }, 2200);
+  }
+
+  // #312 — Toggle which Settings `image` field has its URL popover open. Pass a
+  // key to open it (or close it if already open); pass null to just close. The
+  // popover re-renders away on toggle, so first snapshot the currently-open
+  // input's value into rwth_settings — same persisted result as hitting Save —
+  // so an in-progress URL edit is never dropped. Only one popover is ever open.
+  function toggleSettingsImg(key) {
+    const open = MEM.ui.settingsImgEdit;
+    if (open) {
+      const el = document.querySelector(`#rwth-content [data-setting="${open}"]`);
+      if (el) {
+        const settings = { ...MEM.settings, [open]: el.value };
+        Store.set('rwth_settings', settings);
+        MEM.settings = settings;
+      }
+    }
+    const next = (key && key !== open) ? key : null;
+    setState({ ui: { ...MEM.ui, settingsImgEdit: next } });
   }
 
   // Flip one section's fold state and persist it so it survives a reload.
@@ -3662,6 +3711,9 @@
         box-shadow: 0 4px 12px #000a;
       }
       .rwth-img-pop .rwth-btn-sm { align-self: flex-end; }
+      /* #312 — Settings image-URL popover: button sits left, popover drops below it. */
+      .rwth-set-img { position: relative; display: inline-flex; align-self: flex-start; }
+      .rwth-set-img .rwth-img-pop { right: auto; left: 0; }
       .rwth-tx-row {
         display: flex; flex-direction: column; gap: 8px;
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: 8px;
