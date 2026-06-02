@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.57
+// @version      0.3.58
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,18 +15,41 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.57';
+  const SCRIPT_VERSION = '0.3.58';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
 
-  // ─── Brand (static, in-file; not exposed in Settings) ────────────────────────
-  const BRAND = {
-    mark: 'NC17',
-    forumThreadTitle: '[S] NC17 Rated // RW Weapons & Armor',
-    // Footer line, bottom-left of the forum/bazaar HTML — an NC-17 movie-rating
-    // gag (the brand is a film rating). Finalised with the user for slice 7.
-    footerTagline: 'Contains explicit deals, weapons, and depictions of violence',
+  // ─── Advertise identity config (#316) ────────────────────────────────────────
+  // Shipped neutral defaults for the shop-identity strings every Advertise output
+  // renders — the wordmark, the forum thread title, and the footer tagline. A
+  // brand-new install shows these placeholders; the user overrides them from the
+  // Advertise tab and the values persist to localStorage like any other setting.
+  // AdvConfig.resolve merges these defaults under the persisted user values into
+  // one normalized identity object — the single source of truth the builders read
+  // instead of a hardcoded brand. Later slices fold theme tokens and copy strings
+  // into the same resolved object (parent #315).
+  const ADV_IDENTITY_DEFAULTS = {
+    shopName: 'Your Shop Name',
+    forumThreadTitle: 'RW Weapons & Armor - Open Shop',
+    tagline: 'Quality RW gear, priced to move',
+  };
+
+  const AdvConfig = {
+    // (settings) -> { identity: { shopName, forumThreadTitle, tagline } }.
+    // Each field falls back to its neutral default when the persisted value is
+    // blank or whitespace, so no identity token is ever left undefined for the
+    // builders. Pure; exposed via __RwthPure for the Node test seam.
+    resolve(settings) {
+      const s = settings && typeof settings === 'object' ? settings : {};
+      const identity = {};
+      for (const key of Object.keys(ADV_IDENTITY_DEFAULTS)) {
+        const raw = s[key];
+        const trimmed = (raw == null ? '' : String(raw)).trim();
+        identity[key] = trimmed || ADV_IDENTITY_DEFAULTS[key];
+      }
+      return { identity };
+    },
   };
 
   // Item-market mode notice — injected into the forum post and profile
@@ -107,6 +130,11 @@
       forumHeaderImageUrl: '',
       viewCounterUrl: '',
       apiKey: '',
+      // #316 — shop identity, edited in the Advertise tab. Blank -> AdvConfig
+      // falls back to the shipped neutral placeholder.
+      shopName: '',
+      forumThreadTitle: '',
+      tagline: '',
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -1669,7 +1697,7 @@
       + `style="display: block; height: auto; border: 0; outline: 0;"/>`;
   }
 
-  // Brand header. The forum header image, when set, replaces the NC17 text
+  // Brand header. The forum header image, when set, replaces the wordmark text
   // block entirely (user's slice-7 decision).
   function forumHeader(s) {
     const img = (s.forumHeaderImageUrl || '').trim();
@@ -1678,9 +1706,10 @@
         + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
         + `${forumImg(img)}</a></td></tr>`;
     }
+    const { shopName } = AdvConfig.resolve(s).identity;
     return `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center; border: 0;">`
       + `<div style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
-      + `${escapeAttr(BRAND.mark)}</div>`
+      + `${escapeAttr(shopName)}</div>`
       + `<div style="color: #8AA898; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
       + `//&nbsp; Trading Post &nbsp;//</div></td></tr>`;
   }
@@ -1826,13 +1855,14 @@
   }
 
   const AdvertiseGenerator = {
-    // Output 1 — forum thread title; static brand text.
-    toForumTitle() { return BRAND.forumThreadTitle; },
+    // Output 1 — forum thread title; the user's configured title.
+    toForumTitle(settings) { return AdvConfig.resolve(settings).identity.forumThreadTitle; },
 
     // Output — full forum post HTML. Item-driven from the selected `listed`
     // rows + Recent Transactions; cards grouped under category dividers.
     toForumHtml(items, transactions, settings, mode) {
       const s = settings || {};
+      const { tagline } = AdvConfig.resolve(s).identity;
       const txs = transactions || [];
       const rows = [];
       rows.push(forumHeader(s));
@@ -1884,7 +1914,7 @@
         + `<table ${TBL} width="100%" style="border: 0; border-collapse: collapse;"><tbody><tr>`
         + `<td style="background: #080e18; padding: 12px 22px 13px; text-align: left; vertical-align: middle; border: 0;">`
         + `<span style="font-size: 12px; letter-spacing: 0.12em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
-        + `${escapeAttr(BRAND.footerTagline)}</span></td>`
+        + `${escapeAttr(tagline)}</span></td>`
         + `<td style="background: #080e18; padding: 12px 22px 13px; text-align: right; vertical-align: middle; border: 0;">`
         + `${link}</td></tr></tbody></table></td></tr>`);
       return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
@@ -1895,9 +1925,10 @@
 
     // Output — bazaar description HTML. The bazaar page lists stock natively, so
     // this is brand/about copy only. When a banner is set it carries the brand;
-    // a redundant NC17 wordmark is deliberately omitted in that case.
+    // a redundant wordmark is deliberately omitted in that case.
     toBazaarHtml(settings) {
       const s = settings || {};
+      const { shopName, tagline } = AdvConfig.resolve(s).identity;
       const banner = (s.bannerImageUrl || '').trim();
       const rows = [];
       if (banner) {
@@ -1907,7 +1938,7 @@
         // No banner — a compact wordmark stands in so the panel still has a crown.
         rows.push(`<tr><td style="background: #080e18; padding: 20px 24px 8px; text-align: center; border: 0;">`
           + `<span style="color: #7ed098; font-size: 20px; font-weight: bold; `
-          + `letter-spacing: 0.3em; text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`);
+          + `letter-spacing: 0.3em; text-transform: uppercase;">${escapeAttr(shopName)}</span></td></tr>`);
       }
       rows.push(forumRule());
       // About panel — kicker + the single RW Gear pitch line.
@@ -1932,10 +1963,10 @@
         rows.push(`<tr><td style="background: #080e18; padding: 2px 20px 16px; text-align: center; border: 0;">`
           + `${links.join('')}</td></tr>`);
       }
-      // Footer disclaimer on a slightly lifted fill so it reads as a strip.
+      // Footer tagline on a slightly lifted fill so it reads as a strip.
       rows.push(`<tr><td style="background: #0b1320; padding: 11px 24px 12px; text-align: center; border: 0;">`
         + `<span style="font-size: 11px; letter-spacing: 0.08em; color: #8AA898; font-style: italic;">`
-        + `**Contains explicit deals, weapons, and depictions of violence.</span></td></tr>`);
+        + `${escapeAttr(tagline)}</span></td></tr>`);
       return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
         + `border-collapse: collapse; font-family: Verdana, Geneva, sans-serif;">`
         + `<tbody>${rows.join('')}</tbody></table></div>`
@@ -1948,6 +1979,7 @@
     // strip along the foot.
     toSignatureHtml(items, settings, mode) {
       const s = settings || {};
+      const { shopName } = AdvConfig.resolve(s).identity;
       const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
       // Header — the configured banner image; a wordmark bar only if none set.
       const headerRow = img
@@ -1957,7 +1989,7 @@
         : `<tr><td colspan="2" style="background: #0b1320; padding: 11px 14px 9px; `
           + `text-align: center; border: 0;">`
           + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
-          + `text-transform: uppercase;">${escapeAttr(BRAND.mark)}</span></td></tr>`;
+          + `text-transform: uppercase;">${escapeAttr(shopName)}</span></td></tr>`;
       const bodyRows = [];
       // Item-market mode — a slim markup-notice strip under the banner.
       if (mode === 'itemMarket') {
@@ -2002,8 +2034,9 @@
     // highest-value items lead the blurb rather than alphabetised filler.
     toChat(items, settings, mode) {
       const s = settings || {};
+      const { shopName } = AdvConfig.resolve(s).identity;
       const header = [
-        `🔹🔷 <u>${BRAND.mark}</u> 🔷🔹`,
+        `🔹🔷 <u>${shopName}</u> 🔷🔹`,
         `🟢 <u>Floor Prices</u> 🟢`,
       ];
       // Brackets sit OUTSIDE the anchor so they render as plain text, not as
@@ -2185,6 +2218,30 @@
 
     return `<div class="rwth-advertise">
       <div class="rwth-adv-section">
+        <div class="rwth-form-title">Your shop</div>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Your shop name</span>
+          <input class="rwth-field-input" type="text" data-adv-identity="shopName"
+                 value="${escapeAttr(settings.shopName)}"
+                 placeholder="${escapeAttr(ADV_IDENTITY_DEFAULTS.shopName)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Your forum thread title</span>
+          <input class="rwth-field-input" type="text" data-adv-identity="forumThreadTitle"
+                 value="${escapeAttr(settings.forumThreadTitle)}"
+                 placeholder="${escapeAttr(ADV_IDENTITY_DEFAULTS.forumThreadTitle)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Your shop tagline</span>
+          <input class="rwth-field-input" type="text" data-adv-identity="tagline"
+                 value="${escapeAttr(settings.tagline)}"
+                 placeholder="${escapeAttr(ADV_IDENTITY_DEFAULTS.tagline)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="rwth-adv-section">
         <label class="rwth-field rwth-adv-mode">
           <span class="rwth-field-label">Mode</span>
           <select class="rwth-field-input" data-adv-mode>
@@ -2210,7 +2267,7 @@
         ${collapseHead('Outputs', 'advOutputs', fold.advOutputs)}
         ${fold.advOutputs ? '' : `
         ${buildOutputBox('Forum title', 'rwth-out-title',
-                         AdvertiseGenerator.toForumTitle(), false)}
+                         AdvertiseGenerator.toForumTitle(settings), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
                          AdvertiseGenerator.toChat(selectedItems, settings, mode), true)}
         ${buildOutputBox('Forum post HTML', 'rwth-out-forum',
@@ -2355,6 +2412,16 @@
       const mode = e.target.value === 'itemMarket' ? 'itemMarket' : 'standard';
       Store.set('rwth_adv_mode', mode);
       setState({ advertise: { ...MEM.advertise, mode } });
+      return;
+    }
+    // #316 — shop identity fields persist inline to rwth_settings (like the
+    // Settings tab values), and re-render on `change` (blur) so the output
+    // boxes pick up the new identity without interrupting typing.
+    if (e.target.matches && e.target.matches('[data-adv-identity]')) {
+      const key = e.target.dataset.advIdentity;
+      MEM.settings = { ...MEM.settings, [key]: e.target.value };
+      Store.set('rwth_settings', MEM.settings);
+      if (e.type === 'change') render();
       return;
     }
     const txRow = e.target.closest && e.target.closest('[data-tx-row]');
@@ -3445,7 +3512,7 @@
     if (document.getElementById('rwth-launcher')) return;
     const btn = makeLauncherButton();
     btn.classList.add('rwth-launcher-fixed');
-    btn.textContent = BRAND.mark;
+    btn.textContent = AdvConfig.resolve(MEM.settings).identity.shopName;
     document.body.appendChild(btn);
   }
 
@@ -6808,6 +6875,7 @@
     SellParser,
     matchSell,
     summarizeSells,
+    AdvConfig,
     AdvertiseGenerator,
     itemMarketListPrice,
     BonusTrashGuard,
