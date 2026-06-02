@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.56
+// @version      0.3.57
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.56';
+  const SCRIPT_VERSION = '0.3.57';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -386,7 +386,7 @@
   // Torn v1 user/log returns d.log as an OBJECT keyed by hash id — each entry
   // carries NO id field of its own; the id is the key. Tolerate a plain array
   // too (id from entry.id, else index) so callers can't break this.
-  function toScanHits(log, seenKeys, itemNames) {
+  function toScanHits(log, seenKeys, itemNames, cats) {
     const seen = new Set(seenKeys || []);
     const pairs = Array.isArray(log)
       ? log.map((e, i) => [e && e.id != null ? String(e.id) : String(i), e])
@@ -396,12 +396,17 @@
       if (!entry) continue;
       if (seen.has(key)) continue;
       const p = parseAuctionWin(entry, itemNames);
+      // Classify off the items dictionary's real `type` (primary/secondary/
+      // melee/defensive→Armor). Unknown items stay null so the row falls back
+      // to the picker default rather than a wrong fixed category.
+      const category = (cats && cats[String(p.itemName || '').toLowerCase()]) || null;
       out.push({
         key,
         itemId: p.itemId,
         uid: p.uid,
         itemName: p.itemName,
-        type: 'weapon',
+        category,
+        type: category === 'Armor' ? 'armor' : 'weapon',
         bonuses: [],
         quality: null,
         rarity: null,
@@ -549,7 +554,7 @@
         <label class="rwth-field rwth-field-grow">
           <span class="rwth-field-label">Category</span>
           <select class="rwth-field-input" data-form="category">
-            ${categoryOptions(editing ? itemCategory(v) : 'Primary')}
+            ${categoryOptions(editing ? itemCategory(v, ItemDict.categories()) : 'Primary')}
           </select>
         </label>
         <label class="rwth-field rwth-field-grow">
@@ -649,7 +654,7 @@
         <label class="rwth-field rwth-field-sm">
           <span class="rwth-field-label">Category</span>
           <select class="rwth-field-input" data-scan-field="category">
-            ${categoryOptions(itemCategory(hit))}
+            ${categoryOptions(itemCategory(hit, ItemDict.categories()))}
           </select>
         </label>
       </div>
@@ -3107,7 +3112,7 @@
 
       const log = (d && d.log) || [];
       const seen = Store.get('rwth_seen_wins') || [];
-      const hits = toScanHits(log, seen, itemNames);
+      const hits = toScanHits(log, seen, itemNames, ItemDict.categories());
 
       // Auto-fill each win from itemdetails (uid → real stats/bonuses/rarity).
       // A per-item failure just leaves that row's fields as the user can edit.
