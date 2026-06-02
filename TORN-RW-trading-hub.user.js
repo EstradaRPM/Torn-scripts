@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.59
+// @version      0.3.60
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.59';
+  const SCRIPT_VERSION = '0.3.60';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -35,11 +35,98 @@
     tagline: 'Quality RW gear, priced to move',
   };
 
+  // #317 — the post palette is themeable. Every colour the HTML builders draw
+  // reads a named token off the resolved theme rather than an inline hex. A
+  // theme is a COMPLETE token set: each preset below defines every token, so a
+  // builder can never read `undefined` and let Torn's renderer auto-flip the
+  // colour. The legibility invariants (an explicit colour on every text run,
+  // zero CSS borders) stay enforced by the builders — a theme only changes a
+  // token's value, never whether one is defined. Token roles:
+  //   bg/bgDeep/bgCard/bgStrip   layered backgrounds (page → image cell →
+  //                              card → lifted strip)
+  //   bgPillPrimary/bgPillAccent section-header / category-divider pill fills
+  //   bgChip/bgChipMuted         bonus-chip / quality-chip fills
+  //   bgLink                     bazaar link-pill fill
+  //   hairline/Primary/Accent    background-filled hairlines (default / header
+  //                              / category divider)
+  //   primary                    main accent — wordmark, prices, headings,
+  //                              tagline, chip text
+  //   primaryStrong              brighter accent — card top bar + sub-banner
+  //   accent                     secondary accent — links, item names, kickers
+  //   textBody/textMuted/textSoft body copy and its muted/softer variants
+  //   sep                        link-strip separator
+  //   warn/warnText              item-market markup-notice rail + text
+  //   cat{Primary,Secondary,Melee,Armor,Other}  category accents
+  //   rar{White,Yellow,Orange,Red}              rarity tags
+  const ADV_THEME_TOKENS = [
+    'bg', 'bgDeep', 'bgCard', 'bgStrip', 'bgPillPrimary', 'bgPillAccent',
+    'bgChip', 'bgChipMuted', 'bgLink', 'hairline', 'hairlinePrimary',
+    'hairlineAccent', 'primary', 'primaryStrong', 'accent', 'textBody',
+    'textMuted', 'textSoft', 'sep', 'warn', 'warnText',
+    'catPrimary', 'catSecondary', 'catMelee', 'catArmor', 'catOther',
+    'rarWhite', 'rarYellow', 'rarOrange', 'rarRed',
+  ];
+
+  // The shipped presets. Midnight is the neutral default and reproduces the
+  // original hand-inlined palette verbatim, so an upgrading install sees no
+  // change until they pick another theme. Crimson and Steel are complete,
+  // hand-tuned alternatives. Render order = dropdown order; `key` persists.
+  const THEME_PRESETS = [
+    {
+      key: 'midnight', label: 'Midnight',
+      tokens: {
+        bg: '#080e18', bgDeep: '#060a12', bgCard: '#0c1422', bgStrip: '#0b1320',
+        bgPillPrimary: '#11251a', bgPillAccent: '#102232',
+        bgChip: '#16301f', bgChipMuted: '#11251a', bgLink: '#11223a',
+        hairline: '#15301f', hairlinePrimary: '#1d3a26', hairlineAccent: '#1a3346',
+        primary: '#7ed098', primaryStrong: '#6dc488', accent: '#5dc6f0',
+        textBody: '#c5dccc', textMuted: '#8AA898', textSoft: '#9ab5a5',
+        sep: '#2a4738', warn: '#e0a85a', warnText: '#e0c08a',
+        catPrimary: '#6dc488', catSecondary: '#5dc6f0', catMelee: '#e0a85a',
+        catArmor: '#b48ce0', catOther: '#8AA898',
+        rarWhite: '#d7dde2', rarYellow: '#e8d24a', rarOrange: '#e8993a', rarRed: '#e0524a',
+      },
+    },
+    {
+      key: 'crimson', label: 'Crimson',
+      tokens: {
+        bg: '#160a0c', bgDeep: '#100608', bgCard: '#1f0e11', bgStrip: '#1a0c0f',
+        bgPillPrimary: '#2a1014', bgPillAccent: '#2a1518',
+        bgChip: '#321217', bgChipMuted: '#2a1014', bgLink: '#3a1119',
+        hairline: '#3a1820', hairlinePrimary: '#451d26', hairlineAccent: '#3f2228',
+        primary: '#e8908f', primaryStrong: '#e0726f', accent: '#e8b04a',
+        textBody: '#e2c9cb', textMuted: '#b08a8e', textSoft: '#c4a0a3',
+        sep: '#5a2f37', warn: '#e0a85a', warnText: '#e8c98a',
+        catPrimary: '#e0726f', catSecondary: '#e8b04a', catMelee: '#d98a5a',
+        catArmor: '#c88ce0', catOther: '#b08a8e',
+        rarWhite: '#e6dcde', rarYellow: '#e8d24a', rarOrange: '#e8993a', rarRed: '#f06a62',
+      },
+    },
+    {
+      key: 'steel', label: 'Steel',
+      tokens: {
+        bg: '#121821', bgDeep: '#0d121a', bgCard: '#1a232f', bgStrip: '#161e29',
+        bgPillPrimary: '#1f2b39', bgPillAccent: '#1d2a3a',
+        bgChip: '#22303f', bgChipMuted: '#1f2b39', bgLink: '#1f3145',
+        hairline: '#2a3a4c', hairlinePrimary: '#324456', hairlineAccent: '#2e4256',
+        primary: '#8fbce0', primaryStrong: '#6fa8d8', accent: '#7ed0c8',
+        textBody: '#cdd9e2', textMuted: '#8a9aa8', textSoft: '#a0b0bd',
+        sep: '#3a4a5a', warn: '#e0b85a', warnText: '#e8cf9a',
+        catPrimary: '#6fa8d8', catSecondary: '#7ed0c8', catMelee: '#e0b85a',
+        catArmor: '#b09ce0', catOther: '#8a9aa8',
+        rarWhite: '#dde4ea', rarYellow: '#e8d24a', rarOrange: '#e8993a', rarRed: '#e0625a',
+      },
+    },
+  ];
+  const ADV_THEME_DEFAULT = 'midnight';
+
   const AdvConfig = {
-    // (settings) -> { identity: { shopName, forumThreadTitle, tagline } }.
-    // Each field falls back to its neutral default when the persisted value is
-    // blank or whitespace, so no identity token is ever left undefined for the
-    // builders. Pure; exposed via __RwthPure for the Node test seam.
+    // (settings) -> { identity: { shopName, forumThreadTitle, tagline },
+    //                 theme: { themeKey, <every ADV_THEME_TOKENS colour> } }.
+    // Identity falls back per-field to its neutral default on blank/whitespace.
+    // The theme is the preset named by settings.theme; an unknown or missing
+    // key falls back to ADV_THEME_DEFAULT, so no token is ever undefined for
+    // the builders. Pure; exposed via __RwthPure for the Node test seam.
     resolve(settings) {
       const s = settings && typeof settings === 'object' ? settings : {};
       const identity = {};
@@ -48,7 +135,11 @@
         const trimmed = (raw == null ? '' : String(raw)).trim();
         identity[key] = trimmed || ADV_IDENTITY_DEFAULTS[key];
       }
-      return { identity };
+      const wanted = (s.theme == null ? '' : String(s.theme)).trim();
+      const preset = THEME_PRESETS.find(p => p.key === wanted)
+        || THEME_PRESETS.find(p => p.key === ADV_THEME_DEFAULT);
+      const theme = { themeKey: preset.key, ...preset.tokens };
+      return { identity, theme };
     },
   };
 
@@ -135,6 +226,9 @@
       shopName: '',
       forumThreadTitle: '',
       tagline: '',
+      // #317 — selected post-palette preset key. Blank/unknown -> AdvConfig
+      // resolves to the neutral default theme.
+      theme: '',
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -1686,9 +1780,9 @@
   const TBL = 'border="0" cellspacing="0" cellpadding="0"';
 
   // A theme-proof hairline — a 1px background-filled <div>, never a CSS border.
-  function forumRule() {
-    return `<tr><td style="background: #080e18; padding: 0 22px; line-height: 0; border: 0;">`
-      + `<div style="height: 1px; background: #15301f; font-size: 0; line-height: 0;">&nbsp;</div></td></tr>`;
+  function forumRule(t) {
+    return `<tr><td style="background: ${t.bg}; padding: 0 22px; line-height: 0; border: 0;">`
+      + `<div style="height: 1px; background: ${t.hairline}; font-size: 0; line-height: 0;">&nbsp;</div></td></tr>`;
   }
 
   // A theme-proof <img> — block display, no border the dark theme can light up.
@@ -1699,30 +1793,30 @@
 
   // Brand header. The forum header image, when set, replaces the wordmark text
   // block entirely (user's slice-7 decision).
-  function forumHeader(s) {
+  function forumHeader(s, t) {
     const img = (s.forumHeaderImageUrl || '').trim();
     if (img) {
-      return `<tr><td style="background: #080e18; padding: 0; line-height: 0; border: 0;">`
+      return `<tr><td style="background: ${t.bg}; padding: 0; line-height: 0; border: 0;">`
         + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
         + `${forumImg(img)}</a></td></tr>`;
     }
     const { shopName } = AdvConfig.resolve(s).identity;
-    return `<tr><td style="background: #080e18; padding: 22px 22px 18px; text-align: center; border: 0;">`
-      + `<div style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
+    return `<tr><td style="background: ${t.bg}; padding: 22px 22px 18px; text-align: center; border: 0;">`
+      + `<div style="color: ${t.primary}; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
       + `${escapeAttr(shopName)}</div>`
-      + `<div style="color: #8AA898; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
+      + `<div style="color: ${t.textMuted}; font-size: 11px; letter-spacing: 0.4em; text-transform: uppercase; padding-top: 6px;">`
       + `//&nbsp; Trading Post &nbsp;//</div></td></tr>`;
   }
 
   // Centered pill flanked by background-filled hairlines.
-  function forumSectionHeader(label) {
+  function forumSectionHeader(label, t) {
     const hair = `<td style="width: 35%; vertical-align: middle; padding: 0; border: 0;">`
-      + `<div style="height: 1px; background: #1d3a26; font-size: 0; line-height: 0;">&nbsp;</div></td>`;
-    return `<tr><td style="background: #080e18; padding: 18px 22px 10px; border: 0;">`
+      + `<div style="height: 1px; background: ${t.hairlinePrimary}; font-size: 0; line-height: 0;">&nbsp;</div></td>`;
+    return `<tr><td style="background: ${t.bg}; padding: 18px 22px 10px; border: 0;">`
       + `<table ${TBL} width="100%" style="border: 0; border-collapse: collapse;"><tbody><tr>${hair}`
       + `<td style="text-align: center; vertical-align: middle; padding: 0 14px; white-space: nowrap; border: 0;">`
-      + `<span style="display: inline-block; background: #11251a; `
-      + `color: #7ed098; font-size: 11px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase; `
+      + `<span style="display: inline-block; background: ${t.bgPillPrimary}; `
+      + `color: ${t.primary}; font-size: 11px; font-weight: bold; letter-spacing: 0.28em; text-transform: uppercase; `
       + `padding: 6px 15px; border-radius: 2px;">&#9679; ${escapeAttr(label)}</span></td>`
       + `${hair}</tr></tbody></table></td></tr>`;
   }
@@ -1730,22 +1824,22 @@
   // Category divider — Primary/Secondary/Melee/Armor. Same pill-and-hairline
   // treatment as the section header but cyan, so it reads clearly as a divider
   // ranking just below the green section headers.
-  function forumCategoryDivider(label) {
+  function forumCategoryDivider(label, t) {
     const hair = `<td style="width: 30%; vertical-align: middle; padding: 0; border: 0;">`
-      + `<div style="height: 1px; background: #1a3346; font-size: 0; line-height: 0;">&nbsp;</div></td>`;
-    return `<tr><td style="background: #080e18; padding: 15px 22px 5px; border: 0;">`
+      + `<div style="height: 1px; background: ${t.hairlineAccent}; font-size: 0; line-height: 0;">&nbsp;</div></td>`;
+    return `<tr><td style="background: ${t.bg}; padding: 15px 22px 5px; border: 0;">`
       + `<table ${TBL} width="100%" style="border: 0; border-collapse: collapse;"><tbody><tr>${hair}`
       + `<td style="text-align: center; vertical-align: middle; padding: 0 12px; white-space: nowrap; border: 0;">`
-      + `<span style="display: inline-block; background: #102232; `
-      + `color: #5dc6f0; font-size: 10px; font-weight: bold; letter-spacing: 0.26em; text-transform: uppercase; `
+      + `<span style="display: inline-block; background: ${t.bgPillAccent}; `
+      + `color: ${t.accent}; font-size: 10px; font-weight: bold; letter-spacing: 0.26em; text-transform: uppercase; `
       + `padding: 5px 14px; border-radius: 2px;">${escapeAttr(label)}</span></td>`
       + `${hair}</tr></tbody></table></td></tr>`;
   }
 
   // One bonus chip. Value-less bonuses show the name alone.
-  function forumChip(b) {
+  function forumChip(b, t) {
     const txt = b.value != null ? `${escapeAttr(b.name)} &nbsp;${b.value}%` : escapeAttr(b.name);
-    return `<span style="display: inline-block; background: #16301f; color: #7ed098; `
+    return `<span style="display: inline-block; background: ${t.bgChip}; color: ${t.primary}; `
       + `font-size: 10px; font-weight: bold; letter-spacing: 0.16em; text-transform: uppercase; `
       + `padding: 4px 9px; border-radius: 2px;">${txt}</span>`;
   }
@@ -1753,47 +1847,47 @@
   // One "Currently Available" card: optional screenshot on top, a full-width
   // green accent bar, then the info row — name + chips left, price right. The
   // outer table is single-column so cell widths never get ambiguous.
-  function forumItemCard(item) {
+  function forumItemCard(item, t) {
     const bonuses = (item.bonuses || []).filter(b => b && b.name);
     const chips = bonuses.map((b, i) =>
-      `<div style="margin-top: ${i === 0 ? 7 : 4}px;">${forumChip(b)}</div>`).join('');
+      `<div style="margin-top: ${i === 0 ? 7 : 4}px;">${forumChip(b, t)}</div>`).join('');
     const img = (item.gyazoUrl || '').trim();
     const imgRow = img
-      ? `<tr><td style="background: #060a12; padding: 0; line-height: 0; border: 0;">`
+      ? `<tr><td style="background: ${t.bgDeep}; padding: 0; line-height: 0; border: 0;">`
         + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
         + `${forumImg(img)}</a></td></tr>`
       : '';
-    return `<tr><td style="background: #080e18; padding: 8px 22px; border: 0;">`
-      + `<table ${TBL} width="100%" style="background: #0c1422; border: 0; border-collapse: collapse;"><tbody>`
+    return `<tr><td style="background: ${t.bg}; padding: 8px 22px; border: 0;">`
+      + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;"><tbody>`
       + imgRow
-      + `<tr><td style="background: #6dc488; height: 3px; line-height: 0; font-size: 0; padding: 0; border: 0;">&nbsp;</td></tr>`
-      + `<tr><td style="background: #0c1422; padding: 15px 18px; border: 0;">`
+      + `<tr><td style="background: ${t.primaryStrong}; height: 3px; line-height: 0; font-size: 0; padding: 0; border: 0;">&nbsp;</td></tr>`
+      + `<tr><td style="background: ${t.bgCard}; padding: 15px 18px; border: 0;">`
       + `<table ${TBL} width="100%" style="border: 0; border-collapse: collapse;"><tbody><tr>`
       + `<td style="text-align: left; vertical-align: middle; border: 0;">`
-      + `<div style="color: #5dc6f0; font-size: 17px; font-weight: bold; letter-spacing: 0.04em; line-height: 1.2;">`
+      + `<div style="color: ${t.accent}; font-size: 17px; font-weight: bold; letter-spacing: 0.04em; line-height: 1.2;">`
       + `${escapeAttr(item.itemName)}</div>${chips}</td>`
       + `<td style="text-align: right; vertical-align: middle; white-space: nowrap; padding-left: 14px; border: 0;">`
-      + `<span style="color: #7ed098; font-size: 22px; font-weight: bold; letter-spacing: 0.02em; `
+      + `<span style="color: ${t.primary}; font-size: 22px; font-weight: bold; letter-spacing: 0.02em; `
       + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtMoney(item.listPrice))}</span></td>`
       + `</tr></tbody></table></td></tr></tbody></table></td></tr>`;
   }
 
   // One Recent Transactions line. The tx record carries no buyer XID, so the
   // buyer renders as plain text rather than the template's profile link.
-  function forumTxRow(tx) {
+  function forumTxRow(tx, t) {
     const bonus = tx.bonusName ? ` (${escapeAttr(tx.bonusName)})` : '';
     const buyer = tx.buyer ? ` to&nbsp;${escapeAttr(tx.buyer)}` : '';
     const price = tx.price != null ? ` at ${escapeAttr(fmtMoney(tx.price))}` : '';
-    return `<tr><td style="background: #0c1422; padding: 9px 14px; border: 0;">`
-      + `<span style="color: #8AA898; font-size: 11px; font-style: italic; `
+    return `<tr><td style="background: ${t.bgCard}; padding: 9px 14px; border: 0;">`
+      + `<span style="color: ${t.textMuted}; font-size: 11px; font-style: italic; `
       + `font-family: Consolas, 'Courier New', monospace;">`
       + `You sold a&nbsp;${escapeAttr(tx.itemName)}${bonus}${buyer}${price}</span></td></tr>`;
   }
 
   // One pill-style link button for the bazaar output footer.
-  function bazaarLink(href, label) {
+  function bazaarLink(href, label, t) {
     return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener" `
-      + `style="display: inline-block; background: #11223a; color: #5dc6f0; font-size: 11px; `
+      + `style="display: inline-block; background: ${t.bgLink}; color: ${t.accent}; font-size: 11px; `
       + `font-weight: bold; letter-spacing: 0.16em; text-transform: uppercase; text-decoration: none; `
       + `padding: 9px 17px; border-radius: 2px; margin: 4px 5px;">${escapeAttr(label)} &#8599;</a>`;
   }
@@ -1802,13 +1896,20 @@
   // The profile signature is a truncated, image-less catalogue, so each item
   // card carries a few stored metrics (rarity, bonuses, quality) as chips
   // instead of leaning on a screenshot the way the forum cards do.
-  const CATEGORY_ACCENT = {
-    Primary: '#6dc488', Secondary: '#5dc6f0', Melee: '#e0a85a',
-    Armor: '#b48ce0', Other: '#8AA898',
-  };
-  const RARITY_COLOR = {
-    white: '#d7dde2', yellow: '#e8d24a', orange: '#e8993a', red: '#e0524a',
-  };
+  // Category / rarity accents now read from the resolved theme so a preset
+  // recolours them along with everything else. `Other` is the catch-all for an
+  // unknown category; an unknown rarity yields '' (the rarity tag is omitted).
+  function categoryAccent(category, t) {
+    const map = {
+      Primary: t.catPrimary, Secondary: t.catSecondary, Melee: t.catMelee,
+      Armor: t.catArmor, Other: t.catOther,
+    };
+    return map[category] || t.catOther;
+  }
+  function rarityColor(rarity, t) {
+    const map = { white: t.rarWhite, yellow: t.rarYellow, orange: t.rarOrange, red: t.rarRed };
+    return map[rarity] || '';
+  }
 
   // One signature chip — a small background-filled pill, theme-proof.
   function sigChip(txt, fg, bg) {
@@ -1820,36 +1921,37 @@
   // One signature item card — a category-coloured left accent rail, the name
   // with its rarity, a chip row of bonuses + quality, and the price anchored
   // to a constant-width right rail.
-  function sigItemCard(item, accent) {
+  function sigItemCard(item, accent, t) {
     const bonuses = (item.bonuses || []).filter(b => b && b.name);
     const rarity = String(item.rarity || '').toLowerCase();
     const chips = [];
     for (const b of bonuses) {
       const v = b.value != null ? ` ${b.value}%` : '';
-      chips.push(sigChip(`${escapeAttr(b.name)}${v}`, '#7ed098', '#16301f'));
+      chips.push(sigChip(`${escapeAttr(b.name)}${v}`, t.primary, t.bgChip));
     }
     if (item.quality != null) {
-      chips.push(sigChip(`${escapeAttr(item.quality)}% Quality`, '#9ab5a5', '#11251a'));
+      chips.push(sigChip(`${escapeAttr(item.quality)}% Quality`, t.textSoft, t.bgChipMuted));
     }
     const chipRow = chips.length
       ? `<div style="margin-top: 3px;">${chips.join('')}</div>` : '';
-    const rarityTag = (rarity && RARITY_COLOR[rarity])
-      ? `<span style="display: inline-block; color: ${RARITY_COLOR[rarity]}; font-size: 9px; `
+    const rar = rarityColor(rarity, t);
+    const rarityTag = (rarity && rar)
+      ? `<span style="display: inline-block; color: ${rar}; font-size: 9px; `
         + `font-weight: bold; letter-spacing: 0.14em; text-transform: uppercase; `
         + `padding-left: 8px; vertical-align: middle;">&#9670; ${escapeAttr(rarity)}</span>`
       : '';
-    return `<tr><td colspan="2" style="background: #080e18; padding: 4px 12px; border: 0;">`
-      + `<table ${TBL} width="100%" style="background: #0c1422; border: 0; border-collapse: collapse;">`
+    return `<tr><td colspan="2" style="background: ${t.bg}; padding: 4px 12px; border: 0;">`
+      + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;">`
       + `<tbody><tr>`
       + `<td style="width: 3px; background: ${accent}; font-size: 0; line-height: 0; padding: 0; `
       + `border: 0;">&nbsp;</td>`
       + `<td style="padding: 9px 12px; vertical-align: middle; border: 0;">`
-      + `<div><span style="color: #5dc6f0; font-size: 13px; font-weight: bold; `
+      + `<div><span style="color: ${t.accent}; font-size: 13px; font-weight: bold; `
       + `letter-spacing: 0.02em; vertical-align: middle; font-family: Verdana, Geneva, sans-serif;">`
       + `${escapeAttr(item.itemName)}</span>${rarityTag}</div>${chipRow}</td>`
       + `<td width="104" style="width: 104px; padding: 9px 12px; text-align: right; `
       + `vertical-align: middle; white-space: nowrap; border: 0;">`
-      + `<span style="color: #7ed098; font-size: 15px; font-weight: bold; `
+      + `<span style="color: ${t.primary}; font-size: 15px; font-weight: bold; `
       + `font-family: Consolas, 'Courier New', monospace;">${escapeAttr(fmtChatPrice(item.listPrice))}</span>`
       + `</td></tr></tbody></table></td></tr>`;
   }
@@ -1862,62 +1964,63 @@
     // rows + Recent Transactions; cards grouped under category dividers.
     toForumHtml(items, transactions, settings, mode) {
       const s = settings || {};
-      const { tagline } = AdvConfig.resolve(s).identity;
+      const { identity, theme: t } = AdvConfig.resolve(s);
+      const { tagline } = identity;
       const txs = transactions || [];
       const rows = [];
-      rows.push(forumHeader(s));
-      rows.push(forumRule());
+      rows.push(forumHeader(s, t));
+      rows.push(forumRule(t));
       // Sub-banner.
-      rows.push(`<tr><td style="background: #080e18; padding: 12px 22px 8px; text-align: center; border: 0;">`
-        + `<span style="font-size: 13px; font-weight: bold; letter-spacing: 0.16em; color: #6dc488; text-transform: uppercase;">`
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 12px 22px 8px; text-align: center; border: 0;">`
+        + `<span style="font-size: 13px; font-weight: bold; letter-spacing: 0.16em; color: ${t.primaryStrong}; text-transform: uppercase;">`
         + `Open shop &nbsp;//&nbsp; Competitively priced</span></td></tr>`);
       // Intro — every text run wrapped so the light-mode theme can't darken it.
-      rows.push(`<tr><td style="background: #080e18; padding: 6px 22px 16px; text-align: center; line-height: 1.7; border: 0;">`
-        + `<span style="color: #c5dccc; font-size: 13px;">`
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; text-align: center; line-height: 1.7; border: 0;">`
+        + `<span style="color: ${t.textBody}; font-size: 13px;">`
         + `Rotating collection of RW weapons/gear and other useful items.</span><br/><br/>`
-        + `<span style="color: #9ab5a5; font-size: 13px;">`
+        + `<span style="color: ${t.textSoft}; font-size: 13px;">`
         + `If something below isn't currently listed, message me.</span></td></tr>`);
       // Item-market mode — a markup-notice callout so buyers expect a listing
       // priced above the advertised (net) deal.
       if (mode === 'itemMarket') {
-        rows.push(`<tr><td style="background: #080e18; padding: 0 22px 14px; border: 0;">`
-          + `<table ${TBL} width="100%" style="background: #0c1422; border: 0; border-collapse: collapse;"><tbody><tr>`
-          + `<td style="width: 3px; background: #e0a85a; font-size: 0; line-height: 0; padding: 0; border: 0;">&nbsp;</td>`
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 0 22px 14px; border: 0;">`
+          + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;"><tbody><tr>`
+          + `<td style="width: 3px; background: ${t.warn}; font-size: 0; line-height: 0; padding: 0; border: 0;">&nbsp;</td>`
           + `<td style="padding: 10px 14px; text-align: center; border: 0;">`
-          + `<span style="color: #e0c08a; font-size: 12px; line-height: 1.6;">${ITEM_MARKET_NOTICE}</span>`
+          + `<span style="color: ${t.warnText}; font-size: 12px; line-height: 1.6;">${ITEM_MARKET_NOTICE}</span>`
           + `</td></tr></tbody></table></td></tr>`);
       }
-      rows.push(forumSectionHeader('Currently Available'));
+      rows.push(forumSectionHeader('Currently Available', t));
       for (const group of groupByCategory(items)) {
-        rows.push(forumCategoryDivider(group.category));
-        for (const it of group.items) rows.push(forumItemCard(it));
+        rows.push(forumCategoryDivider(group.category, t));
+        for (const it of group.items) rows.push(forumItemCard(it, t));
       }
       // Rotating-note line.
-      rows.push(`<tr><td style="background: #080e18; padding: 8px 22px 14px; border: 0;">`
-        + `<span style="color: #8AA898; font-size: 12px; font-style: italic;">`
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 8px 22px 14px; border: 0;">`
+        + `<span style="color: ${t.textMuted}; font-size: 12px; font-style: italic;">`
         + `Also rotating: drugs, plushies, flowers. Check bazaar for live stock.</span></td></tr>`);
       if (txs.length) {
-        rows.push(forumSectionHeader('Recent Transactions'));
-        rows.push(`<tr><td style="background: #080e18; padding: 6px 22px 16px; border: 0;">`
-          + `<table ${TBL} width="100%" style="background: #0c1422; border: 0; border-collapse: collapse;">`
-          + `<tbody>${txs.map(forumTxRow).join('')}</tbody></table></td></tr>`);
+        rows.push(forumSectionHeader('Recent Transactions', t));
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; border: 0;">`
+          + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;">`
+          + `<tbody>${txs.map(tx => forumTxRow(tx, t)).join('')}</tbody></table></td></tr>`);
       }
-      rows.push(forumRule());
+      rows.push(forumRule(t));
       // Footer — tagline left, bazaar link right.
       const pid = (s.playerId || '').trim();
       const link = pid
-        ? `<a style="color: #5dc6f0; font-size: 12px; font-weight: bold; letter-spacing: 0.14em; `
+        ? `<a style="color: ${t.accent}; font-size: 12px; font-weight: bold; letter-spacing: 0.14em; `
           + `text-transform: uppercase; text-decoration: none;" `
           + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar &#8599;</a>`
         : '';
-      rows.push(`<tr><td style="background: #080e18; padding: 0; border: 0;">`
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 0; border: 0;">`
         + `<table ${TBL} width="100%" style="border: 0; border-collapse: collapse;"><tbody><tr>`
-        + `<td style="background: #080e18; padding: 12px 22px 13px; text-align: left; vertical-align: middle; border: 0;">`
-        + `<span style="font-size: 12px; letter-spacing: 0.12em; color: #7ed098; text-transform: uppercase; font-style: italic;">`
+        + `<td style="background: ${t.bg}; padding: 12px 22px 13px; text-align: left; vertical-align: middle; border: 0;">`
+        + `<span style="font-size: 12px; letter-spacing: 0.12em; color: ${t.primary}; text-transform: uppercase; font-style: italic;">`
         + `${escapeAttr(tagline)}</span></td>`
-        + `<td style="background: #080e18; padding: 12px 22px 13px; text-align: right; vertical-align: middle; border: 0;">`
+        + `<td style="background: ${t.bg}; padding: 12px 22px 13px; text-align: right; vertical-align: middle; border: 0;">`
         + `${link}</td></tr></tbody></table></td></tr>`);
-      return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
+      return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: ${t.bg}; border: 0; `
         + `border-collapse: collapse; font-family: Verdana, Geneva, sans-serif;">`
         + `<tbody>${rows.join('')}</tbody></table></div>`
         + `${counterPixel(s, 'rwth-forum')}</div>`;
@@ -1928,46 +2031,47 @@
     // a redundant wordmark is deliberately omitted in that case.
     toBazaarHtml(settings) {
       const s = settings || {};
-      const { shopName, tagline } = AdvConfig.resolve(s).identity;
+      const { identity, theme: t } = AdvConfig.resolve(s);
+      const { shopName, tagline } = identity;
       const banner = (s.bannerImageUrl || '').trim();
       const rows = [];
       if (banner) {
-        rows.push(`<tr><td style="background: #060a12; padding: 0; line-height: 0; border: 0;">`
+        rows.push(`<tr><td style="background: ${t.bgDeep}; padding: 0; line-height: 0; border: 0;">`
           + `${forumImg(banner)}</td></tr>`);
       } else {
         // No banner — a compact wordmark stands in so the panel still has a crown.
-        rows.push(`<tr><td style="background: #080e18; padding: 20px 24px 8px; text-align: center; border: 0;">`
-          + `<span style="color: #7ed098; font-size: 20px; font-weight: bold; `
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 20px 24px 8px; text-align: center; border: 0;">`
+          + `<span style="color: ${t.primary}; font-size: 20px; font-weight: bold; `
           + `letter-spacing: 0.3em; text-transform: uppercase;">${escapeAttr(shopName)}</span></td></tr>`);
       }
-      rows.push(forumRule());
+      rows.push(forumRule(t));
       // About panel — kicker + the single RW Gear pitch line.
-      rows.push(`<tr><td style="background: #080e18; padding: 18px 24px 6px; text-align: center; border: 0;">`
-        + `<span style="color: #5dc6f0; font-size: 10px; font-weight: bold; letter-spacing: 0.3em; `
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 18px 24px 6px; text-align: center; border: 0;">`
+        + `<span style="color: ${t.accent}; font-size: 10px; font-weight: bold; letter-spacing: 0.3em; `
         + `text-transform: uppercase;">//&nbsp; The Trading Post &nbsp;//</span></td></tr>`);
-      rows.push(`<tr><td style="background: #080e18; padding: 4px 24px 16px; text-align: center; line-height: 1.7; border: 0;">`
-        + `<span style="color: #c5dccc; font-size: 13px;">`
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 4px 24px 16px; text-align: center; line-height: 1.7; border: 0;">`
+        + `<span style="color: ${t.textBody}; font-size: 13px;">`
         + `RW Gear &mdash; top tier weapons/bonuses, priced fair and rotating constantly.</span></td></tr>`);
-      rows.push(forumRule());
-      rows.push(`<tr><td style="background: #080e18; padding: 13px 24px 12px; text-align: center; border: 0;">`
-        + `<span style="color: #9ab5a5; font-size: 12px; font-style: italic;">`
+      rows.push(forumRule(t));
+      rows.push(`<tr><td style="background: ${t.bg}; padding: 13px 24px 12px; text-align: center; border: 0;">`
+        + `<span style="color: ${t.textSoft}; font-size: 12px; font-style: italic;">`
         + `Check Display Case or send me a message if you don't see an advertised item`
         + `</span></td></tr>`);
       // Link buttons — forum thread and live pricelist, when configured.
       const links = [];
       const forumUrl = (s.forumThreadUrl || '').trim();
       const priceUrl = resolveWeav3rUrl(s);
-      if (forumUrl) links.push(bazaarLink(forumUrl, 'Forum Thread'));
-      if (priceUrl) links.push(bazaarLink(priceUrl, 'Live Pricelist'));
+      if (forumUrl) links.push(bazaarLink(forumUrl, 'Forum Thread', t));
+      if (priceUrl) links.push(bazaarLink(priceUrl, 'Live Pricelist', t));
       if (links.length) {
-        rows.push(`<tr><td style="background: #080e18; padding: 2px 20px 16px; text-align: center; border: 0;">`
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 2px 20px 16px; text-align: center; border: 0;">`
           + `${links.join('')}</td></tr>`);
       }
       // Footer tagline on a slightly lifted fill so it reads as a strip.
-      rows.push(`<tr><td style="background: #0b1320; padding: 11px 24px 12px; text-align: center; border: 0;">`
-        + `<span style="font-size: 11px; letter-spacing: 0.08em; color: #8AA898; font-style: italic;">`
+      rows.push(`<tr><td style="background: ${t.bgStrip}; padding: 11px 24px 12px; text-align: center; border: 0;">`
+        + `<span style="font-size: 11px; letter-spacing: 0.08em; color: ${t.textMuted}; font-style: italic;">`
         + `${escapeAttr(tagline)}</span></td></tr>`);
-      return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: #080e18; border: 0; `
+      return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: ${t.bg}; border: 0; `
         + `border-collapse: collapse; font-family: Verdana, Geneva, sans-serif;">`
         + `<tbody>${rows.join('')}</tbody></table></div>`
         + `${counterPixel(s, 'rwth-bazaar')}</div>`;
@@ -1979,39 +2083,40 @@
     // strip along the foot.
     toSignatureHtml(items, settings, mode) {
       const s = settings || {};
-      const { shopName } = AdvConfig.resolve(s).identity;
+      const { identity, theme: t } = AdvConfig.resolve(s);
+      const { shopName } = identity;
       const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
       // Header — the configured banner image; a wordmark bar only if none set.
       const headerRow = img
-        ? `<tr><td colspan="2" style="background: #060a12; padding: 0; line-height: 0; border: 0;">`
+        ? `<tr><td colspan="2" style="background: ${t.bgDeep}; padding: 0; line-height: 0; border: 0;">`
           + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
           + `${forumImg(img)}</a></td></tr>`
-        : `<tr><td colspan="2" style="background: #0b1320; padding: 11px 14px 9px; `
+        : `<tr><td colspan="2" style="background: ${t.bgStrip}; padding: 11px 14px 9px; `
           + `text-align: center; border: 0;">`
-          + `<span style="color: #7ed098; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
+          + `<span style="color: ${t.primary}; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
           + `text-transform: uppercase;">${escapeAttr(shopName)}</span></td></tr>`;
       const bodyRows = [];
       // Item-market mode — a slim markup-notice strip under the banner.
       if (mode === 'itemMarket') {
-        bodyRows.push(`<tr><td colspan="2" style="background: #0c1422; padding: 8px 14px; `
+        bodyRows.push(`<tr><td colspan="2" style="background: ${t.bgCard}; padding: 8px 14px; `
           + `text-align: center; border: 0;">`
-          + `<span style="color: #e0c08a; font-size: 10px; line-height: 1.5;">${ITEM_MARKET_NOTICE}</span>`
+          + `<span style="color: ${t.warnText}; font-size: 10px; line-height: 1.5;">${ITEM_MARKET_NOTICE}</span>`
           + `</td></tr>`);
       }
       for (const group of groupByCategory(items)) {
-        const accent = CATEGORY_ACCENT[group.category] || CATEGORY_ACCENT.Other;
+        const accent = categoryAccent(group.category, t);
         // Category divider — accent-dotted label over a hairline.
-        bodyRows.push(`<tr><td colspan="2" style="background: #080e18; padding: 11px 14px 4px; border: 0;">`
+        bodyRows.push(`<tr><td colspan="2" style="background: ${t.bg}; padding: 11px 14px 4px; border: 0;">`
           + `<span style="color: ${accent}; font-size: 9px; font-weight: bold; letter-spacing: 0.24em; `
           + `text-transform: uppercase;">&#9679;&nbsp; ${escapeAttr(group.category)}</span>`
-          + `<div style="height: 1px; background: #15301f; margin-top: 5px; font-size: 0; `
+          + `<div style="height: 1px; background: ${t.hairline}; margin-top: 5px; font-size: 0; `
           + `line-height: 0;">&nbsp;</div></td></tr>`);
-        for (const it of group.items) bodyRows.push(sigItemCard(it, accent));
+        for (const it of group.items) bodyRows.push(sigItemCard(it, accent, t));
       }
       // Foot — a link strip. Forum / Pricelist / Bazaar, dot-separated.
       const sigLink = (href, label) =>
         `<a href="${escapeAttr(href)}" target="_blank" rel="noopener" `
-        + `style="color: #5dc6f0; font-size: 10px; font-weight: bold; letter-spacing: 0.1em; `
+        + `style="color: ${t.accent}; font-size: 10px; font-weight: bold; letter-spacing: 0.1em; `
         + `text-transform: uppercase; text-decoration: none;">${escapeAttr(label)} &#8599;</a>`;
       const links = [];
       const forumUrl = (s.forumThreadUrl || '').trim();
@@ -2020,13 +2125,13 @@
       if (forumUrl) links.push(sigLink(forumUrl, 'Forum'));
       if (priceUrl) links.push(sigLink(priceUrl, 'Pricelist'));
       if (pid) links.push(sigLink(`/bazaar.php?userId=${pid}`, 'Bazaar'));
-      const sep = `<span style="color: #2a4738; font-size: 10px;">&nbsp;&nbsp;&bull;&nbsp;&nbsp;</span>`;
+      const sep = `<span style="color: ${t.sep}; font-size: 10px;">&nbsp;&nbsp;&bull;&nbsp;&nbsp;</span>`;
       const linkRow = links.length
-        ? `<tr><td colspan="2" style="background: #0b1320; padding: 9px 14px; text-align: center; border: 0;">`
+        ? `<tr><td colspan="2" style="background: ${t.bgStrip}; padding: 9px 14px; text-align: center; border: 0;">`
           + `${links.join(sep)}</td></tr>`
         : '';
       return `<div><div class="table-wrap"><table ${TBL} width="100%" `
-        + `style="background: #080e18; border: 0; border-collapse: collapse;">`
+        + `style="background: ${t.bg}; border: 0; border-collapse: collapse;">`
         + `<tbody>${headerRow}${bodyRows.join('')}${linkRow}</tbody></table></div>`
         + `${counterPixel(s, 'rwth-sig')}</div>`;
     },
@@ -2197,6 +2302,9 @@
     const L = (mem && mem.ledger) || {};
     const settings = (mem && mem.settings) || {};
     const mode = A.mode === 'itemMarket' ? 'itemMarket' : 'standard';
+    // #317 — the resolved theme key drives the dropdown selection, so a fresh
+    // install shows the neutral default preset selected.
+    const themeKey = AdvConfig.resolve(settings).theme.themeKey;
     const items = L.items || [];
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
@@ -2248,6 +2356,13 @@
             <option value="standard"${mode === 'standard' ? ' selected' : ''}>Standard</option>
             <option value="itemMarket"${mode === 'itemMarket' ? ' selected' : ''}>Item Market</option>
             <option value="displayCase" disabled>Display Case (soon)</option>
+          </select>
+        </label>
+        <label class="rwth-field rwth-adv-theme">
+          <span class="rwth-field-label">Theme</span>
+          <select class="rwth-field-input" data-adv-theme>
+            ${THEME_PRESETS.map(p =>
+              `<option value="${p.key}"${p.key === themeKey ? ' selected' : ''}>${p.label}</option>`).join('')}
           </select>
         </label>
       </div>
@@ -2412,6 +2527,14 @@
       const mode = e.target.value === 'itemMarket' ? 'itemMarket' : 'standard';
       Store.set('rwth_adv_mode', mode);
       setState({ advertise: { ...MEM.advertise, mode } });
+      return;
+    }
+    // #317 — theme picker persists to rwth_settings alongside the identity
+    // fields and re-renders so every output recolours to the chosen preset.
+    if (e.target.matches && e.target.matches('[data-adv-theme]')) {
+      MEM.settings = { ...MEM.settings, theme: e.target.value };
+      Store.set('rwth_settings', MEM.settings);
+      render();
       return;
     }
     // #316 — shop identity fields persist inline to rwth_settings (like the

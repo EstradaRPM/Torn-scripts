@@ -124,6 +124,66 @@ console.log('\nignores unrelated settings keys');
   assertEq('shopName still read', identity.shopName, 'Acme');
 }
 
+// ── theme resolution (#317) ───────────────────────────────────────────────────
+// Every preset must define every token the builders read, an unknown/missing
+// theme must fall back to the default preset, and no token may resolve to a
+// value the builders can leave undefined.
+
+const THEME_TOKENS = [
+  'bg', 'bgDeep', 'bgCard', 'bgStrip', 'bgPillPrimary', 'bgPillAccent',
+  'bgChip', 'bgChipMuted', 'bgLink', 'hairline', 'hairlinePrimary',
+  'hairlineAccent', 'primary', 'primaryStrong', 'accent', 'textBody',
+  'textMuted', 'textSoft', 'sep', 'warn', 'warnText',
+  'catPrimary', 'catSecondary', 'catMelee', 'catArmor', 'catOther',
+  'rarWhite', 'rarYellow', 'rarOrange', 'rarRed',
+];
+const isHex = (v) => typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v);
+
+console.log('\ntheme — default on fresh install');
+{
+  const { theme } = AdvConfig.resolve({});
+  assertEq('fresh install resolves the default (midnight) theme', theme.themeKey, 'midnight');
+  assert('every token is a defined hex colour',
+    THEME_TOKENS.every(k => isHex(theme[k])));
+}
+
+console.log('\ntheme — unknown/missing falls back to default');
+{
+  const def = AdvConfig.resolve({}).theme;
+  for (const bad of [undefined, null, '', '   ', 'rainbow', 42, {}]) {
+    const { theme } = AdvConfig.resolve({ theme: bad });
+    assertEq(`theme ${JSON.stringify(bad)} falls back to default key`, theme.themeKey, def.themeKey);
+    assert(`theme ${JSON.stringify(bad)} leaves no undefined token`,
+      THEME_TOKENS.every(k => isHex(theme[k])));
+  }
+}
+
+console.log('\ntheme — each shipped preset is a complete token set');
+{
+  for (const key of ['midnight', 'crimson', 'steel']) {
+    const { theme } = AdvConfig.resolve({ theme: key });
+    assertEq(`${key} selected`, theme.themeKey, key);
+    assert(`${key} defines every token as a hex colour`,
+      THEME_TOKENS.every(k => isHex(theme[k])));
+  }
+}
+
+console.log('\ntheme — selecting a non-default preset actually changes colours');
+{
+  const midnight = AdvConfig.resolve({ theme: 'midnight' }).theme;
+  const crimson = AdvConfig.resolve({ theme: 'crimson' }).theme;
+  assert('crimson differs from midnight on the primary accent',
+    crimson.primary !== midnight.primary);
+  assert('crimson differs from midnight on the page background',
+    crimson.bg !== midnight.bg);
+}
+
+console.log('\ntheme — surrounding whitespace on a real key is tolerated');
+{
+  const { theme } = AdvConfig.resolve({ theme: '  steel  ' });
+  assertEq('whitespace-padded key still resolves', theme.themeKey, 'steel');
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
