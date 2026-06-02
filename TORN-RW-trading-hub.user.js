@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.60
+// @version      0.3.61
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.60';
+  const SCRIPT_VERSION = '0.3.61';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -120,13 +120,34 @@
   ];
   const ADV_THEME_DEFAULT = 'midnight';
 
+  // #318 — named colour overrides layered on top of the active preset. Each
+  // control targets exactly one theme token; an override replaces just that
+  // token's preset value, so every other token still comes from the preset.
+  // The control set below is curated to a handful of high-impact tokens with
+  // plain-language labels (never token jargon); overrides persist generically
+  // under settings.themeOverrides as { token: '#rrggbb' }. A blank or malformed
+  // value is ignored by the resolver, so a bad entry can never feed an
+  // undefined / non-colour token to the builders.
+  const ADV_OVERRIDE_FIELDS = [
+    { token: 'bg',       label: 'Background' },
+    { token: 'bgCard',   label: 'Card background' },
+    { token: 'primary',  label: 'Main colour' },
+    { token: 'accent',   label: 'Accent colour' },
+    { token: 'textBody', label: 'Body text' },
+  ];
+  // A 3- or 6-digit hex colour. An override must match before the resolver will
+  // apply it, preserving the "every token is a defined colour" invariant.
+  const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
   const AdvConfig = {
     // (settings) -> { identity: { shopName, forumThreadTitle, tagline },
     //                 theme: { themeKey, <every ADV_THEME_TOKENS colour> } }.
     // Identity falls back per-field to its neutral default on blank/whitespace.
     // The theme is the preset named by settings.theme; an unknown or missing
     // key falls back to ADV_THEME_DEFAULT, so no token is ever undefined for
-    // the builders. Pure; exposed via __RwthPure for the Node test seam.
+    // the builders. Precedence is defaults < preset < per-token override
+    // (settings.themeOverrides). Pure; exposed via __RwthPure for the Node
+    // test seam.
     resolve(settings) {
       const s = settings && typeof settings === 'object' ? settings : {};
       const identity = {};
@@ -139,6 +160,17 @@
       const preset = THEME_PRESETS.find(p => p.key === wanted)
         || THEME_PRESETS.find(p => p.key === ADV_THEME_DEFAULT);
       const theme = { themeKey: preset.key, ...preset.tokens };
+      // #318 — layer valid per-token overrides on top of the preset. Only real
+      // tokens carrying a well-formed hex value win; a blank or malformed entry
+      // is skipped, so it silently falls back to the preset value and the
+      // builders never read a non-colour token.
+      const overrides = (s.themeOverrides && typeof s.themeOverrides === 'object')
+        ? s.themeOverrides : {};
+      for (const token of ADV_THEME_TOKENS) {
+        const raw = overrides[token];
+        const val = (raw == null ? '' : String(raw)).trim();
+        if (val && HEX_COLOR_RE.test(val)) theme[token] = val;
+      }
       return { identity, theme };
     },
   };
@@ -229,6 +261,9 @@
       // #317 — selected post-palette preset key. Blank/unknown -> AdvConfig
       // resolves to the neutral default theme.
       theme: '',
+      // #318 — per-token colour overrides ({ token: '#rrggbb' }) layered on top
+      // of the selected preset. Empty -> outputs use the preset verbatim.
+      themeOverrides: {},
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -2303,8 +2338,11 @@
     const settings = (mem && mem.settings) || {};
     const mode = A.mode === 'itemMarket' ? 'itemMarket' : 'standard';
     // #317 — the resolved theme key drives the dropdown selection, so a fresh
-    // install shows the neutral default preset selected.
-    const themeKey = AdvConfig.resolve(settings).theme.themeKey;
+    // install shows the neutral default preset selected. #318 — the full
+    // resolved theme also seeds the colour-override inputs, so each picker opens
+    // on the colour the outputs currently use (preset value, or an override).
+    const theme = AdvConfig.resolve(settings).theme;
+    const themeKey = theme.themeKey;
     const items = L.items || [];
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
@@ -2365,6 +2403,20 @@
               `<option value="${p.key}"${p.key === themeKey ? ' selected' : ''}>${p.label}</option>`).join('')}
           </select>
         </label>
+        <div class="rwth-adv-overrides">
+          <div class="rwth-form-title">Post colours</div>
+          <div class="rwth-adv-override-grid">
+            ${ADV_OVERRIDE_FIELDS.map(f => `
+            <label class="rwth-field rwth-adv-override">
+              <span class="rwth-field-label">${f.label}</span>
+              <input class="rwth-color-input" type="color"
+                     data-adv-override="${f.token}" value="${theme[f.token]}">
+            </label>`).join('')}
+          </div>
+          <div class="rwth-form-actions">
+            <button class="rwth-btn rwth-btn-ghost" type="button" data-action="reset-colours">Reset colours to theme</button>
+          </div>
+        </div>
       </div>
       <div class="rwth-adv-section">
         ${collapseHead(`Advertised items${listed.length ? ` (${listed.length})` : ''}`,
@@ -2487,6 +2539,7 @@
         case 'price-check':   togglePriceCheck(id); break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
         case 'add-tx':        addTransaction(); break;
+        case 'reset-colours': resetColourOverrides(); break;
         case 'remove-tx':     removeTransaction(id); break;
         case 'promote-tx':    promoteTransaction(id); break;
         case 'copy-output':   copyOutput(actionEl.dataset.copyTarget); break;
@@ -2535,6 +2588,18 @@
       MEM.settings = { ...MEM.settings, theme: e.target.value };
       Store.set('rwth_settings', MEM.settings);
       render();
+      return;
+    }
+    // #318 — a colour-override picker writes its single token into
+    // settings.themeOverrides and re-renders on `change` (when the picker
+    // commits) so every output recolours to the new token without disturbing
+    // the rest of the preset.
+    if (e.target.matches && e.target.matches('[data-adv-override]')) {
+      const token = e.target.dataset.advOverride;
+      const overrides = { ...(MEM.settings.themeOverrides || {}), [token]: e.target.value };
+      MEM.settings = { ...MEM.settings, themeOverrides: overrides };
+      Store.set('rwth_settings', MEM.settings);
+      if (e.type === 'change') render();
       return;
     }
     // #316 — shop identity fields persist inline to rwth_settings (like the
@@ -3475,6 +3540,14 @@
     setState({ advertise: { ...MEM.advertise, transactions } });
   }
 
+  // #318 — clear every colour override in one click; the outputs (and the
+  // override pickers) fall straight back to the active preset.
+  function resetColourOverrides() {
+    MEM.settings = { ...MEM.settings, themeOverrides: {} };
+    Store.set('rwth_settings', MEM.settings);
+    render();
+  }
+
   function removeTransaction(id) {
     const transactions = MEM.advertise.transactions.filter(t => t.id !== id);
     Store.set('rwth_transactions', transactions);
@@ -4001,6 +4074,16 @@
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: 8px;
       }
       .rwth-adv-mode { max-width: 220px; }
+      .rwth-adv-overrides { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+      .rwth-adv-override-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;
+      }
+      .rwth-adv-override { gap: 4px; }
+      .rwth-color-input {
+        width: 100%; height: 30px; padding: 2px; cursor: pointer;
+        background: #111; border: 1px solid var(--rwth-border-strong); border-radius: 4px;
+      }
+      .rwth-color-input:focus { outline: none; border-color: var(--rwth-accent); }
       .rwth-adv-market { margin-top: 6px; font: 11px var(--rwth-font-mono); color: #e0a85a; }
       .rwth-adv-market-net { color: var(--rwth-muted); }
       .rwth-adv-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }

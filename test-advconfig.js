@@ -184,6 +184,68 @@ console.log('\ntheme — surrounding whitespace on a real key is tolerated');
   assertEq('whitespace-padded key still resolves', theme.themeKey, 'steel');
 }
 
+// ── colour overrides (#318) ───────────────────────────────────────────────────
+// Precedence is defaults < preset < per-token override. An override replaces
+// only its token; every other token still comes from the preset, and a blank or
+// malformed override is ignored so the builders never read a non-colour token.
+
+console.log('\noverride — replaces only its token, preset holds elsewhere');
+{
+  const preset = AdvConfig.resolve({ theme: 'crimson' }).theme;
+  const { theme } = AdvConfig.resolve({ theme: 'crimson', themeOverrides: { bg: '#123456' } });
+  assertEq('overridden token wins', theme.bg, '#123456');
+  assertEq('overridden token differs from preset', theme.bg !== preset.bg, true);
+  assert('every other token still matches the preset',
+    THEME_TOKENS.filter(k => k !== 'bg').every(k => theme[k] === preset[k]));
+}
+
+console.log('\noverride — precedence over the default preset too');
+{
+  const def = AdvConfig.resolve({}).theme;
+  const { theme } = AdvConfig.resolve({ themeOverrides: { primary: '#abcdef' } });
+  assertEq('override wins on a fresh install (no theme key)', theme.primary, '#abcdef');
+  assertEq('themeKey is still the default', theme.themeKey, def.themeKey);
+}
+
+console.log('\noverride — multiple tokens at once');
+{
+  const { theme } = AdvConfig.resolve({ theme: 'steel',
+    themeOverrides: { bg: '#000000', accent: '#ffffff', textBody: '#abc' } });
+  assertEq('bg overridden', theme.bg, '#000000');
+  assertEq('accent overridden', theme.accent, '#ffffff');
+  assertEq('3-digit hex accepted', theme.textBody, '#abc');
+}
+
+console.log('\noverride — blank / malformed values are ignored');
+{
+  const preset = AdvConfig.resolve({ theme: 'midnight' }).theme;
+  for (const bad of ['', '   ', 'red', '123456', '#12', '#1234567', 'rgb(0,0,0)', null, 42, {}]) {
+    const { theme } = AdvConfig.resolve({ theme: 'midnight', themeOverrides: { primary: bad } });
+    assertEq(`primary override ${JSON.stringify(bad)} falls back to preset`, theme.primary, preset.primary);
+    assert(`override ${JSON.stringify(bad)} leaves no undefined token`,
+      THEME_TOKENS.every(k => isHex(theme[k])));
+  }
+}
+
+console.log('\noverride — unknown keys never reach the resolved theme');
+{
+  const { theme } = AdvConfig.resolve({ theme: 'midnight',
+    themeOverrides: { notAToken: '#123456', bg: '#654321' } });
+  assertEq('real token applied', theme.bg, '#654321');
+  assert('junk key is not copied onto the theme',
+    !Object.prototype.hasOwnProperty.call(theme, 'notAToken'));
+}
+
+console.log('\noverride — a non-object themeOverrides is tolerated');
+{
+  const def = AdvConfig.resolve({ theme: 'midnight' }).theme;
+  for (const bad of [null, undefined, 'nope', 42, []]) {
+    const { theme } = AdvConfig.resolve({ theme: 'midnight', themeOverrides: bad });
+    assert(`themeOverrides ${JSON.stringify(bad)} leaves the preset intact`,
+      THEME_TOKENS.every(k => theme[k] === def[k]));
+  }
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
