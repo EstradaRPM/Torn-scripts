@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.58
+// @version      0.3.59
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.58';
+  const SCRIPT_VERSION = '0.3.59';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3508,29 +3508,15 @@
     return true;
   }
 
-  function placeLauncherFixed() {
-    if (document.getElementById('rwth-launcher')) return;
-    const btn = makeLauncherButton();
-    btn.classList.add('rwth-launcher-fixed');
-    btn.textContent = AdvConfig.resolve(MEM.settings).identity.shopName;
-    document.body.appendChild(btn);
-  }
-
   function startLauncher() {
     placeLauncherInChat();
 
+    // Torn rebuilds the chat DOM on its own — re-inject whenever it does, which
+    // also covers the launcher anchor appearing after first paint.
     const chatRoot = document.querySelector('#chatRoot');
     if (chatRoot) {
-      // Torn rebuilds the chat DOM on its own — re-inject whenever it does.
       new MutationObserver(() => placeLauncherInChat())
         .observe(chatRoot, { childList: true, subtree: true });
-      // Anchor never appeared (Torn DOM change) — fall back to a corner button.
-      setTimeout(() => {
-        if (!document.getElementById('rwth-launcher')) placeLauncherFixed();
-      }, 12000);
-    } else {
-      // No chat on this page/build (or PDA) — fixed bottom-right fallback.
-      placeLauncherFixed();
     }
   }
 
@@ -3586,14 +3572,6 @@
       #rwth-launcher.rwth-launcher-chat:hover svg { filter: drop-shadow(0 0 3px var(--rwth-secondary)); }
       #rwth-launcher.rwth-launcher-chat.rwth-launcher-open svg path { fill: url(#rwth-grad-flip); }
       #rwth-launcher.rwth-launcher-chat.rwth-launcher-open svg { filter: drop-shadow(0 0 3px var(--rwth-accent)); }
-      .rwth-launcher-fixed.rwth-launcher-open { color: var(--rwth-bg); background: var(--rwth-accent); }
-      .rwth-launcher-fixed {
-        position: fixed; bottom: 12px; right: 12px; z-index: 2147483646;
-        font: 700 12px/1 var(--rwth-font-mono); letter-spacing: 1px;
-        color: var(--rwth-accent); background: var(--rwth-bg); border: 1px solid var(--rwth-secondary);
-        border-radius: 6px; cursor: pointer; padding: 6px 9px;
-      }
-      .rwth-launcher-fixed:hover { box-shadow: 0 0 6px var(--rwth-secondary); }
 
       #rwth-panel {
         position: fixed;
