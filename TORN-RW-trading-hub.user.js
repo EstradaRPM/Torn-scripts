@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.66
+// @version      0.3.67
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.66';
+  const SCRIPT_VERSION = '0.3.67';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -315,9 +315,11 @@
       // sale-log box start collapsed; the advertised-items list starts open.
       collapsed: {
         advItems: false, advOutputs: true, saleLog: true, analytics: true,
-        // Settings-tab sections (#311). "Advanced lists" and the per-surface
-        // picture overrides (#322) start folded.
-        setAccount: false, setReach: false, setPics: false, setPicsAdv: true,
+        // #324 — the hub per-surface picture overrides start folded (an Advanced
+        // fold under the shared shop banner).
+        advImagesAdv: true,
+        // Settings-tab sections (#311). "Advanced lists" starts folded.
+        setAccount: false, setReach: false,
         setPricing: false, setAdvanced: true, setDiag: false,
       },
       // #312 — which Settings `image` field has its URL popover open (null = none).
@@ -1462,44 +1464,14 @@
       ],
     },
     {
-      title: 'Where people find you', key: 'setReach',
+      // #324 — the content-bearing links (forum thread, weav3r price list) and
+      // all picture fields moved into the Advertise hub, alongside the post copy
+      // they appear in. Only the view-counter reach plumbing stays in Settings.
+      title: 'Post reach tracking', key: 'setReach',
       fields: [
-        { type: 'url', key: 'forumThreadUrl', label: 'Your forum sales thread link',
-          placeholder: 'https://www.torn.com/forums.php#/p=threads&f=...',
-          help: 'The thread buyers visit. Dropped into your posts so people can jump straight to it.' },
-        { type: 'toggle', key: 'weav3rAuto', label: 'Build my weav3r price-list link for me',
-          help: 'On: your weav3r link is made automatically from your player ID — no typing needed. Off: paste your own link below.' },
-        { type: 'url', key: 'weav3rPricelistUrl', label: 'Your weav3r price-list link',
-          placeholder: 'https://weav3r.dev/...',
-          help: 'Only used when the toggle above is off. Paste your public weav3r price list here. Optional.' },
         { type: 'url', key: 'viewCounterUrl', label: 'View-counter link',
           placeholder: 'https://CODE.goatcounter.com/count',
           help: 'Optional. Counts how many people open your posts. Leave blank to skip.' },
-      ],
-    },
-    {
-      title: 'Pictures', key: 'setPics',
-      fields: [
-        { type: 'image', key: 'bannerImageUrl', label: 'Shop banner picture',
-          placeholder: 'https://...',
-          help: 'One picture shown across the top of your forum post, bazaar advert, and signature.' },
-      ],
-    },
-    {
-      // #322 — per-surface picture overrides under an Advanced fold (seeded
-      // collapsed in MEM.ui.collapsed). Each blank field falls back to the shared
-      // shop banner above; set one only when you want different art on a surface.
-      title: 'Per-surface picture overrides (advanced)', key: 'setPicsAdv',
-      fields: [
-        { type: 'image', key: 'forumImageUrl', label: 'Forum picture override',
-          placeholder: 'https://...',
-          help: 'Optional. A different picture for your forum post. Blank uses the shop banner.' },
-        { type: 'image', key: 'bazaarImageUrl', label: 'Bazaar picture override',
-          placeholder: 'https://...',
-          help: 'Optional. A different picture for your bazaar advert. Blank uses the shop banner.' },
-        { type: 'image', key: 'signatureImageUrl', label: 'Signature picture override',
-          placeholder: 'https://...',
-          help: 'Optional. A different picture for your signature. Blank uses the shop banner.' },
       ],
     },
     {
@@ -2551,7 +2523,23 @@
       .map(it => ({ ...it, category: itemCategory(it, cats) }));
     const transactions = A.transactions || [];
 
+    const ui = (mem && mem.ui) || MEM.ui;
+    const intel = (mem && mem.intel) || MEM.intel;
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
+    // #324 — the shop banner + per-surface picture overrides moved here from the
+    // Settings tab. They reuse the Settings `image` field renderer (button + URL
+    // popover) so the same persistence path (toggle-setimg/close-setimg) applies.
+    const bannerField = { type: 'image', key: 'bannerImageUrl', label: 'Shop banner picture',
+      placeholder: 'https://...',
+      help: 'One picture shown across the top of your forum post, bazaar advert, and signature.' };
+    const surfaceImgFields = [
+      { type: 'image', key: 'forumImageUrl', label: 'Forum picture override', placeholder: 'https://...',
+        help: 'Optional. A different picture for your forum post. Blank uses the shop banner.' },
+      { type: 'image', key: 'bazaarImageUrl', label: 'Bazaar picture override', placeholder: 'https://...',
+        help: 'Optional. A different picture for your bazaar advert. Blank uses the shop banner.' },
+      { type: 'image', key: 'signatureImageUrl', label: 'Signature picture override', placeholder: 'https://...',
+        help: 'Optional. A different picture for your signature. Blank uses the shop banner.' },
+    ];
     const itemRows = listed.length
       ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id, markup)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
@@ -2593,6 +2581,59 @@
                  placeholder="${escapeAttr(ADV_IDENTITY_DEFAULTS.tagline)}"
                  autocomplete="off" spellcheck="false">
         </label>
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Links</div>
+        <span class="rwth-field-help">These links are dropped into your posts so buyers can jump straight to your thread and price list.</span>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Your forum sales thread link</span>
+          <input class="rwth-field-input" type="url" data-adv-setting="forumThreadUrl"
+                 value="${escapeAttr(settings.forumThreadUrl)}"
+                 placeholder="${escapeAttr('https://www.torn.com/forums.php#/p=threads&f=...')}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-setting-bool="weav3rAuto"${settings.weav3rAuto ? ' checked' : ''}>
+          Build my weav3r price-list link for me
+        </label>
+        <span class="rwth-field-help">On: your weav3r link is made automatically from your player ID — no typing needed. Off: paste your own link below.</span>
+        ${settings.weav3rAuto ? '' : `
+        <label class="rwth-field">
+          <span class="rwth-field-label">Your weav3r price-list link</span>
+          <input class="rwth-field-input" type="url" data-adv-setting="weav3rPricelistUrl"
+                 value="${escapeAttr(settings.weav3rPricelistUrl)}"
+                 placeholder="${escapeAttr('https://weav3r.dev/...')}"
+                 autocomplete="off" spellcheck="false">
+        </label>`}
+      </div>
+      <div class="rwth-adv-section">
+        <label class="rwth-field rwth-adv-theme">
+          <span class="rwth-field-label">Theme</span>
+          <select class="rwth-field-input" data-adv-theme>
+            ${THEME_PRESETS.map(p =>
+              `<option value="${p.key}"${p.key === themeKey ? ' selected' : ''}>${p.label}</option>`).join('')}
+          </select>
+        </label>
+        <div class="rwth-adv-overrides">
+          <div class="rwth-form-title">Post colours</div>
+          <div class="rwth-adv-override-grid">
+            ${ADV_OVERRIDE_FIELDS.map(f => `
+            <label class="rwth-field rwth-adv-override">
+              <span class="rwth-field-label">${f.label}</span>
+              <input class="rwth-color-input" type="color"
+                     data-adv-override="${f.token}" value="${theme[f.token]}">
+            </label>`).join('')}
+          </div>
+          <div class="rwth-form-actions">
+            <button class="rwth-btn rwth-btn-ghost" type="button" data-action="reset-colours">Reset colours to theme</button>
+          </div>
+        </div>
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Pictures</div>
+        ${renderSettingField(bannerField, settings, intel, ui)}
+        ${collapseHead('Per-surface picture overrides (advanced)', 'advImagesAdv', fold.advImagesAdv)}
+        ${fold.advImagesAdv ? '' : surfaceImgFields.map(f => renderSettingField(f, settings, intel, ui)).join('')}
       </div>
       <div class="rwth-adv-section">
         <div class="rwth-form-title">Post copy</div>
@@ -2653,29 +2694,6 @@
                  placeholder="${escapeAttr(ADV_COPY_DEFAULTS.markupNotice)}"
                  autocomplete="off" spellcheck="false">
         </label>` : ''}
-      </div>
-      <div class="rwth-adv-section">
-        <label class="rwth-field rwth-adv-theme">
-          <span class="rwth-field-label">Theme</span>
-          <select class="rwth-field-input" data-adv-theme>
-            ${THEME_PRESETS.map(p =>
-              `<option value="${p.key}"${p.key === themeKey ? ' selected' : ''}>${p.label}</option>`).join('')}
-          </select>
-        </label>
-        <div class="rwth-adv-overrides">
-          <div class="rwth-form-title">Post colours</div>
-          <div class="rwth-adv-override-grid">
-            ${ADV_OVERRIDE_FIELDS.map(f => `
-            <label class="rwth-field rwth-adv-override">
-              <span class="rwth-field-label">${f.label}</span>
-              <input class="rwth-color-input" type="color"
-                     data-adv-override="${f.token}" value="${theme[f.token]}">
-            </label>`).join('')}
-          </div>
-          <div class="rwth-form-actions">
-            <button class="rwth-btn rwth-btn-ghost" type="button" data-action="reset-colours">Reset colours to theme</button>
-          </div>
-        </div>
       </div>
       <div class="rwth-adv-section">
         ${collapseHead(`Advertised items${listed.length ? ` (${listed.length})` : ''}`,
@@ -2921,6 +2939,26 @@
       MEM.settings = { ...MEM.settings, availabilityOverride: e.target.value };
       Store.set('rwth_settings', MEM.settings);
       if (e.type === 'change') render();
+      return;
+    }
+    // #324 — content-bearing link fields (forum thread URL, weav3r price-list
+    // URL) migrated from the Settings tab into the hub. Same rwth_settings store
+    // and keys the generators already read; persisted inline like the identity
+    // fields and re-rendered on `change` (blur) so the outputs pick up the link.
+    if (e.target.matches && e.target.matches('[data-adv-setting]')) {
+      const key = e.target.dataset.advSetting;
+      MEM.settings = { ...MEM.settings, [key]: e.target.value };
+      Store.set('rwth_settings', MEM.settings);
+      if (e.type === 'change') render();
+      return;
+    }
+    // #324 — the weav3r auto-build toggle migrated from Settings. Re-renders so
+    // the manual price-list URL field shows (toggle off) or hides (toggle on).
+    if (e.target.matches && e.target.matches('[data-adv-setting-bool]')) {
+      const key = e.target.dataset.advSettingBool;
+      MEM.settings = { ...MEM.settings, [key]: e.target.checked };
+      Store.set('rwth_settings', MEM.settings);
+      render();
       return;
     }
     const txRow = e.target.closest && e.target.closest('[data-tx-row]');
