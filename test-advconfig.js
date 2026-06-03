@@ -246,6 +246,63 @@ console.log('\noverride — a non-object themeOverrides is tolerated');
   }
 }
 
+// ── copy resolution (#319) ────────────────────────────────────────────────────
+// Editable forum copy uses a different rule from identity: an ABSENT setting
+// shows the neutral default (a fresh post reads complete), but an explicit blank
+// hides the block. footerTagline inherits the shop tagline when unset.
+
+const COPY_KEYS = ['subBanner', 'intro', 'alsoRotating', 'footerTagline'];
+
+console.log('\ncopy — fresh install shows the neutral defaults');
+{
+  const { copy } = AdvConfig.resolve({});
+  assert('every copy field is a non-empty string on a fresh install',
+    COPY_KEYS.every(k => typeof copy[k] === 'string' && copy[k].length > 0));
+  assert('no NC17 in any copy string',
+    COPY_KEYS.every(k => !/nc17/i.test(copy[k])));
+}
+
+console.log('\ncopy — an explicit blank hides that block');
+{
+  for (const key of ['subBanner', 'intro', 'alsoRotating', 'footerTagline']) {
+    for (const blank of ['', '   ', '\t\n']) {
+      const { copy } = AdvConfig.resolve({ [key]: blank });
+      assertEq(`blank ${key} (${JSON.stringify(blank)}) resolves to '' (block hidden)`, copy[key], '');
+    }
+  }
+}
+
+console.log('\ncopy — a real value is kept and trimmed');
+{
+  const { copy } = AdvConfig.resolve({ subBanner: '  Best deals in town  ' });
+  assertEq('subBanner trimmed and kept', copy.subBanner, 'Best deals in town');
+  const base = AdvConfig.resolve({}).copy;
+  assertEq('untouched intro stays at its default', copy.intro, base.intro);
+}
+
+console.log('\ncopy — footerTagline inherits the shop tagline when unset');
+{
+  const { copy } = AdvConfig.resolve({ tagline: 'Custom slogan here' });
+  assertEq('absent footerTagline inherits the shop tagline', copy.footerTagline, 'Custom slogan here');
+  const explicit = AdvConfig.resolve({ tagline: 'Custom slogan here', footerTagline: 'Footer voice' }).copy;
+  assertEq('explicit footerTagline wins over the tagline', explicit.footerTagline, 'Footer voice');
+  const blanked = AdvConfig.resolve({ tagline: 'Custom slogan here', footerTagline: '' }).copy;
+  assertEq('blank footerTagline hides the footer line', blanked.footerTagline, '');
+}
+
+// ── section toggles (#319) ────────────────────────────────────────────────────
+// Recent Transactions is a plain show/hide flag: shown by default, hidden only
+// on an explicit false.
+
+console.log('\nsections — transactions shows by default, hides on explicit false');
+{
+  assertEq('default shows transactions', AdvConfig.resolve({}).sections.transactions, true);
+  assertEq('true shows transactions', AdvConfig.resolve({ showTransactions: true }).sections.transactions, true);
+  assertEq('false hides transactions', AdvConfig.resolve({ showTransactions: false }).sections.transactions, false);
+  assertEq('undefined shows transactions',
+    AdvConfig.resolve({ showTransactions: undefined }).sections.transactions, true);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

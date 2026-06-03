@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.61
+// @version      0.3.62
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.61';
+  const SCRIPT_VERSION = '0.3.62';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -33,6 +33,22 @@
     shopName: 'Your Shop Name',
     forumThreadTitle: 'RW Weapons & Armor - Open Shop',
     tagline: 'Quality RW gear, priced to move',
+  };
+
+  // #319 — editable flavour copy for the forum post. These were fixed strings
+  // hand-inlined into the forum builder; now each is a user-editable field fed
+  // through AdvConfig so a post carries the owner voice. Semantics differ from
+  // identity: a copy field that the user has never touched (setting absent ->
+  // undefined) shows its neutral default, but an EXPLICITLY blanked field ('')
+  // hides its block entirely. footerTagline is special — when its own setting is
+  // absent it inherits the shop tagline, so a user who only sets one tagline
+  // still gets it in the footer; blanking footerTagline hides just the footer
+  // line. Resolved under config.copy; the builder renders a block only when its
+  // copy string is non-empty.
+  const ADV_COPY_DEFAULTS = {
+    subBanner: 'Open shop // Competitively priced',
+    intro: 'Rotating collection of RW weapons/gear and other useful items. Message me if you want something not listed below.',
+    alsoRotating: 'Also rotating: drugs, plushies, flowers. Check bazaar for live stock.',
   };
 
   // #317 — the post palette is themeable. Every colour the HTML builders draw
@@ -141,13 +157,21 @@
 
   const AdvConfig = {
     // (settings) -> { identity: { shopName, forumThreadTitle, tagline },
-    //                 theme: { themeKey, <every ADV_THEME_TOKENS colour> } }.
+    //                 theme:    { themeKey, <every ADV_THEME_TOKENS colour> },
+    //                 copy:     { subBanner, intro, alsoRotating, footerTagline },
+    //                 sections: { transactions } }.
     // Identity falls back per-field to its neutral default on blank/whitespace.
     // The theme is the preset named by settings.theme; an unknown or missing
     // key falls back to ADV_THEME_DEFAULT, so no token is ever undefined for
     // the builders. Precedence is defaults < preset < per-token override
-    // (settings.themeOverrides). Pure; exposed via __RwthPure for the Node
-    // test seam.
+    // (settings.themeOverrides).
+    // #319 — copy fields use a different rule from identity: an ABSENT setting
+    // (undefined) yields the neutral default (a fresh post reads complete), but
+    // an explicit blank ('') yields '' so the builder hides that block. The
+    // builder renders a block only when its copy string is non-empty.
+    // sections.transactions is a plain show/hide flag (default show) for the
+    // non-copy Recent Transactions block. Pure; exposed via __RwthPure for the
+    // Node test seam.
     resolve(settings) {
       const s = settings && typeof settings === 'object' ? settings : {};
       const identity = {};
@@ -156,6 +180,20 @@
         const trimmed = (raw == null ? '' : String(raw)).trim();
         identity[key] = trimmed || ADV_IDENTITY_DEFAULTS[key];
       }
+      // #319 — editable forum copy. undefined -> neutral default (shown);
+      // explicit '' -> '' (block hidden by the builder).
+      const copy = {};
+      for (const key of Object.keys(ADV_COPY_DEFAULTS)) {
+        const raw = s[key];
+        copy[key] = raw === undefined ? ADV_COPY_DEFAULTS[key] : String(raw).trim();
+      }
+      // footerTagline inherits the shop tagline when its own setting is absent,
+      // so a user who set only one tagline still gets it in the footer; an
+      // explicit blank hides the footer line without touching the tagline.
+      copy.footerTagline = s.footerTagline === undefined
+        ? identity.tagline
+        : String(s.footerTagline).trim();
+      const sections = { transactions: s.showTransactions !== false };
       const wanted = (s.theme == null ? '' : String(s.theme)).trim();
       const preset = THEME_PRESETS.find(p => p.key === wanted)
         || THEME_PRESETS.find(p => p.key === ADV_THEME_DEFAULT);
@@ -171,7 +209,7 @@
         const val = (raw == null ? '' : String(raw)).trim();
         if (val && HEX_COLOR_RE.test(val)) theme[token] = val;
       }
-      return { identity, theme };
+      return { identity, theme, copy, sections };
     },
   };
 
@@ -264,6 +302,12 @@
       // #318 — per-token colour overrides ({ token: '#rrggbb' }) layered on top
       // of the selected preset. Empty -> outputs use the preset verbatim.
       themeOverrides: {},
+      // #319 — Recent Transactions show/hide for the forum post. Default show;
+      // false hides the block. The editable copy fields (subBanner, intro,
+      // alsoRotating, footerTagline) are deliberately NOT pre-seeded here: an
+      // absent key resolves to its neutral default, while an explicit blank ''
+      // written by the user hides that block (see AdvConfig.resolve / #319).
+      showTransactions: true,
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -1999,22 +2043,23 @@
     // rows + Recent Transactions; cards grouped under category dividers.
     toForumHtml(items, transactions, settings, mode) {
       const s = settings || {};
-      const { identity, theme: t } = AdvConfig.resolve(s);
-      const { tagline } = identity;
+      const { theme: t, copy, sections } = AdvConfig.resolve(s);
       const txs = transactions || [];
       const rows = [];
       rows.push(forumHeader(s, t));
       rows.push(forumRule(t));
-      // Sub-banner.
-      rows.push(`<tr><td style="background: ${t.bg}; padding: 12px 22px 8px; text-align: center; border: 0;">`
-        + `<span style="font-size: 13px; font-weight: bold; letter-spacing: 0.16em; color: ${t.primaryStrong}; text-transform: uppercase;">`
-        + `Open shop &nbsp;//&nbsp; Competitively priced</span></td></tr>`);
-      // Intro — every text run wrapped so the light-mode theme can't darken it.
-      rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; text-align: center; line-height: 1.7; border: 0;">`
-        + `<span style="color: ${t.textBody}; font-size: 13px;">`
-        + `Rotating collection of RW weapons/gear and other useful items.</span><br/><br/>`
-        + `<span style="color: ${t.textSoft}; font-size: 13px;">`
-        + `If something below isn't currently listed, message me.</span></td></tr>`);
+      // Sub-banner — editable copy (#319); a blank field hides the block.
+      if (copy.subBanner) {
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 12px 22px 8px; text-align: center; border: 0;">`
+          + `<span style="font-size: 13px; font-weight: bold; letter-spacing: 0.16em; color: ${t.primaryStrong}; text-transform: uppercase;">`
+          + `${escapeAttr(copy.subBanner)}</span></td></tr>`);
+      }
+      // Intro — editable copy (#319); the text run is wrapped so the light-mode
+      // theme can't darken it. A blank field hides the block.
+      if (copy.intro) {
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; text-align: center; line-height: 1.7; border: 0;">`
+          + `<span style="color: ${t.textBody}; font-size: 13px;">${escapeAttr(copy.intro)}</span></td></tr>`);
+      }
       // Item-market mode — a markup-notice callout so buyers expect a listing
       // priced above the advertised (net) deal.
       if (mode === 'itemMarket') {
@@ -2030,29 +2075,36 @@
         rows.push(forumCategoryDivider(group.category, t));
         for (const it of group.items) rows.push(forumItemCard(it, t));
       }
-      // Rotating-note line.
-      rows.push(`<tr><td style="background: ${t.bg}; padding: 8px 22px 14px; border: 0;">`
-        + `<span style="color: ${t.textMuted}; font-size: 12px; font-style: italic;">`
-        + `Also rotating: drugs, plushies, flowers. Check bazaar for live stock.</span></td></tr>`);
-      if (txs.length) {
+      // Rotating-note line — editable copy (#319); a blank field hides the block.
+      if (copy.alsoRotating) {
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 8px 22px 14px; border: 0;">`
+          + `<span style="color: ${t.textMuted}; font-size: 12px; font-style: italic;">`
+          + `${escapeAttr(copy.alsoRotating)}</span></td></tr>`);
+      }
+      // Recent Transactions — show/hide toggle (#319), only when there is data.
+      if (sections.transactions && txs.length) {
         rows.push(forumSectionHeader('Recent Transactions', t));
         rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; border: 0;">`
           + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;">`
           + `<tbody>${txs.map(tx => forumTxRow(tx, t)).join('')}</tbody></table></td></tr>`);
       }
       rows.push(forumRule(t));
-      // Footer — tagline left, bazaar link right.
+      // Footer — tagline left, bazaar link right. A blank footer tagline (#319)
+      // hides the tagline span; the bazaar link stands alone if present.
       const pid = (s.playerId || '').trim();
       const link = pid
         ? `<a style="color: ${t.accent}; font-size: 12px; font-weight: bold; letter-spacing: 0.14em; `
           + `text-transform: uppercase; text-decoration: none;" `
           + `href="/bazaar.php?userId=${escapeAttr(pid)}" target="_blank" rel="noopener">Visit Bazaar &#8599;</a>`
         : '';
+      const taglineSpan = copy.footerTagline
+        ? `<span style="font-size: 12px; letter-spacing: 0.12em; color: ${t.primary}; text-transform: uppercase; font-style: italic;">`
+          + `${escapeAttr(copy.footerTagline)}</span>`
+        : '';
       rows.push(`<tr><td style="background: ${t.bg}; padding: 0; border: 0;">`
         + `<table ${TBL} width="100%" style="border: 0; border-collapse: collapse;"><tbody><tr>`
         + `<td style="background: ${t.bg}; padding: 12px 22px 13px; text-align: left; vertical-align: middle; border: 0;">`
-        + `<span style="font-size: 12px; letter-spacing: 0.12em; color: ${t.primary}; text-transform: uppercase; font-style: italic;">`
-        + `${escapeAttr(tagline)}</span></td>`
+        + `${taglineSpan}</td>`
         + `<td style="background: ${t.bg}; padding: 12px 22px 13px; text-align: right; vertical-align: middle; border: 0;">`
         + `${link}</td></tr></tbody></table></td></tr>`);
       return `<div><div class="table-wrap"><table ${TBL} width="100%" style="background: ${t.bg}; border: 0; `
@@ -2341,8 +2393,14 @@
     // install shows the neutral default preset selected. #318 — the full
     // resolved theme also seeds the colour-override inputs, so each picker opens
     // on the colour the outputs currently use (preset value, or an override).
-    const theme = AdvConfig.resolve(settings).theme;
+    const resolved = AdvConfig.resolve(settings);
+    const theme = resolved.theme;
     const themeKey = theme.themeKey;
+    // #319 — resolved copy seeds the editable flavour-copy inputs (showing each
+    // block neutral default until the user edits it); sections drives the
+    // Recent Transactions show/hide checkbox.
+    const copy = resolved.copy;
+    const sections = resolved.sections;
     const items = L.items || [];
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
@@ -2388,6 +2446,34 @@
         </label>
       </div>
       <div class="rwth-adv-section">
+        <div class="rwth-form-title">Post copy</div>
+        <span class="rwth-field-help">Clear a field to hide that part of the forum post.</span>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Sub-banner</span>
+          <input class="rwth-field-input" type="text" data-adv-copy="subBanner"
+                 value="${escapeAttr(copy.subBanner)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Intro</span>
+          <textarea class="rwth-field-input" rows="2" data-adv-copy="intro"
+                    style="width:100%;font-family:inherit;"
+                    spellcheck="false">${escapeAttr(copy.intro)}</textarea>
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Also-rotating note</span>
+          <input class="rwth-field-input" type="text" data-adv-copy="alsoRotating"
+                 value="${escapeAttr(copy.alsoRotating)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rwth-field">
+          <span class="rwth-field-label">Footer tagline</span>
+          <input class="rwth-field-input" type="text" data-adv-copy="footerTagline"
+                 value="${escapeAttr(copy.footerTagline)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="rwth-adv-section">
         <label class="rwth-field rwth-adv-mode">
           <span class="rwth-field-label">Mode</span>
           <select class="rwth-field-input" data-adv-mode>
@@ -2425,6 +2511,10 @@
       </div>
       <div class="rwth-adv-section">
         <div class="rwth-form-title">Recent Transactions</div>
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-section="transactions"${sections.transactions ? ' checked' : ''}>
+          Show this section in the forum post
+        </label>
         ${txRows}
         <div class="rwth-form-actions">
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-tx">+ add transaction</button>
@@ -2610,6 +2700,24 @@
       MEM.settings = { ...MEM.settings, [key]: e.target.value };
       Store.set('rwth_settings', MEM.settings);
       if (e.type === 'change') render();
+      return;
+    }
+    // #319 — editable forum copy. The raw value is stored verbatim (an explicit
+    // blank persists as '' so the resolver hides that block), and re-renders on
+    // `change` (blur) so the output boxes reflect the new copy.
+    if (e.target.matches && e.target.matches('[data-adv-copy]')) {
+      const key = e.target.dataset.advCopy;
+      MEM.settings = { ...MEM.settings, [key]: e.target.value };
+      Store.set('rwth_settings', MEM.settings);
+      if (e.type === 'change') render();
+      return;
+    }
+    // #319 — Recent Transactions show/hide. Stored as showTransactions; the
+    // checkbox commits on `change` and re-renders so the forum output updates.
+    if (e.target.matches && e.target.matches('[data-adv-section="transactions"]')) {
+      MEM.settings = { ...MEM.settings, showTransactions: e.target.checked };
+      Store.set('rwth_settings', MEM.settings);
+      render();
       return;
     }
     const txRow = e.target.closest && e.target.closest('[data-tx-row]');
