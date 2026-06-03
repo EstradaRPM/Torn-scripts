@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.64
+// @version      0.3.65
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.64';
+  const SCRIPT_VERSION = '0.3.65';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -200,6 +200,7 @@
     //                 sections: { transactions },
     //                 locations: { bazaar, itemMarket, displayCase },
     //                 availability: <composed sentence | ''>,
+    //                 images:   { forum, bazaar, signature },
     //                 markup: <bool> }.
     // Identity falls back per-field to its neutral default on blank/whitespace.
     // The theme is the preset named by settings.theme; an unknown or missing
@@ -259,11 +260,26 @@
         const val = (raw == null ? '' : String(raw)).trim();
         if (val && HEX_COLOR_RE.test(val)) theme[token] = val;
       }
+      // #322 — one shared "Shop banner image" drives all three image-bearing
+      // surfaces (forum, bazaar, signature). Each surface may carry its own
+      // override; a non-blank override wins, otherwise the surface falls back to
+      // the shared banner. With no overrides set, all three render the banner.
+      const sharedBanner = (s.bannerImageUrl == null ? '' : String(s.bannerImageUrl)).trim();
+      const surfaceImage = (key) => {
+        const raw = s[key];
+        const val = (raw == null ? '' : String(raw)).trim();
+        return val || sharedBanner;
+      };
+      const images = {
+        forum: surfaceImage('forumImageUrl'),
+        bazaar: surfaceImage('bazaarImageUrl'),
+        signature: surfaceImage('signatureImageUrl'),
+      };
       // #321 — explicit item-market markup toggle, fully decoupled from the
       // location checkboxes above. When on, the builders apply the 5%
       // grossFromNet gross-up and render the markup-notice callout. Default off.
       const markup = s.markup === true;
-      return { identity, theme, copy, sections, locations, availability, markup };
+      return { identity, theme, copy, sections, locations, availability, images, markup };
     },
   };
 
@@ -299,9 +315,10 @@
       // sale-log box start collapsed; the advertised-items list starts open.
       collapsed: {
         advItems: false, advOutputs: true, saleLog: true, analytics: true,
-        // Settings-tab sections (#311). Only "Advanced lists" starts folded.
-        setAccount: false, setReach: false, setPics: false, setPricing: false,
-        setAdvanced: true, setDiag: false,
+        // Settings-tab sections (#311). "Advanced lists" and the per-surface
+        // picture overrides (#322) start folded.
+        setAccount: false, setReach: false, setPics: false, setPicsAdv: true,
+        setPricing: false, setAdvanced: true, setDiag: false,
       },
       // #312 — which Settings `image` field has its URL popover open (null = none).
       settingsImgEdit: null,
@@ -331,8 +348,14 @@
       forumThreadUrl: '',
       weav3rAuto: true,       // #314 — build the weav3r link from playerId; off = use the manual field below
       weav3rPricelistUrl: '',
+      // #322 — one shared "Shop banner image" drives forum, bazaar, and
+      // signature; the per-surface override fields below win for their surface
+      // when set, otherwise that surface falls back to bannerImageUrl. The old
+      // forumHeaderImageUrl is migrated onto these overrides in hydrate.
       bannerImageUrl: '',
-      forumHeaderImageUrl: '',
+      forumImageUrl: '',
+      bazaarImageUrl: '',
+      signatureImageUrl: '',
       viewCounterUrl: '',
       apiKey: '',
       // #316 — shop identity, edited in the Advertise tab. Blank -> AdvConfig
@@ -413,6 +436,21 @@
     const settings = Store.get('rwth_settings');
     if (settings && typeof settings === 'object') {
       MEM.settings = { ...MEM.settings, ...settings };
+    }
+
+    // #322 — consolidate the retired forumHeaderImageUrl onto the new per-surface
+    // overrides. It used to drive the forum header and the signature fallback, so
+    // map it onto both overrides (without clobbering one the user already set) and
+    // clear it, so an upgrading install renders identically and this runs once.
+    // The shared bannerImageUrl is unchanged; it now also drives the forum.
+    if (Object.prototype.hasOwnProperty.call(MEM.settings, 'forumHeaderImageUrl')) {
+      const legacy = String(MEM.settings.forumHeaderImageUrl || '').trim();
+      if (legacy) {
+        if (!String(MEM.settings.forumImageUrl || '').trim()) MEM.settings.forumImageUrl = legacy;
+        if (!String(MEM.settings.signatureImageUrl || '').trim()) MEM.settings.signatureImageUrl = legacy;
+      }
+      delete MEM.settings.forumHeaderImageUrl;
+      Store.set('rwth_settings', MEM.settings);
     }
 
     // #321 — migrate the retired advertise `mode` to the explicit markup toggle.
@@ -1442,12 +1480,26 @@
     {
       title: 'Pictures', key: 'setPics',
       fields: [
-        { type: 'image', key: 'bannerImageUrl', label: 'Bazaar banner picture',
+        { type: 'image', key: 'bannerImageUrl', label: 'Shop banner picture',
           placeholder: 'https://...',
-          help: 'Image shown across the top of your bazaar advert.' },
-        { type: 'image', key: 'forumHeaderImageUrl', label: 'Forum header picture',
+          help: 'One picture shown across the top of your forum post, bazaar advert, and signature.' },
+      ],
+    },
+    {
+      // #322 — per-surface picture overrides under an Advanced fold (seeded
+      // collapsed in MEM.ui.collapsed). Each blank field falls back to the shared
+      // shop banner above; set one only when you want different art on a surface.
+      title: 'Per-surface picture overrides (advanced)', key: 'setPicsAdv',
+      fields: [
+        { type: 'image', key: 'forumImageUrl', label: 'Forum picture override',
           placeholder: 'https://...',
-          help: 'Image shown at the top of your forum post (replaces the text banner).' },
+          help: 'Optional. A different picture for your forum post. Blank uses the shop banner.' },
+        { type: 'image', key: 'bazaarImageUrl', label: 'Bazaar picture override',
+          placeholder: 'https://...',
+          help: 'Optional. A different picture for your bazaar advert. Blank uses the shop banner.' },
+        { type: 'image', key: 'signatureImageUrl', label: 'Signature picture override',
+          placeholder: 'https://...',
+          help: 'Optional. A different picture for your signature. Blank uses the shop banner.' },
       ],
     },
     {
@@ -1936,16 +1988,17 @@
       + `style="display: block; height: auto; border: 0; outline: 0;"/>`;
   }
 
-  // Brand header. The forum header image, when set, replaces the wordmark text
-  // block entirely (user's slice-7 decision).
+  // Brand header. The forum image (per-surface override or shared banner, #322),
+  // when set, replaces the wordmark text block entirely (user's slice-7 decision).
   function forumHeader(s, t) {
-    const img = (s.forumHeaderImageUrl || '').trim();
+    const { identity, images } = AdvConfig.resolve(s);
+    const img = images.forum;
     if (img) {
       return `<tr><td style="background: ${t.bg}; padding: 0; line-height: 0; border: 0;">`
         + `<a href="${escapeAttr(img)}" target="_blank" rel="noopener" style="border: 0;">`
         + `${forumImg(img)}</a></td></tr>`;
     }
-    const { shopName } = AdvConfig.resolve(s).identity;
+    const { shopName } = identity;
     return `<tr><td style="background: ${t.bg}; padding: 22px 22px 18px; text-align: center; border: 0;">`
       + `<div style="color: ${t.primary}; font-size: 22px; font-weight: bold; letter-spacing: 0.32em; text-transform: uppercase;">`
       + `${escapeAttr(shopName)}</div>`
@@ -2190,9 +2243,9 @@
     // a redundant wordmark is deliberately omitted in that case.
     toBazaarHtml(settings) {
       const s = settings || {};
-      const { identity, theme: t } = AdvConfig.resolve(s);
+      const { identity, theme: t, images } = AdvConfig.resolve(s);
       const { shopName, tagline } = identity;
-      const banner = (s.bannerImageUrl || '').trim();
+      const banner = images.bazaar;
       const rows = [];
       if (banner) {
         rows.push(`<tr><td style="background: ${t.bgDeep}; padding: 0; line-height: 0; border: 0;">`
@@ -2242,9 +2295,9 @@
     // strip along the foot.
     toSignatureHtml(items, settings) {
       const s = settings || {};
-      const { identity, theme: t, availability, copy, markup } = AdvConfig.resolve(s);
+      const { identity, theme: t, availability, copy, markup, images } = AdvConfig.resolve(s);
       const { shopName } = identity;
-      const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
+      const img = images.signature;
       // Header — the configured banner image; a wordmark bar only if none set.
       const headerRow = img
         ? `<tr><td colspan="2" style="background: ${t.bgDeep}; padding: 0; line-height: 0; border: 0;">`

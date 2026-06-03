@@ -341,6 +341,79 @@ console.log('\nmarkup notice — neutral default, editable, blank hides it');
   }
 }
 
+// ── image consolidation (#322) ────────────────────────────────────────────────
+// One shared "Shop banner image" (bannerImageUrl) drives the forum, bazaar, and
+// signature surfaces. Each surface has an optional override that wins when set;
+// otherwise the surface falls back to the shared banner. With no overrides, all
+// three resolve to the banner. Blank/whitespace overrides fall back too.
+
+const IMAGE_SURFACES = ['forum', 'bazaar', 'signature'];
+
+console.log('\nimages — fresh install has no image on any surface');
+{
+  const { images } = AdvConfig.resolve({});
+  assert('every surface resolves to an empty string when nothing is set',
+    IMAGE_SURFACES.every(k => images[k] === ''));
+}
+
+console.log('\nimages — the shared banner drives all three surfaces');
+{
+  const { images } = AdvConfig.resolve({ bannerImageUrl: 'https://img/banner.png' });
+  assert('all three surfaces use the shared banner with no overrides',
+    IMAGE_SURFACES.every(k => images[k] === 'https://img/banner.png'));
+}
+
+console.log('\nimages — a per-surface override wins only for its surface');
+{
+  const { images } = AdvConfig.resolve({
+    bannerImageUrl: 'https://img/banner.png',
+    forumImageUrl: 'https://img/forum.png',
+  });
+  assertEq('forum uses its override', images.forum, 'https://img/forum.png');
+  assertEq('bazaar falls back to the banner', images.bazaar, 'https://img/banner.png');
+  assertEq('signature falls back to the banner', images.signature, 'https://img/banner.png');
+}
+
+console.log('\nimages — every surface can carry its own override');
+{
+  const { images } = AdvConfig.resolve({
+    bannerImageUrl: 'https://img/banner.png',
+    forumImageUrl: 'https://img/forum.png',
+    bazaarImageUrl: 'https://img/bazaar.png',
+    signatureImageUrl: 'https://img/sig.png',
+  });
+  assertEq('forum override', images.forum, 'https://img/forum.png');
+  assertEq('bazaar override', images.bazaar, 'https://img/bazaar.png');
+  assertEq('signature override', images.signature, 'https://img/sig.png');
+}
+
+console.log('\nimages — an override with no shared banner stands alone');
+{
+  const { images } = AdvConfig.resolve({ bazaarImageUrl: 'https://img/bazaar.png' });
+  assertEq('bazaar uses its override', images.bazaar, 'https://img/bazaar.png');
+  assertEq('forum has no image (no banner to fall back to)', images.forum, '');
+  assertEq('signature has no image (no banner to fall back to)', images.signature, '');
+}
+
+console.log('\nimages — blank / whitespace override falls back to the banner');
+{
+  for (const blank of ['', '   ', '\t\n']) {
+    const { images } = AdvConfig.resolve({ bannerImageUrl: 'https://img/banner.png', forumImageUrl: blank });
+    assertEq(`blank forum override (${JSON.stringify(blank)}) falls back to the banner`,
+      images.forum, 'https://img/banner.png');
+  }
+}
+
+console.log('\nimages — values are trimmed');
+{
+  const { images } = AdvConfig.resolve({
+    bannerImageUrl: '  https://img/banner.png  ',
+    forumImageUrl: '  https://img/forum.png  ',
+  });
+  assertEq('banner-fed surface is trimmed', images.bazaar, 'https://img/banner.png');
+  assertEq('override is trimmed', images.forum, 'https://img/forum.png');
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
