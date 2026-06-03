@@ -303,6 +303,44 @@ console.log('\nsections — transactions shows by default, hides on explicit fal
     AdvConfig.resolve({ showTransactions: undefined }).sections.transactions, true);
 }
 
+// ── markup toggle (#321) ──────────────────────────────────────────────────────
+// The item-market markup is an explicit boolean, decoupled from the location
+// checkboxes: off by default, on only for an explicit `true`. The markup notice
+// is an editable copy field with a neutral default that follows the copy rule.
+
+console.log('\nmarkup — off by default, on only for an explicit true');
+{
+  assertEq('fresh install resolves markup off', AdvConfig.resolve({}).markup, false);
+  assertEq('explicit true turns markup on', AdvConfig.resolve({ markup: true }).markup, true);
+  for (const bad of [false, undefined, null, 'true', 'itemMarket', 1, 0, {}]) {
+    assertEq(`non-true markup ${JSON.stringify(bad)} resolves off`,
+      AdvConfig.resolve({ markup: bad }).markup, false);
+  }
+}
+
+console.log('\nmarkup — independent of the location checkboxes');
+{
+  const itemMarketLoc = AdvConfig.resolve({ locations: { itemMarket: true } });
+  assertEq('ticking the Item Market location leaves markup off', itemMarketLoc.markup, false);
+  const markupOnly = AdvConfig.resolve({ markup: true });
+  assertEq('turning markup on does not select any location',
+    Object.values(markupOnly.locations).some(Boolean), false);
+}
+
+console.log('\nmarkup notice — neutral default, editable, blank hides it');
+{
+  const { copy } = AdvConfig.resolve({});
+  assert('markupNotice has a non-empty neutral default',
+    typeof copy.markupNotice === 'string' && copy.markupNotice.length > 0);
+  assert('no NC17 in the markup notice', !/nc17/i.test(copy.markupNotice));
+  assertEq('a real markupNotice is kept and trimmed',
+    AdvConfig.resolve({ markupNotice: '  List + 5%  ' }).copy.markupNotice, 'List + 5%');
+  for (const blank of ['', '   ', '\t\n']) {
+    assertEq(`blank markupNotice (${JSON.stringify(blank)}) resolves to '' (callout hidden)`,
+      AdvConfig.resolve({ markupNotice: blank }).copy.markupNotice, '');
+  }
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

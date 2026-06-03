@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.63
+// @version      0.3.64
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.63';
+  const SCRIPT_VERSION = '0.3.64';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -45,10 +45,15 @@
   // still gets it in the footer; blanking footerTagline hides just the footer
   // line. Resolved under config.copy; the builder renders a block only when its
   // copy string is non-empty.
+  // #321 — markupNotice is the editable replacement for the retired
+  // ITEM_MARKET_NOTICE constant. It follows the same copy rule (absent -> neutral
+  // default, explicit blank -> hidden), but the markup-notice callout is rendered
+  // only when the markup toggle (config.markup) is on, regardless of its text.
   const ADV_COPY_DEFAULTS = {
     subBanner: 'Open shop // Competitively priced',
     intro: 'Rotating collection of RW weapons/gear and other useful items. Message me if you want something not listed below.',
     alsoRotating: 'Also rotating: drugs, plushies, flowers. Check bazaar for live stock.',
+    markupNotice: 'Some items are listed on the item market at a markup, so the price after fees still matches the deal. Message me for any item below.',
   };
 
   // #317 — the post palette is themeable. Every colour the HTML builders draw
@@ -194,7 +199,8 @@
     //                 copy:     { subBanner, intro, alsoRotating, footerTagline },
     //                 sections: { transactions },
     //                 locations: { bazaar, itemMarket, displayCase },
-    //                 availability: <composed sentence | ''> }.
+    //                 availability: <composed sentence | ''>,
+    //                 markup: <bool> }.
     // Identity falls back per-field to its neutral default on blank/whitespace.
     // The theme is the preset named by settings.theme; an unknown or missing
     // key falls back to ADV_THEME_DEFAULT, so no token is ever undefined for
@@ -253,17 +259,13 @@
         const val = (raw == null ? '' : String(raw)).trim();
         if (val && HEX_COLOR_RE.test(val)) theme[token] = val;
       }
-      return { identity, theme, copy, sections, locations, availability };
+      // #321 — explicit item-market markup toggle, fully decoupled from the
+      // location checkboxes above. When on, the builders apply the 5%
+      // grossFromNet gross-up and render the markup-notice callout. Default off.
+      const markup = s.markup === true;
+      return { identity, theme, copy, sections, locations, availability, markup };
     },
   };
-
-  // Item-market mode notice — injected into the forum post and profile
-  // signature so buyers understand why a listing they find on the item market
-  // is priced above the advertised (net) deal. Plain HTML; <br/> is honoured by
-  // both surfaces. The forum textarea is editable before posting if tweaked.
-  const ITEM_MARKET_NOTICE =
-    'Some items may be listed on item market with purposeful markup.<br/>'
-    + 'Message me for any of the deals below.';
 
   // Torn's item-market sale fee. net = gross × (1 − fee). Matches the 5% used
   // throughout the pricing engine (PricingEngine FEE, sellLadder tax default).
@@ -321,8 +323,6 @@
     advertise: {
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
       imgEditId: null,        // null | itemId — the row whose [IMG] popover is open
-      mode: 'standard',       // 'standard' | 'itemMarket' — advertise output mode
-                              // ('displayCase' reserved). Persisted to rwth_adv_mode.
       transactions: [],
       outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
@@ -358,6 +358,11 @@
       // the composed sentence verbatim; blank -> the sentence is composed.
       locations: {},
       availabilityOverride: '',
+      // #321 — explicit item-market markup toggle. Default off; when on the
+      // outputs gross list prices up 5% and show the markup notice. Decoupled
+      // from `locations` — ticking Item Market never changes prices. Replaces the
+      // retired `rwth_adv_mode` field (migrated in hydrate).
+      markup: false,
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -391,6 +396,7 @@
   const Store = {
     get(k)    { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+    del(k)    { try { localStorage.removeItem(k); } catch {} },
   };
 
   function hydrate() {
@@ -404,12 +410,22 @@
     const transactions = Store.get('rwth_transactions');
     if (Array.isArray(transactions)) MEM.advertise.transactions = transactions;
 
-    const advMode = Store.get('rwth_adv_mode');
-    if (advMode === 'standard' || advMode === 'itemMarket') MEM.advertise.mode = advMode;
-
     const settings = Store.get('rwth_settings');
     if (settings && typeof settings === 'object') {
       MEM.settings = { ...MEM.settings, ...settings };
+    }
+
+    // #321 — migrate the retired advertise `mode` to the explicit markup toggle.
+    // A prior install with `rwth_adv_mode === 'itemMarket'` comes back with the
+    // markup toggle on; the legacy key is then cleared so this runs exactly once
+    // (and a later manual toggle-off is never silently re-flipped on).
+    const legacyMode = Store.get('rwth_adv_mode');
+    if (legacyMode != null) {
+      if (legacyMode === 'itemMarket' && MEM.settings.markup !== true) {
+        MEM.settings.markup = true;
+        Store.set('rwth_settings', MEM.settings);
+      }
+      Store.del('rwth_adv_mode');
     }
 
     const collapsed = Store.get('rwth_collapsed');
@@ -2091,9 +2107,9 @@
 
     // Output — full forum post HTML. Item-driven from the selected `listed`
     // rows + Recent Transactions; cards grouped under category dividers.
-    toForumHtml(items, transactions, settings, mode) {
+    toForumHtml(items, transactions, settings) {
       const s = settings || {};
-      const { theme: t, copy, sections, availability } = AdvConfig.resolve(s);
+      const { theme: t, copy, sections, availability, markup } = AdvConfig.resolve(s);
       const txs = transactions || [];
       const rows = [];
       rows.push(forumHeader(s, t));
@@ -2115,14 +2131,15 @@
         rows.push(`<tr><td style="background: ${t.bg}; padding: 0 22px 14px; text-align: center; border: 0;">`
           + `<span style="color: ${t.textMuted}; font-size: 12px;">${escapeAttr(availability)}</span></td></tr>`);
       }
-      // Item-market mode — a markup-notice callout so buyers expect a listing
-      // priced above the advertised (net) deal.
-      if (mode === 'itemMarket') {
+      // Markup notice (#321) — a callout so buyers expect a listing priced above
+      // the advertised (net) deal. Shown only when the markup toggle is on and
+      // the editable notice copy is non-blank.
+      if (markup && copy.markupNotice) {
         rows.push(`<tr><td style="background: ${t.bg}; padding: 0 22px 14px; border: 0;">`
           + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;"><tbody><tr>`
           + `<td style="width: 3px; background: ${t.warn}; font-size: 0; line-height: 0; padding: 0; border: 0;">&nbsp;</td>`
           + `<td style="padding: 10px 14px; text-align: center; border: 0;">`
-          + `<span style="color: ${t.warnText}; font-size: 12px; line-height: 1.6;">${ITEM_MARKET_NOTICE}</span>`
+          + `<span style="color: ${t.warnText}; font-size: 12px; line-height: 1.6;">${escapeAttr(copy.markupNotice)}</span>`
           + `</td></tr></tbody></table></td></tr>`);
       }
       rows.push(forumSectionHeader('Currently Available', t));
@@ -2223,9 +2240,9 @@
     // banner up top, slim category dividers, one metric-rich card per item
     // (accent rail + name/rarity + bonus/quality chips + price), and a link
     // strip along the foot.
-    toSignatureHtml(items, settings, mode) {
+    toSignatureHtml(items, settings) {
       const s = settings || {};
-      const { identity, theme: t, availability } = AdvConfig.resolve(s);
+      const { identity, theme: t, availability, copy, markup } = AdvConfig.resolve(s);
       const { shopName } = identity;
       const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
       // Header — the configured banner image; a wordmark bar only if none set.
@@ -2238,11 +2255,12 @@
           + `<span style="color: ${t.primary}; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
           + `text-transform: uppercase;">${escapeAttr(shopName)}</span></td></tr>`;
       const bodyRows = [];
-      // Item-market mode — a slim markup-notice strip under the banner.
-      if (mode === 'itemMarket') {
+      // Markup notice (#321) — a slim strip under the banner; shown only when the
+      // markup toggle is on and the editable notice copy is non-blank.
+      if (markup && copy.markupNotice) {
         bodyRows.push(`<tr><td colspan="2" style="background: ${t.bgCard}; padding: 8px 14px; `
           + `text-align: center; border: 0;">`
-          + `<span style="color: ${t.warnText}; font-size: 10px; line-height: 1.5;">${ITEM_MARKET_NOTICE}</span>`
+          + `<span style="color: ${t.warnText}; font-size: 10px; line-height: 1.5;">${escapeAttr(copy.markupNotice)}</span>`
           + `</td></tr>`);
       }
       // Availability — composed "where my items are" line (#320); blank hides it.
@@ -2285,9 +2303,11 @@
     },
     // Output 3 — trade-chat blurb. Sorted by list price descending so the
     // highest-value items lead the blurb rather than alphabetised filler.
-    toChat(items, settings, mode) {
+    toChat(items, settings) {
       const s = settings || {};
-      const { shopName } = AdvConfig.resolve(s).identity;
+      const resolved = AdvConfig.resolve(s);
+      const { shopName } = resolved.identity;
+      const markup = resolved.markup;
       const header = [
         `🔹🔷 <u>${shopName}</u> 🔷🔹`,
         `🟢 <u>Floor Prices</u> 🟢`,
@@ -2297,8 +2317,8 @@
       const linkLines = [];
       const pid = (s.playerId || '').trim();
       const forum = (s.forumThreadUrl || '').trim();
-      if (mode === 'itemMarket') {
-        // Item-market mode — funnel buyers to the forum to message for a deal:
+      if (markup) {
+        // Markup on (#321) — funnel buyers to the forum to message for a deal:
         // drop the bazaar link and give the forum link a marker + bold so it
         // reads as the call-to-action, without upstaging the Floor Prices head.
         if (forum) linkLines.push(`📩 [<a href="${forum}"><b>Forum</b></a>]`);
@@ -2345,13 +2365,13 @@
 
   // One checkbox-selected ledger item on the Advertise tab. The list-price and
   // image-URL inputs persist straight onto the ledger row via syncAdvertiseEdit.
-  function buildAdvItemRow(item, checked, imgOpen, mode) {
+  function buildAdvItemRow(item, checked, imgOpen, markup) {
     const bonus = fmtBonuses(item);
     const hasImg = !!(item.gyazoUrl && String(item.gyazoUrl).trim());
-    // Item-market mode — a read-only hint: the marked-up gross to list at on
+    // Markup on (#321) — a read-only hint: the marked-up gross to list at on
     // the item market, plus the net it clears (≈ the advertised list price).
     let marketHint = '';
-    if (mode === 'itemMarket') {
+    if (markup) {
       const gross = itemMarketListPrice(item.listPrice);
       if (gross != null) {
         marketHint = `<div class="rwth-adv-market">Item market: `
@@ -2449,7 +2469,6 @@
     const A = (mem && mem.advertise) || {};
     const L = (mem && mem.ledger) || {};
     const settings = (mem && mem.settings) || {};
-    const mode = A.mode === 'itemMarket' ? 'itemMarket' : 'standard';
     // #317 — the resolved theme key drives the dropdown selection, so a fresh
     // install shows the neutral default preset selected. #318 — the full
     // resolved theme also seeds the colour-override inputs, so each picker opens
@@ -2465,6 +2484,9 @@
     // #320 — resolved locations seed the checkbox states; the composed sentence
     // seeds the override placeholder so the user sees what will appear by default.
     const locations = resolved.locations;
+    // #321 — resolved markup toggle drives the markup controls, the per-item
+    // item-market hint, and the markup notice across the outputs.
+    const markup = resolved.markup;
     const items = L.items || [];
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
@@ -2478,7 +2500,7 @@
 
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     const itemRows = listed.length
-      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id, mode)).join('')
+      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id, markup)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
     const txRows = transactions.length
       ? transactions.map(buildTxRow).join('')
@@ -2554,14 +2576,22 @@
         </label>
       </div>
       <div class="rwth-adv-section">
-        <label class="rwth-field rwth-adv-mode">
-          <span class="rwth-field-label">Mode</span>
-          <select class="rwth-field-input" data-adv-mode>
-            <option value="standard"${mode === 'standard' ? ' selected' : ''}>Standard</option>
-            <option value="itemMarket"${mode === 'itemMarket' ? ' selected' : ''}>Item Market</option>
-            <option value="displayCase" disabled>Display Case (soon)</option>
-          </select>
+        <div class="rwth-form-title">Item market pricing</div>
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-markup${markup ? ' checked' : ''}>
+          Mark prices up for the item market (lists 5% over your ask so the price after fees still nets your ask)
         </label>
+        <span class="rwth-field-help">This is the only control that changes your prices. Ticking it shows the item-market list price under each item and adds the notice below. It is independent of the location boxes above.</span>
+        ${markup ? `
+        <label class="rwth-field">
+          <span class="rwth-field-label">Markup notice</span>
+          <input class="rwth-field-input" type="text" data-adv-copy="markupNotice"
+                 value="${escapeAttr(copy.markupNotice)}"
+                 placeholder="${escapeAttr(ADV_COPY_DEFAULTS.markupNotice)}"
+                 autocomplete="off" spellcheck="false">
+        </label>` : ''}
+      </div>
+      <div class="rwth-adv-section">
         <label class="rwth-field rwth-adv-theme">
           <span class="rwth-field-label">Theme</span>
           <select class="rwth-field-input" data-adv-theme>
@@ -2606,13 +2636,13 @@
         ${buildOutputBox('Forum title', 'rwth-out-title',
                          AdvertiseGenerator.toForumTitle(settings), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
-                         AdvertiseGenerator.toChat(selectedItems, settings, mode), true)}
+                         AdvertiseGenerator.toChat(selectedItems, settings), true)}
         ${buildOutputBox('Forum post HTML', 'rwth-out-forum',
-                         AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings, mode), true, 12)}
+                         AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings), true, 12)}
         ${buildOutputBox('Bazaar description HTML', 'rwth-out-bazaar',
                          AdvertiseGenerator.toBazaarHtml(settings), true, 10)}
         ${buildOutputBox('Profile signature HTML', 'rwth-out-signature',
-                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings, mode), true, 8)}`}
+                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}`}
       </div>
     </div>`;
   }
@@ -2746,10 +2776,13 @@
   // list-price / image-URL write onto the ledger row (rwth_ledger). A list-price
   // change re-renders on `change` so the chat blurb output picks up the new price.
   function syncAdvertiseEdit(e) {
-    if (e.target.matches && e.target.matches('[data-adv-mode]')) {
-      const mode = e.target.value === 'itemMarket' ? 'itemMarket' : 'standard';
-      Store.set('rwth_adv_mode', mode);
-      setState({ advertise: { ...MEM.advertise, mode } });
+    // #321 — the markup toggle persists to rwth_settings and re-renders so the
+    // outputs apply the 5% gross-up + notice and the per-item hint appears. Fully
+    // decoupled from the location checkboxes; it is the only control that prices.
+    if (e.target.matches && e.target.matches('[data-adv-markup]')) {
+      MEM.settings = { ...MEM.settings, markup: e.target.checked };
+      Store.set('rwth_settings', MEM.settings);
+      render();
       return;
     }
     // #317 — theme picker persists to rwth_settings alongside the identity
@@ -4281,7 +4314,6 @@
         display: flex; flex-direction: column; gap: 8px;
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: 8px;
       }
-      .rwth-adv-mode { max-width: 220px; }
       .rwth-adv-overrides { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
       .rwth-adv-override-grid {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;
