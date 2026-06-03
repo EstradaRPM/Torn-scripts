@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.67
+// @version      0.3.68
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.67';
+  const SCRIPT_VERSION = '0.3.68';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -314,10 +314,13 @@
       // Per-section fold state, persisted under rwth_collapsed. Outputs and the
       // sale-log box start collapsed; the advertised-items list starts open.
       collapsed: {
-        advItems: false, advOutputs: true, saleLog: true, analytics: true,
-        // #324 — the hub per-surface picture overrides start folded (an Advanced
-        // fold under the shared shop banner).
-        advImagesAdv: true,
+        // #324 — Advertise hub bars. The pivotal items area opens by default;
+        // the set-once branding/copy folds (brandLook, postText), the optional
+        // transactions block, the per-surface picture overrides, and the copy
+        // boxes all start folded so the working view stays short.
+        advItems: false, brandLook: true, postText: true, advTx: true,
+        advImagesAdv: true, advOutputs: true,
+        saleLog: true, analytics: true,
         // Settings-tab sections (#311). "Advanced lists" starts folded.
         setAccount: false, setReach: false,
         setPricing: false, setAdvanced: true, setDiag: false,
@@ -2557,8 +2560,33 @@
     const forumPreviewHtml = AdvertiseGenerator.toForumHtml(
       selectedItems, transactions, { ...settings, viewCounterUrl: '' });
 
-    return `<div class="rwth-advertise">
-      <div class="rwth-adv-section">
+    // #324 — section bodies built as locals so the assembled layout below reads
+    // as a flat list of collapsible bars. Workflow order: the pivotal items area
+    // (prices, images, the item-market reference) sits at the top, set-once
+    // branding/copy fold away beneath it, then the live preview and copy boxes.
+
+    // Items working area — the item-market markup toggle lives here because it is
+    // what surfaces the per-item reference price on the rows; it never touches
+    // where buyers find your items (that is set in Post text).
+    const markupNoticeField = markup ? `
+        <label class="rwth-field">
+          <span class="rwth-field-label">Markup notice</span>
+          <input class="rwth-field-input" type="text" data-adv-copy="markupNotice"
+                 value="${escapeAttr(copy.markupNotice)}"
+                 placeholder="${escapeAttr(ADV_COPY_DEFAULTS.markupNotice)}"
+                 autocomplete="off" spellcheck="false">
+        </label>` : '';
+    const itemsBody = `
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-markup${markup ? ' checked' : ''}>
+          Mark prices up for the item market (lists 5% over your ask so the price after fees still nets your ask)
+        </label>
+        <span class="rwth-field-help">This is the only control that changes your prices. It shows each item-market list price on the rows below and adds a notice to your posts. It never changes where buyers find your items.</span>
+        ${markupNoticeField}
+        ${itemRows}`;
+
+    // Brand & look — set-once identity, links, theme/colours and pictures.
+    const brandBody = `
         <div class="rwth-form-title">Your shop</div>
         <label class="rwth-field">
           <span class="rwth-field-label">Your shop name</span>
@@ -2581,8 +2609,6 @@
                  placeholder="${escapeAttr(ADV_IDENTITY_DEFAULTS.tagline)}"
                  autocomplete="off" spellcheck="false">
         </label>
-      </div>
-      <div class="rwth-adv-section">
         <div class="rwth-form-title">Links</div>
         <span class="rwth-field-help">These links are dropped into your posts so buyers can jump straight to your thread and price list.</span>
         <label class="rwth-field">
@@ -2605,10 +2631,8 @@
                  placeholder="${escapeAttr('https://weav3r.dev/...')}"
                  autocomplete="off" spellcheck="false">
         </label>`}
-      </div>
-      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Theme</div>
         <label class="rwth-field rwth-adv-theme">
-          <span class="rwth-field-label">Theme</span>
           <select class="rwth-field-input" data-adv-theme>
             ${THEME_PRESETS.map(p =>
               `<option value="${p.key}"${p.key === themeKey ? ' selected' : ''}>${p.label}</option>`).join('')}
@@ -2628,14 +2652,13 @@
             <button class="rwth-btn rwth-btn-ghost" type="button" data-action="reset-colours">Reset colours to theme</button>
           </div>
         </div>
-      </div>
-      <div class="rwth-adv-section">
         <div class="rwth-form-title">Pictures</div>
         ${renderSettingField(bannerField, settings, intel, ui)}
         ${collapseHead('Per-surface picture overrides (advanced)', 'advImagesAdv', fold.advImagesAdv)}
-        ${fold.advImagesAdv ? '' : surfaceImgFields.map(f => renderSettingField(f, settings, intel, ui)).join('')}
-      </div>
-      <div class="rwth-adv-section">
+        ${fold.advImagesAdv ? '' : surfaceImgFields.map(f => renderSettingField(f, settings, intel, ui)).join('')}`;
+
+    // Post text — the flavour copy and the where-to-find-you location checkboxes.
+    const postBody = `
         <div class="rwth-form-title">Post copy</div>
         <span class="rwth-field-help">Clear a field to hide that part of the forum post.</span>
         <label class="rwth-field">
@@ -2662,8 +2685,6 @@
                  value="${escapeAttr(copy.footerTagline)}"
                  autocomplete="off" spellcheck="false">
         </label>
-      </div>
-      <div class="rwth-adv-section">
         <div class="rwth-form-title">Where to find your items</div>
         <span class="rwth-field-help">Tick where you sell. The post writes the sentence for you; these boxes never change your prices.</span>
         ${ADV_LOCATIONS.map(l => `
@@ -2677,31 +2698,10 @@
                  value="${escapeAttr(settings.availabilityOverride || '')}"
                  placeholder="${escapeAttr(resolved.availability || 'Composed from the boxes above')}"
                  autocomplete="off" spellcheck="false">
-        </label>
-      </div>
-      <div class="rwth-adv-section">
-        <div class="rwth-form-title">Item market pricing</div>
-        <label class="rwth-intel-check">
-          <input type="checkbox" data-adv-markup${markup ? ' checked' : ''}>
-          Mark prices up for the item market (lists 5% over your ask so the price after fees still nets your ask)
-        </label>
-        <span class="rwth-field-help">This is the only control that changes your prices. Ticking it shows the item-market list price under each item and adds the notice below. It is independent of the location boxes above.</span>
-        ${markup ? `
-        <label class="rwth-field">
-          <span class="rwth-field-label">Markup notice</span>
-          <input class="rwth-field-input" type="text" data-adv-copy="markupNotice"
-                 value="${escapeAttr(copy.markupNotice)}"
-                 placeholder="${escapeAttr(ADV_COPY_DEFAULTS.markupNotice)}"
-                 autocomplete="off" spellcheck="false">
-        </label>` : ''}
-      </div>
-      <div class="rwth-adv-section">
-        ${collapseHead(`Advertised items${listed.length ? ` (${listed.length})` : ''}`,
-                       'advItems', fold.advItems)}
-        ${fold.advItems ? '' : itemRows}
-      </div>
-      <div class="rwth-adv-section">
-        <div class="rwth-form-title">Recent Transactions</div>
+        </label>`;
+
+    // Recent transactions — optional social-proof block with its own in-post toggle.
+    const txBody = `
         <label class="rwth-intel-check">
           <input type="checkbox" data-adv-section="transactions"${sections.transactions ? ' checked' : ''}>
           Show this section in the forum post
@@ -2709,18 +2709,10 @@
         ${txRows}
         <div class="rwth-form-actions">
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-tx">+ add transaction</button>
-        </div>
-      </div>
-      <div class="rwth-adv-section">
-        <div class="rwth-output-head">
-          <span class="rwth-form-title">Live forum preview</span>
-          <span class="rwth-adv-preview-note">Approximate &mdash; final look set by Torn</span>
-        </div>
-        <div class="rwth-adv-preview">${forumPreviewHtml}</div>
-      </div>
-      <div class="rwth-adv-section">
-        ${collapseHead('Outputs', 'advOutputs', fold.advOutputs)}
-        ${fold.advOutputs ? '' : `
+        </div>`;
+
+    // Copy boxes — the five finished outputs to paste into Torn.
+    const outputsBody = `
         ${buildOutputBox('Forum title', 'rwth-out-title',
                          AdvertiseGenerator.toForumTitle(settings), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
@@ -2730,7 +2722,36 @@
         ${buildOutputBox('Bazaar description HTML', 'rwth-out-bazaar',
                          AdvertiseGenerator.toBazaarHtml(settings), true, 10)}
         ${buildOutputBox('Profile signature HTML', 'rwth-out-signature',
-                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}`}
+                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}`;
+
+    return `<div class="rwth-advertise">
+      <div class="rwth-adv-section">
+        ${collapseHead(`Items to advertise${listed.length ? ` (${listed.length})` : ''}`,
+                       'advItems', fold.advItems)}
+        ${fold.advItems ? '' : itemsBody}
+      </div>
+      <div class="rwth-adv-section">
+        ${collapseHead('Brand & look', 'brandLook', fold.brandLook)}
+        ${fold.brandLook ? '' : brandBody}
+      </div>
+      <div class="rwth-adv-section">
+        ${collapseHead('Post text', 'postText', fold.postText)}
+        ${fold.postText ? '' : postBody}
+      </div>
+      <div class="rwth-adv-section">
+        ${collapseHead('Recent transactions', 'advTx', fold.advTx)}
+        ${fold.advTx ? '' : txBody}
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-output-head">
+          <span class="rwth-form-title">Live forum preview</span>
+          <span class="rwth-adv-preview-note">Approximate &mdash; final look set by Torn</span>
+        </div>
+        <div class="rwth-adv-preview">${forumPreviewHtml}</div>
+      </div>
+      <div class="rwth-adv-section">
+        ${collapseHead('Copy to Torn', 'advOutputs', fold.advOutputs)}
+        ${fold.advOutputs ? '' : outputsBody}
       </div>
     </div>`;
   }
@@ -4279,10 +4300,12 @@
       .rwth-form-title { font: 700 12px var(--rwth-font-ui); color: var(--rwth-accent); }
       .rwth-collapse-head {
         display: flex; align-items: center; justify-content: space-between;
-        width: 100%; background: none; border: 0; padding: 0; cursor: pointer;
-        text-align: left;
+        width: 100%; min-height: 44px; padding: 8px 12px; gap: 8px;
+        background: var(--rwth-fill-faint); border: 1px solid var(--rwth-border-soft);
+        border-radius: 6px; cursor: pointer; text-align: left;
       }
-      .rwth-collapse-caret { font-size: 11px; color: var(--rwth-accent); line-height: 1; }
+      .rwth-collapse-head:hover { background: var(--rwth-fill-hover); border-color: var(--rwth-border); }
+      .rwth-collapse-caret { font-size: 13px; color: var(--rwth-accent); line-height: 1; }
       .rwth-form-row { display: flex; gap: 8px; }
       .rwth-field-grow { flex: 1; }
       .rwth-field-sm { width: 76px; }
