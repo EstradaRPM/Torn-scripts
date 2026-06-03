@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.62
+// @version      0.3.63
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.62';
+  const SCRIPT_VERSION = '0.3.63';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -155,11 +155,46 @@
   // apply it, preserving the "every token is a defined colour" invariant.
   const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
+  // #320 — where the shop sells. The Advertise tab exposes one checkbox per
+  // location; the selected `phrase`s compose the availability sentence. `key`
+  // persists under settings.locations as a boolean; render/compose order is the
+  // array order, so a sentence always reads bazaar -> item market -> display
+  // case regardless of the order the boxes were ticked. These are pure copy —
+  // they never touch pricing (the item-market markup is a separate control).
+  const ADV_LOCATIONS = [
+    { key: 'bazaar',      label: 'Bazaar',       phrase: 'my bazaar' },
+    { key: 'itemMarket',  label: 'Item Market',  phrase: 'the item market' },
+    { key: 'displayCase', label: 'Display Case', phrase: 'my display case' },
+  ];
+
+  // #320 — composes the "where my items are" sentence from structured input.
+  // Pure; exposed via __RwthPure for the Node test seam. A non-blank manual
+  // override wins verbatim (trimmed). Otherwise the selected location phrases
+  // compose a natural Oxford-joined sentence; the 0-selected case yields '' so
+  // the builders hide the line. Selection order is irrelevant — the output
+  // always follows the canonical ADV_LOCATIONS order; unknown keys are ignored.
+  const AvailabilityLine = {
+    compose(locations, manualOverride) {
+      const override = (manualOverride == null ? '' : String(manualOverride)).trim();
+      if (override) return override;
+      const keys = Array.isArray(locations) ? locations : [];
+      const phrases = ADV_LOCATIONS.filter(l => keys.includes(l.key)).map(l => l.phrase);
+      if (!phrases.length) return '';
+      let list;
+      if (phrases.length === 1) list = phrases[0];
+      else if (phrases.length === 2) list = `${phrases[0]} and ${phrases[1]}`;
+      else list = `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`;
+      return `Find my items on ${list}.`;
+    },
+  };
+
   const AdvConfig = {
     // (settings) -> { identity: { shopName, forumThreadTitle, tagline },
     //                 theme:    { themeKey, <every ADV_THEME_TOKENS colour> },
     //                 copy:     { subBanner, intro, alsoRotating, footerTagline },
-    //                 sections: { transactions } }.
+    //                 sections: { transactions },
+    //                 locations: { bazaar, itemMarket, displayCase },
+    //                 availability: <composed sentence | ''> }.
     // Identity falls back per-field to its neutral default on blank/whitespace.
     // The theme is the preset named by settings.theme; an unknown or missing
     // key falls back to ADV_THEME_DEFAULT, so no token is ever undefined for
@@ -194,6 +229,15 @@
         ? identity.tagline
         : String(s.footerTagline).trim();
       const sections = { transactions: s.showTransactions !== false };
+      // #320 — selected sell locations (pure copy, no pricing effect). Normalize
+      // the persisted booleans, then compose the availability sentence (a manual
+      // override wins). `locations` feeds the tab checkboxes; `availability` is
+      // the resolved sentence the builders render (blank -> line hidden).
+      const locs = (s.locations && typeof s.locations === 'object') ? s.locations : {};
+      const locations = {};
+      for (const l of ADV_LOCATIONS) locations[l.key] = locs[l.key] === true;
+      const selectedLocKeys = ADV_LOCATIONS.filter(l => locations[l.key]).map(l => l.key);
+      const availability = AvailabilityLine.compose(selectedLocKeys, s.availabilityOverride);
       const wanted = (s.theme == null ? '' : String(s.theme)).trim();
       const preset = THEME_PRESETS.find(p => p.key === wanted)
         || THEME_PRESETS.find(p => p.key === ADV_THEME_DEFAULT);
@@ -209,7 +253,7 @@
         const val = (raw == null ? '' : String(raw)).trim();
         if (val && HEX_COLOR_RE.test(val)) theme[token] = val;
       }
-      return { identity, theme, copy, sections };
+      return { identity, theme, copy, sections, locations, availability };
     },
   };
 
@@ -308,6 +352,12 @@
       // absent key resolves to its neutral default, while an explicit blank ''
       // written by the user hides that block (see AdvConfig.resolve / #319).
       showTransactions: true,
+      // #320 — where the shop sells, as { bazaar, itemMarket, displayCase }
+      // booleans. Default none-selected so a fresh install shows no availability
+      // line until the user declares a location. availabilityOverride replaces
+      // the composed sentence verbatim; blank -> the sentence is composed.
+      locations: {},
+      availabilityOverride: '',
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -2043,7 +2093,7 @@
     // rows + Recent Transactions; cards grouped under category dividers.
     toForumHtml(items, transactions, settings, mode) {
       const s = settings || {};
-      const { theme: t, copy, sections } = AdvConfig.resolve(s);
+      const { theme: t, copy, sections, availability } = AdvConfig.resolve(s);
       const txs = transactions || [];
       const rows = [];
       rows.push(forumHeader(s, t));
@@ -2059,6 +2109,11 @@
       if (copy.intro) {
         rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; text-align: center; line-height: 1.7; border: 0;">`
           + `<span style="color: ${t.textBody}; font-size: 13px;">${escapeAttr(copy.intro)}</span></td></tr>`);
+      }
+      // Availability — composed "where my items are" line (#320); blank hides it.
+      if (availability) {
+        rows.push(`<tr><td style="background: ${t.bg}; padding: 0 22px 14px; text-align: center; border: 0;">`
+          + `<span style="color: ${t.textMuted}; font-size: 12px;">${escapeAttr(availability)}</span></td></tr>`);
       }
       // Item-market mode — a markup-notice callout so buyers expect a listing
       // priced above the advertised (net) deal.
@@ -2170,7 +2225,7 @@
     // strip along the foot.
     toSignatureHtml(items, settings, mode) {
       const s = settings || {};
-      const { identity, theme: t } = AdvConfig.resolve(s);
+      const { identity, theme: t, availability } = AdvConfig.resolve(s);
       const { shopName } = identity;
       const img = (s.forumHeaderImageUrl || s.bannerImageUrl || '').trim();
       // Header — the configured banner image; a wordmark bar only if none set.
@@ -2189,6 +2244,12 @@
           + `text-align: center; border: 0;">`
           + `<span style="color: ${t.warnText}; font-size: 10px; line-height: 1.5;">${ITEM_MARKET_NOTICE}</span>`
           + `</td></tr>`);
+      }
+      // Availability — composed "where my items are" line (#320); blank hides it.
+      if (availability) {
+        bodyRows.push(`<tr><td colspan="2" style="background: ${t.bg}; padding: 7px 14px 2px; `
+          + `text-align: center; border: 0;">`
+          + `<span style="color: ${t.textMuted}; font-size: 10px;">${escapeAttr(availability)}</span></td></tr>`);
       }
       for (const group of groupByCategory(items)) {
         const accent = categoryAccent(group.category, t);
@@ -2401,6 +2462,9 @@
     // Recent Transactions show/hide checkbox.
     const copy = resolved.copy;
     const sections = resolved.sections;
+    // #320 — resolved locations seed the checkbox states; the composed sentence
+    // seeds the override placeholder so the user sees what will appear by default.
+    const locations = resolved.locations;
     const items = L.items || [];
     const listed = items.filter(i => i.status === 'listed');
     const sel = A.selectedIds;
@@ -2470,6 +2534,22 @@
           <span class="rwth-field-label">Footer tagline</span>
           <input class="rwth-field-input" type="text" data-adv-copy="footerTagline"
                  value="${escapeAttr(copy.footerTagline)}"
+                 autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-form-title">Where to find your items</div>
+        <span class="rwth-field-help">Tick where you sell. The post writes the sentence for you; these boxes never change your prices.</span>
+        ${ADV_LOCATIONS.map(l => `
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-location="${l.key}"${locations[l.key] ? ' checked' : ''}>
+          ${l.label}
+        </label>`).join('')}
+        <label class="rwth-field">
+          <span class="rwth-field-label">Availability sentence override</span>
+          <input class="rwth-field-input" type="text" data-adv-availability
+                 value="${escapeAttr(settings.availabilityOverride || '')}"
+                 placeholder="${escapeAttr(resolved.availability || 'Composed from the boxes above')}"
                  autocomplete="off" spellcheck="false">
         </label>
       </div>
@@ -2718,6 +2798,26 @@
       MEM.settings = { ...MEM.settings, showTransactions: e.target.checked };
       Store.set('rwth_settings', MEM.settings);
       render();
+      return;
+    }
+    // #320 — a sell-location checkbox toggles its key in settings.locations and
+    // re-renders so the composed availability sentence updates. Pure copy: this
+    // never touches pricing.
+    if (e.target.matches && e.target.matches('[data-adv-location]')) {
+      const key = e.target.dataset.advLocation;
+      const next = { ...(MEM.settings.locations || {}), [key]: e.target.checked };
+      MEM.settings = { ...MEM.settings, locations: next };
+      Store.set('rwth_settings', MEM.settings);
+      render();
+      return;
+    }
+    // #320 — the manual availability override persists verbatim (blank -> the
+    // sentence is composed) and re-renders on `change` (blur) so the outputs
+    // pick up the new wording without interrupting typing.
+    if (e.target.matches && e.target.matches('[data-adv-availability]')) {
+      MEM.settings = { ...MEM.settings, availabilityOverride: e.target.value };
+      Store.set('rwth_settings', MEM.settings);
+      if (e.type === 'change') render();
       return;
     }
     const txRow = e.target.closest && e.target.closest('[data-tx-row]');
@@ -7168,6 +7268,7 @@
     matchSell,
     summarizeSells,
     AdvConfig,
+    AvailabilityLine,
     AdvertiseGenerator,
     itemMarketListPrice,
     BonusTrashGuard,
