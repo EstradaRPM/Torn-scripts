@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.69
+// @version      0.3.70
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.69';
+  const SCRIPT_VERSION = '0.3.70';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4062,9 +4062,12 @@
   // Chat-header injection approach adapted from the Enhanced Chat Buttons script
   // (Callz [2188704] / Weav3r [1853324]): anchor to a known native chat-header
   // button and re-inject on every chat re-render — Torn rebuilds the chat DOM.
+  // The fallback excludes script-injected buttons (ours + the Enhanced Chat
+  // Buttons config button) so we always anchor off a NATIVE header button and
+  // never clone the class of / insert after another script's launcher.
   const LAUNCHER_ANCHOR_SELECTORS = [
     '#people_panel_button',
-    '#chatRoot [class*="chat-app-header"] button',
+    '#chatRoot [class*="chat-app-header"] button:not(#rwth-launcher):not(#chat-config-button)',
   ];
 
   function findLauncherAnchor() {
@@ -4200,7 +4203,9 @@
         right: 12px;
         width: 360px;
         height: 480px;
-        z-index: 2147483647;
+        /* One below the int max so a co-resident script pinning the true max
+           (e.g. Enhanced Chat Buttons' config modal) stacks deterministically. */
+        z-index: 2147483646;
         display: flex;
         flex-direction: column;
         background: var(--rwth-bg);
