@@ -19,4 +19,5 @@ To switch scripts: change the filename on the line above (on my command).
 - **Torn API v2 only** — never v1 unless v2 has no equivalent.
 - Userscript change → bump `@version` and `SCRIPT_VERSION` together.
 - Commit + push after a change. No separate doc/test commits.
+- Shell: use the PowerShell tool by default, never the Bash tool. This is a Windows machine; reaching for Bash first wastes a failed call before falling back.
 - PowerShell: `gh` is only at `C:\Program Files\GitHub CLI\gh.exe`; pass long bodies via `--body-file`, never inline.
