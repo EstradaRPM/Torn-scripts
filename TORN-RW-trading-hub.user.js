@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.68
+// @version      0.3.69
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.68';
+  const SCRIPT_VERSION = '0.3.69';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -319,7 +319,9 @@
         // transactions block, the per-surface picture overrides, and the copy
         // boxes all start folded so the working view stays short.
         advItems: false, brandLook: true, postText: true, advTx: true,
-        advImagesAdv: true, advOutputs: true,
+        // #325 — the unified "Copy to Torn" section now carries the live preview
+        // (it used to be its own always-open section), so it starts open.
+        advImagesAdv: true, advOutputs: false,
         saleLog: true, analytics: true,
         // Settings-tab sections (#311). "Advanced lists" starts folded.
         setAccount: false, setReach: false,
@@ -327,6 +329,12 @@
       },
       // #312 — which Settings `image` field has its URL popover open (null = none).
       settingsImgEdit: null,
+      // #325 — Advertise output surface switcher. advSurface picks which HTML
+      // surface the "Copy to Torn" preview shows; advSurfaceRaw flips that
+      // surface between the rendered preview and an editable raw-HTML textarea.
+      // Switching surface resets advSurfaceRaw to false (back to preview).
+      advSurface: 'forum',     // 'forum' | 'bazaar' | 'signature'
+      advSurfaceRaw: false,
     },
     ledger: {
       items: [],
@@ -2550,20 +2558,40 @@
       ? transactions.map(buildTxRow).join('')
       : `<div class="rwth-placeholder">No recent transactions yet.</div>`;
 
-    // #323 — live forum preview. Rendered from the same generator the Forum
-    // post HTML copy box uses, so changing any identity/theme/copy/toggle/
-    // location/markup/image control updates it on the next render (this whole
-    // tab is rebuilt on each edit). The view-counter pixel is suppressed so
-    // opening the panel never inflates the reach count with self-views; the
-    // copyable HTML below is otherwise byte-identical. Only the forum post is
-    // previewed live — bazaar/signature/chat/title stay as copy boxes.
-    const forumPreviewHtml = AdvertiseGenerator.toForumHtml(
-      selectedItems, transactions, { ...settings, viewCounterUrl: '' });
+    // #325 — live preview for all three HTML surfaces (forum/bazaar/signature),
+    // switched by ui.advSurface. Each is rendered from the same generator its
+    // Copy button feeds, so any identity/theme/copy/toggle/location/markup/image
+    // edit updates it on the next render (the whole tab rebuilds on each edit).
+    //
+    // Two renders per surface: the COPY render (surfaceHtml) is the real, paste-
+    // ready output and keeps the view-counter pixel; the PREVIEW render
+    // (surfacePreview) suppresses the pixel via viewCounterUrl: '' so merely
+    // opening the panel never inflates the reach count with self-views. Apart
+    // from the pixel they are byte-identical.
+    const surfaceHtml = {
+      forum:     AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings),
+      bazaar:    AdvertiseGenerator.toBazaarHtml(settings),
+      signature: AdvertiseGenerator.toSignatureHtml(selectedItems, settings),
+    };
+    const noPixel = { ...settings, viewCounterUrl: '' };
+    const surfacePreview = {
+      forum:     AdvertiseGenerator.toForumHtml(selectedItems, transactions, noPixel),
+      bazaar:    AdvertiseGenerator.toBazaarHtml(noPixel),
+      signature: AdvertiseGenerator.toSignatureHtml(selectedItems, noPixel),
+    };
+    const SURFACES = [
+      { key: 'forum', label: 'Forum' },
+      { key: 'bazaar', label: 'Bazaar' },
+      { key: 'signature', label: 'Signature' },
+    ];
+    const activeSurface = surfaceHtml[ui.advSurface] ? ui.advSurface : 'forum';
+    const showSurfaceRaw = !!ui.advSurfaceRaw;
 
     // #324 — section bodies built as locals so the assembled layout below reads
     // as a flat list of collapsible bars. Workflow order: the pivotal items area
     // (prices, images, the item-market reference) sits at the top, set-once
-    // branding/copy fold away beneath it, then the live preview and copy boxes.
+    // branding/copy fold away beneath it, then the unified Copy-to-Torn section
+    // (#325) carrying the quick-copy text strip and the surface preview/copy switcher.
 
     // Items working area — the item-market markup toggle lives here because it is
     // what surfaces the per-item reference price on the rows; it never touches
@@ -2711,18 +2739,46 @@
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-tx">+ add transaction</button>
         </div>`;
 
-    // Copy boxes — the five finished outputs to paste into Torn.
-    const outputsBody = `
+    // #325 — quick-copy text strip on top: the two non-visual outputs (a forum
+    // title and the trade-chat blurb). They have no rendered "look", so they are
+    // plain copy rows, sat above the surface switcher because they are grabbed
+    // first and most often. The chat blurb stays an editable textarea for last-
+    // second wording tweaks before copy.
+    const textStrip = `
         ${buildOutputBox('Forum title', 'rwth-out-title',
                          AdvertiseGenerator.toForumTitle(settings), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
-                         AdvertiseGenerator.toChat(selectedItems, settings), true)}
-        ${buildOutputBox('Forum post HTML', 'rwth-out-forum',
-                         AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings), true, 12)}
-        ${buildOutputBox('Bazaar description HTML', 'rwth-out-bazaar',
-                         AdvertiseGenerator.toBazaarHtml(settings), true, 10)}
-        ${buildOutputBox('Profile signature HTML', 'rwth-out-signature',
-                         AdvertiseGenerator.toSignatureHtml(selectedItems, settings), true, 8)}`;
+                         AdvertiseGenerator.toChat(selectedItems, settings), true, 3)}`;
+
+    // #325 — surface switcher. A segmented Forum/Bazaar/Signature control selects
+    // which HTML surface is shown; the body is the rendered preview by default,
+    // or an editable raw-HTML textarea when "Edit HTML" is flipped on. Either
+    // way "Copy HTML" reads the hidden/visible rwth-out-surface textarea, which
+    // always holds the real (pixel-bearing) output — so an in-place edit feeds
+    // the copy, exactly like the old per-surface boxes did.
+    const segBtns = SURFACES.map(su =>
+      `<button class="rwth-filter${su.key === activeSurface ? ' rwth-filter-active' : ''}" type="button"
+               data-action="set-adv-surface" data-surface="${su.key}">${su.label}</button>`).join('');
+    const surfaceBody = showSurfaceRaw
+      ? `<textarea class="rwth-field-input rwth-output-box" id="rwth-out-surface" rows="12"
+                   spellcheck="false">${escapeAttr(surfaceHtml[activeSurface])}</textarea>`
+      : `<textarea id="rwth-out-surface" hidden>${escapeAttr(surfaceHtml[activeSurface])}</textarea>
+         <div class="rwth-adv-preview">${surfacePreview[activeSurface]}</div>
+         <span class="rwth-adv-preview-note">Approximate &mdash; final look set by Torn</span>`;
+    const surfaceSwitcher = `
+        <div class="rwth-output-head">
+          <div class="rwth-filters">${segBtns}</div>
+          <div class="rwth-adv-surface-actions">
+            <button class="rwth-btn-sm" type="button" data-action="copy-output"
+                    data-copy-target="rwth-out-surface">Copy HTML</button>
+            <button class="rwth-btn-sm${showSurfaceRaw ? ' rwth-btn-on' : ''}" type="button"
+                    data-action="toggle-adv-raw">${showSurfaceRaw ? 'Preview' : 'Edit HTML'}</button>
+          </div>
+        </div>
+        ${surfaceBody}`;
+
+    const outputsBody = `${textStrip}
+        <div class="rwth-adv-surface">${surfaceSwitcher}</div>`;
 
     return `<div class="rwth-advertise">
       <div class="rwth-adv-section">
@@ -2741,13 +2797,6 @@
       <div class="rwth-adv-section">
         ${collapseHead('Recent transactions', 'advTx', fold.advTx)}
         ${fold.advTx ? '' : txBody}
-      </div>
-      <div class="rwth-adv-section">
-        <div class="rwth-output-head">
-          <span class="rwth-form-title">Live forum preview</span>
-          <span class="rwth-adv-preview-note">Approximate &mdash; final look set by Torn</span>
-        </div>
-        <div class="rwth-adv-preview">${forumPreviewHtml}</div>
       </div>
       <div class="rwth-adv-section">
         ${collapseHead('Copy to Torn', 'advOutputs', fold.advOutputs)}
@@ -2852,6 +2901,9 @@
         case 'remove-tx':     removeTransaction(id); break;
         case 'promote-tx':    promoteTransaction(id); break;
         case 'copy-output':   copyOutput(actionEl.dataset.copyTarget); break;
+        case 'set-adv-surface': setState({ ui: { ...MEM.ui,
+                                advSurface: actionEl.dataset.surface, advSurfaceRaw: false } }); break;
+        case 'toggle-adv-raw':  setState({ ui: { ...MEM.ui, advSurfaceRaw: !MEM.ui.advSurfaceRaw } }); break;
         case 'toggle-img':    setState({ advertise: { ...MEM.advertise,
                                 imgEditId: MEM.advertise.imgEditId === id ? null : id } }); break;
         case 'close-img':     setState({ advertise: { ...MEM.advertise, imgEditId: null } }); break;
@@ -3954,10 +4006,13 @@
     }
     const btn = document.querySelector(`[data-copy-target="${id}"]`);
     if (btn) {
+      // #325 — restore the button's own label (e.g. "Copy HTML"), not a fixed
+      // "Copy", so the surface copy button reads correctly after the flash.
+      const label = btn.textContent;
       btn.textContent = '✓ Copied';
       setTimeout(() => {
         const b = document.querySelector(`[data-copy-target="${id}"]`);
-        if (b) b.textContent = 'Copy';
+        if (b) b.textContent = label;
       }, 1600);
     }
   }
@@ -4478,6 +4533,9 @@
       .rwth-tx-actions { display: flex; justify-content: flex-end; }
       /* #323 — live forum preview: clip the rendered post to a card and make it
          look-only so its links/images never steal a click inside the panel. */
+      /* #325 — surface switcher: stacks the head, preview/textarea, and note. */
+      .rwth-adv-surface { display: flex; flex-direction: column; gap: 6px; }
+      .rwth-adv-surface-actions { display: flex; gap: 4px; }
       .rwth-adv-preview {
         border-radius: 4px; overflow: hidden; pointer-events: none;
       }
