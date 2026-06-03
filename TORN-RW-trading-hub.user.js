@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.65
+// @version      0.3.66
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.65';
+  const SCRIPT_VERSION = '0.3.66';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2559,6 +2559,16 @@
       ? transactions.map(buildTxRow).join('')
       : `<div class="rwth-placeholder">No recent transactions yet.</div>`;
 
+    // #323 — live forum preview. Rendered from the same generator the Forum
+    // post HTML copy box uses, so changing any identity/theme/copy/toggle/
+    // location/markup/image control updates it on the next render (this whole
+    // tab is rebuilt on each edit). The view-counter pixel is suppressed so
+    // opening the panel never inflates the reach count with self-views; the
+    // copyable HTML below is otherwise byte-identical. Only the forum post is
+    // previewed live — bazaar/signature/chat/title stay as copy boxes.
+    const forumPreviewHtml = AdvertiseGenerator.toForumHtml(
+      selectedItems, transactions, { ...settings, viewCounterUrl: '' });
+
     return `<div class="rwth-advertise">
       <div class="rwth-adv-section">
         <div class="rwth-form-title">Your shop</div>
@@ -2682,6 +2692,13 @@
         <div class="rwth-form-actions">
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-tx">+ add transaction</button>
         </div>
+      </div>
+      <div class="rwth-adv-section">
+        <div class="rwth-output-head">
+          <span class="rwth-form-title">Live forum preview</span>
+          <span class="rwth-adv-preview-note">Approximate &mdash; final look set by Torn</span>
+        </div>
+        <div class="rwth-adv-preview">${forumPreviewHtml}</div>
       </div>
       <div class="rwth-adv-section">
         ${collapseHead('Outputs', 'advOutputs', fold.advOutputs)}
@@ -4398,6 +4415,15 @@
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: 8px;
       }
       .rwth-tx-actions { display: flex; justify-content: flex-end; }
+      /* #323 — live forum preview: clip the rendered post to a card and make it
+         look-only so its links/images never steal a click inside the panel. */
+      .rwth-adv-preview {
+        border-radius: 4px; overflow: hidden; pointer-events: none;
+      }
+      .rwth-adv-preview img { max-width: 100%; height: auto; }
+      .rwth-adv-preview-note {
+        font: italic 10px var(--rwth-font-mono); color: var(--rwth-muted);
+      }
       .rwth-output { display: flex; flex-direction: column; gap: 6px; }
       .rwth-output-head {
         display: flex; align-items: center; justify-content: space-between;
