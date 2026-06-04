@@ -31,3 +31,12 @@ create table if not exists public.auctions (
 create index if not exists auctions_item_bonus_idx on public.auctions (item_id, bonus_id);
 create index if not exists auctions_sold_at_idx    on public.auctions (sold_at);
 create index if not exists auctions_item_name_idx  on public.auctions (item_name);
+
+-- The hub reads this table directly over PostgREST with the browser-safe
+-- publishable key (anon role). Lock anon to read-only: RLS on, one SELECT
+-- policy, no insert/update/delete policies (the poller writes with the service
+-- key, which bypasses RLS). Sold-auction data is public, so a blanket read is
+-- fine. Idempotent — safe to re-run.
+alter table public.auctions enable row level security;
+drop policy if exists "public read" on public.auctions;
+create policy "public read" on public.auctions for select to anon using (true);

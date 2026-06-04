@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.70
+// @version      0.3.71
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      weav3r.dev
-// @connect      btrmmuuoofbonmuwrkzg.supabase.co
+// @connect      kozewwpyssyzuyksnoqu.supabase.co
 // @updateURL    https://raw.githubusercontent.com/estradarpm/torn-scripts/main/TORN-RW-trading-hub.user.js
 // @downloadURL  https://raw.githubusercontent.com/estradarpm/torn-scripts/main/TORN-RW-trading-hub.user.js
 // ==/UserScript==
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.70';
+  const SCRIPT_VERSION = '0.3.71';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4792,13 +4792,14 @@
     },
   };
 
-  // ─── Third-party search layer (ADR-0003) ─────────────────────────────────────
-  // Impure: Supabase auction history + weav3r live market, with a 5-min LRU
-  // cache around Supabase only (mirrors the Price Checker). Anon-key headers and
-  // BONUS_DATA are copied verbatim from the Price Checker.
+  // ─── Search layer (ADR-0003) ─────────────────────────────────────────────────
+  // Impure: our own Supabase auction history (self-owned DB, see auction-db/) +
+  // weav3r live market, with a 5-min LRU cache around Supabase only (mirrors the
+  // Price Checker). Auctions are read straight from the `auctions` table over
+  // PostgREST with a browser-safe publishable key (anon role, read-only via RLS).
   const RWTH_API = {
-    SUPABASE_URL: 'https://btrmmuuoofbonmuwrkzg.supabase.co',
-    SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY',
+    SUPABASE_URL: 'https://kozewwpyssyzuyksnoqu.supabase.co',
+    SUPABASE_ANON_KEY: 'sb_publishable_lLCAMxJ61mmBxDftJopRDg_yYTJ52-l',
     WEAV3R_API: 'https://weav3r.dev/api/ranked-weapons',
     CACHE_TTL: 5 * 60 * 1000,
     CACHE_MAX: 50,
@@ -4931,25 +4932,56 @@
   }
 
   const SupabaseClient = {
-    /** POST search-auctions. Returns { auctions, total }. Cached via Cache. */
+    /**
+     * Read cleared auctions from our own `auctions` table over PostgREST.
+     * Returns { auctions, total }, cached via Cache.
+     *
+     * Accepts the same query the rest of the hub already speaks
+     * ({ item_name, bonus1_id, bonus2_id, sort_by, sort_order, limit, offset })
+     * and translates it to PostgREST filters:
+     *   - item_name  → item_name=eq.<name>
+     *   - bonus1_id  → bonus_id=eq.<id>   (primary bonus, denormalised column)
+     *   - bonus2_id  → bonuses=cs.[{"id":<id>}]  (jsonb contains a second bonus)
+     *   - sort_by 'timestamp' → sold_at_epoch, 'price' → price
+     *
+     * Each row is reshaped to the comp shape compShape() reads: an epoch
+     * `timestamp` (from sold_at_epoch) and `bonus_values:[{bonus_id,bonus_value}]`
+     * (from the bonuses jsonb), so downstream verdict math is untouched.
+     */
     async search(query) {
-      const cacheKey = JSON.stringify(query || {});
+      const q = query || {};
+      const cacheKey = JSON.stringify(q);
       const cached = Cache.get(cacheKey);
       if (cached) return cached;
+
+      const params = new URLSearchParams();
+      params.set('select', 'item_name,price,quality,sold_at_epoch,bonus_id,bonus_title,bonus_value,bonuses');
+      if (q.item_name) params.set('item_name', `eq.${q.item_name}`);
+      if (q.bonus1_id != null) params.set('bonus_id', `eq.${q.bonus1_id}`);
+      if (q.bonus2_id != null) params.append('bonuses', `cs.[{"id":${q.bonus2_id}}]`);
+      const sortCol = q.sort_by === 'price' ? 'price' : 'sold_at_epoch';
+      const dir     = q.sort_order === 'asc' ? 'asc' : 'desc';
+      params.set('order', `${sortCol}.${dir}`);
+      if (q.limit  != null) params.set('limit',  String(q.limit));
+      if (q.offset != null) params.set('offset', String(q.offset));
+
       const data = await gmRequest({
-        method: 'POST',
-        url: `${RWTH_API.SUPABASE_URL}/functions/v1/search-auctions`,
+        method: 'GET',
+        url: `${RWTH_API.SUPABASE_URL}/rest/v1/auctions?${params.toString()}`,
         headers: {
-          'Content-Type': 'application/json',
           'apikey': RWTH_API.SUPABASE_ANON_KEY,
           'Authorization': 'Bearer ' + RWTH_API.SUPABASE_ANON_KEY,
         },
-        data: JSON.stringify(query || {}),
       });
-      const result = {
-        auctions: (data && data.auctions) || [],
-        total: (data && data.total) || 0,
-      };
+      const rows = Array.isArray(data) ? data : [];
+      const auctions = rows.map((r) => {
+        const bonuses = Array.isArray(r.bonuses) ? r.bonuses : [];
+        return Object.assign({}, r, {
+          timestamp: r.sold_at_epoch,
+          bonus_values: bonuses.map((b) => ({ bonus_id: b.id, bonus_value: b.value })),
+        });
+      });
+      const result = { auctions, total: auctions.length };
       Cache.set(cacheKey, result);
       return result;
     },
