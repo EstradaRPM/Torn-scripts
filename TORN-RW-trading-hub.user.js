@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.71
+// @version      0.3.72
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.71';
+  const SCRIPT_VERSION = '0.3.72';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4794,7 +4794,7 @@
 
   // ─── Search layer (ADR-0003) ─────────────────────────────────────────────────
   // Impure: our own Supabase auction history (self-owned DB, see auction-db/) +
-  // weav3r live market, with a 5-min LRU cache around Supabase only (mirrors the
+  // the Torn item market (official API), with a 5-min LRU cache around Supabase only (mirrors the
   // Price Checker). Auctions are read straight from the `auctions` table over
   // PostgREST with a browser-safe publishable key (anon role, read-only via RLS).
   const RWTH_API = {
@@ -5014,96 +5014,84 @@
   // Returns { market, bazaar } arrays of normalised listings:
   //   { price, bonusPct, qualityPct, sellerId, sellerName, listingId, source }
   //
-  // Cache: in-memory Map, 5-min TTL keyed by item id + bonus/quality criteria.
-  // Listings move fast, so the long-TTL `Cache` (sold-comp store) is wrong here.
+  // Cache: in-memory Map, 5-min TTL keyed by item id. Listings move fast, so
+  // the long-TTL `Cache` (sold-comp store) is wrong here.
   //
-  // No new @connect hosts: a single weav3r ranked-weapons call returns both
-  // venues interleaved (bazaar rows carry playerId/playerName), so we split on
-  // source rather than fetching bazaar separately (#280).
+  // Source is Torn's official `/v2/market/{id}/itemmarket` (v0.3.72) — the item
+  // market only. Bazaar comps are not obtainable: Torn removed the bazaar API
+  // and Item Market 2.0 split bazaars out of the item market, so `bazaar` is
+  // always []. The anchor/tiering math was already market-only (PRD #296), so
+  // dropping the bazaar half changes no verdict number; only the #300 floor
+  // cross-check loses its bazaar side and degrades to nothing on its own.
   const LISTINGS_TTL_MS = 5 * 60 * 1000;
   const ListingsFetcher = {
     _cache: new Map(),
     _ttl: LISTINGS_TTL_MS,
-    _shapeWeav3r(w) {
-      if (!w || typeof w !== 'object') return null;
-      const price = Number(w.price != null ? w.price : NaN);
+    // Normalise one Torn item-market listing to the shared comp shape. Bonus %
+    // is the first bonus value (matches the Supabase cleared-comp convention
+    // bonus_values[0]); stats.quality is already a percentage (e.g. 24.59).
+    _shapeItemMarket(listing) {
+      if (!listing || typeof listing !== 'object') return null;
+      const price = Number(listing.price != null ? listing.price : NaN);
       if (!Number.isFinite(price)) return null;
-      // weav3r ranked-weapons returns the bonus under a `bonuses` map/array of
-      // { bonus, value } entries — NOT a flat bonus1Value/bonusValue. Reading
-      // the non-existent flat fields left every LISTED (asking) row at 0.00%
-      // bonus while quality populated fine. Take the first entry as the primary
-      // %, matching the Supabase cleared-comp convention (bonus_values[0]).
+      const det = listing.item_details || {};
       let bonusPct = NaN;
-      if (w.bonuses && typeof w.bonuses === 'object') {
-        const first = Object.values(w.bonuses).find(b => b && b.value != null);
-        if (first) bonusPct = Number(first.value);
-      }
-      if (!Number.isFinite(bonusPct)) {
-        bonusPct = Number(w.bonus1Value != null ? w.bonus1Value
-                   : w.bonusValue != null ? w.bonusValue : NaN);
-      }
-      const qualityPct = Number(w.quality != null ? w.quality : NaN);
-      // weav3r interleaves item-market and bazaar listings in one response.
-      // Bazaar rows carry the seller's playerId/playerName (the row links to
-      // their bazaar.php); item-market rows don't. This tag is load-bearing:
-      // downstream keeps bazaar OUT of the anchor/tiering math (PRD #296).
-      const isBazaar = w.playerId != null || w.playerName != null;
+      const b0 = det.bonuses && det.bonuses[0];
+      if (b0 && b0.value != null) bonusPct = Number(b0.value);
+      const qualityPct = Number(
+        det.stats && det.stats.quality != null ? det.stats.quality : NaN);
       return {
         price,
         bonusPct: Number.isFinite(bonusPct) ? bonusPct : null,
         qualityPct: Number.isFinite(qualityPct) ? qualityPct : null,
-        sellerId: w.playerId != null ? w.playerId
-                : w.sellerId != null ? w.sellerId
-                : w.seller != null ? w.seller : null,
-        sellerName: w.playerName != null ? w.playerName : null,
-        listingId: w.listingId != null ? w.listingId
-                 : w.id != null ? w.id : null,
-        source: isBazaar ? 'bazaar' : 'market',
+        // Item market listings are anonymous in API v2 — no seller exposed.
+        sellerId: null,
+        sellerName: null,
+        listingId: listing.id != null ? listing.id : null,
+        source: 'market',
       };
     },
-    _buildQuery(item) {
-      const bonuses  = ((item && item.bonuses) || []).filter(b => b && b.name);
-      const itemName = (item && item.itemName) || '';
-      const q = { sortField: 'price', sortDirection: 'asc' };
-      const cat = itemCategory(item || {});
-      if (cat === 'Armor') {
-        q.tab = 'armor';
-        if (itemName) q.armorPiece = itemName;
-      } else {
-        q.tab = 'weapons';
-        if (itemName) q.weaponName = itemName;
-      }
-      // No bonus-value / quality range filters — widener + drilldown handle
-      // narrowing on-card so the network layer returns a wide-enough comp set.
-      bonuses.slice(0, 2).forEach((b, i) => {
-        if (i === 0) q.bonus1 = b.name;
-        else         q.bonus2 = b.name;
-      });
-      return q;
+    // Resolve a Torn item id from the item. Both call paths carry itemName; the
+    // items dictionary (ItemClassifier) maps name → id. Returns null when the
+    // dict hasn't warmed yet or the name is unknown — caller degrades to
+    // auction-only comps.
+    _resolveItemId(item) {
+      if (item && item.itemId != null) return item.itemId;
+      const name = (item && item.itemName || '').trim();
+      if (!name) return null;
+      const dict = ItemClassifier.getDict();
+      if (!dict) return null;
+      const meta = dict[name] || dict[name.toLowerCase()];
+      return meta && meta.id != null ? meta.id : null;
     },
     /**
      * fetch(item) → Promise<{ market, bazaar }>
-     * Cached 5 min by item+criteria. Errors degrade to empty arrays.
+     * Cached 5 min by item id. Errors degrade to empty arrays. `bazaar` is
+     * always [] (see header). Uses the user's own API key via plain fetch —
+     * same pattern as the BB-rate / items-dict calls (no @connect needed).
      */
     async fetch(item) {
-      const query = ListingsFetcher._buildQuery(item);
-      const key   = JSON.stringify(query);
-      const now   = Date.now();
-      const hit   = ListingsFetcher._cache.get(key);
+      const itemId = ListingsFetcher._resolveItemId(item);
+      const key    = 'im:' + (itemId != null ? itemId : ((item && item.itemName) || ''));
+      const now    = Date.now();
+      const hit    = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
-      // One weav3r call returns both venues interleaved; _shapeWeav3r tags each
-      // row's source so we split them here. Bazaar stays a separate array so the
-      // anchor/tiering math can exclude it (PRD #296) while the LISTED ladder +
-      // #300 cross-check still see it.
       let market = [];
-      let bazaar = [];
       try {
-        const r = await Weav3rClient.search(query);
-        const shaped = (r.weapons || []).map(ListingsFetcher._shapeWeav3r).filter(Boolean);
-        market = shaped.filter(l => l.source === 'market');
-        bazaar = shaped.filter(l => l.source === 'bazaar');
-      } catch { market = []; bazaar = []; }
-      const data = { market, bazaar };
+        const apiKey = (MEM.settings && MEM.settings.apiKey || '').trim();
+        if (itemId != null && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey)) {
+          const url = `${API_BASE}/v2/market/${itemId}/itemmarket`
+            + `?limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
+          const res = await fetch(url);
+          const d   = await res.json();
+          if (d && !d.error && d.itemmarket && Array.isArray(d.itemmarket.listings)) {
+            market = d.itemmarket.listings
+              .map(ListingsFetcher._shapeItemMarket)
+              .filter(Boolean);
+          }
+        }
+      } catch { market = []; }
+      const data = { market, bazaar: [] };
       ListingsFetcher._cache.set(key, { ts: now, data });
       return data;
     },
@@ -5889,8 +5877,8 @@
     /**
      * fetchComps(item, intelSettings) → Promise<{ cleared, asking }>
      *
-     * Orchestrates Supabase (auction-cleared sales) and weav3r (live item-market
-     * listings) in parallel and returns them as two distinct arrays — never
+     * Orchestrates Supabase (auction-cleared sales) and the Torn item market
+     * (live listings) in parallel and returns them as two distinct arrays — never
      * blended (PRD Story 5/6, issue #267). `cleared` drives action math;
      * `asking` is shown as an informational spread line.
      * Network errors degrade to empty arrays — never throws (PRD Story 10).
