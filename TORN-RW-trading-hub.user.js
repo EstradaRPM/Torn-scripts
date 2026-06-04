@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.74
+// @version      0.3.75
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.74';
+  const SCRIPT_VERSION = '0.3.75';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5095,8 +5095,9 @@
       // item — same on-demand trigger, same 5-min cache.
       const bonuses = ((item && item.bonuses) || []).filter(b => b && b.name);
       const bonus   = ListingsFetcher._bonusTitle(bonuses[0] && bonuses[0].name);
+      const rarity  = item && item.rarity ? String(item.rarity).toLowerCase() : '';
       const key  = 'im:' + (itemId != null ? itemId : ((item && item.itemName) || ''))
-        + ':' + bonus.toLowerCase();
+        + ':' + bonus.toLowerCase() + ':' + rarity;
       const now  = Date.now();
       const hit  = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
@@ -5113,6 +5114,14 @@
             market = d.itemmarket.listings
               .map(ListingsFetcher._shapeItemMarket)
               .filter(Boolean);
+            // Same-colour comps only: filter to the candidate's rarity when
+            // known, so a yellow (1-bonus) piece is not anchored against pricier
+            // orange/red pieces that share the same bonus. Unknown rarity keeps
+            // all bonus-matched listings.
+            if (rarity) {
+              market = market.filter(
+                l => (l.rarity || '').toLowerCase() === rarity);
+            }
           }
         }
       } catch { market = []; }
@@ -7375,6 +7384,7 @@
         bonuses: parsed.parsedBonuses,
         quality: parsed.quality,
         type: parsed.itemType,
+        rarity: parsed.rarity,
       };
       // v0.3.0 slice 9 — BonusTrashGuard short-circuit before any fetch.
       const trashHit = (parsed.parsedBonuses || []).find(
