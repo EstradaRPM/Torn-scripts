@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.73
+// @version      0.3.74
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.73';
+  const SCRIPT_VERSION = '0.3.74';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5035,11 +5035,9 @@
       const price = Number(listing.price != null ? listing.price : NaN);
       if (!Number.isFinite(price)) return null;
       const det = listing.item_details || {};
-      // Restrict to ranked-war items. The item market lists plain (un-bonused)
-      // copies of the same weapon/armor under the same item id; those are
-      // cheaper than any RW piece and would anchor the floor far below it.
-      // weav3r's ranked-weapons feed pre-filtered to bonus-bearing items, so we
-      // reproduce that here by dropping any listing with no bonus.
+      // Safety net: the request is bonus-filtered server-side (see fetch), so
+      // every listing should already carry the bonus. Drop any stray un-bonused
+      // copy so a plain piece can never anchor the floor below the RW pieces.
       const bonuses = Array.isArray(det.bonuses) ? det.bonuses : [];
       if (!bonuses.length) return null;
       let bonusPct = NaN;
@@ -5051,6 +5049,9 @@
         price,
         bonusPct: Number.isFinite(bonusPct) ? bonusPct : null,
         qualityPct: Number.isFinite(qualityPct) ? qualityPct : null,
+        // Rarity colour ('yellow' | 'orange' | 'red') straight from the API so
+        // downstream can compare like-for-like by colour.
+        rarity: det.rarity || null,
         // Item market listings are anonymous in API v2 — no seller exposed.
         sellerId: null,
         sellerName: null,
@@ -5071,24 +5072,41 @@
       const meta = dict[name] || dict[name.toLowerCase()];
       return meta && meta.id != null ? meta.id : null;
     },
+    // Canonical bonus title for the Torn `bonus` filter (e.g. "deadeye" →
+    // "Deadeye"). Falls back to the trimmed raw name when not in BONUS_DATA.
+    _bonusTitle(name) {
+      const lo = String(name || '').trim().toLowerCase();
+      if (!lo) return '';
+      const hit = BONUS_DATA.find(b => b.title.toLowerCase() === lo);
+      return hit ? hit.title : String(name || '').trim();
+    },
     /**
      * fetch(item) → Promise<{ market, bazaar }>
-     * Cached 5 min by item id. Errors degrade to empty arrays. `bazaar` is
-     * always [] (see header). Uses the user's own API key via plain fetch —
+     * Cached 5 min by item id + bonus. Errors degrade to empty arrays. `bazaar`
+     * is always [] (see header). Uses the user's own API key via plain fetch —
      * same pattern as the BB-rate / items-dict calls (no @connect needed).
      */
     async fetch(item) {
       const itemId = ListingsFetcher._resolveItemId(item);
-      const key    = 'im:' + (itemId != null ? itemId : ((item && item.itemName) || ''));
-      const now    = Date.now();
-      const hit    = ListingsFetcher._cache.get(key);
+      // Filter the item market by the candidate's primary bonus so the endpoint
+      // returns same-bonus RW listings directly, instead of the cheapest plain
+      // (un-bonused) copies. The `bonus` param takes a bonus title (e.g.
+      // "Deadeye") or a rarity colour; we pass the title. One filtered call per
+      // item — same on-demand trigger, same 5-min cache.
+      const bonuses = ((item && item.bonuses) || []).filter(b => b && b.name);
+      const bonus   = ListingsFetcher._bonusTitle(bonuses[0] && bonuses[0].name);
+      const key  = 'im:' + (itemId != null ? itemId : ((item && item.itemName) || ''))
+        + ':' + bonus.toLowerCase();
+      const now  = Date.now();
+      const hit  = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
       let market = [];
       try {
         const apiKey = (MEM.settings && MEM.settings.apiKey || '').trim();
-        if (itemId != null && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey)) {
+        if (itemId != null && bonus && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey)) {
           const url = `${API_BASE}/v2/market/${itemId}/itemmarket`
-            + `?limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
+            + `?bonus=${encodeURIComponent(bonus)}`
+            + `&limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
           const res = await fetch(url);
           const d   = await res.json();
           if (d && !d.error && d.itemmarket && Array.isArray(d.itemmarket.listings)) {
