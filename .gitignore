@@ -6,3 +6,6 @@ Torn.com Enhanced Chat Buttons*.user.js
 
 # Auction-DB secrets — never commit real keys
 auction-db/secrets.local.json
+
+# Auction-DB poller log (written by the scheduled task)
+auction-db/poll.log
