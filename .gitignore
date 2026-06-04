@@ -3,3 +3,6 @@
 
 # Third-party reference scripts (not ours — kept locally for reference only)
 Torn.com Enhanced Chat Buttons*.user.js
+
+# Auction-DB secrets — never commit real keys
+auction-db/secrets.local.json
