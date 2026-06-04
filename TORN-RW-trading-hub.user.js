@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.72
+// @version      0.3.73
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.72';
+  const SCRIPT_VERSION = '0.3.73';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5035,8 +5035,15 @@
       const price = Number(listing.price != null ? listing.price : NaN);
       if (!Number.isFinite(price)) return null;
       const det = listing.item_details || {};
+      // Restrict to ranked-war items. The item market lists plain (un-bonused)
+      // copies of the same weapon/armor under the same item id; those are
+      // cheaper than any RW piece and would anchor the floor far below it.
+      // weav3r's ranked-weapons feed pre-filtered to bonus-bearing items, so we
+      // reproduce that here by dropping any listing with no bonus.
+      const bonuses = Array.isArray(det.bonuses) ? det.bonuses : [];
+      if (!bonuses.length) return null;
       let bonusPct = NaN;
-      const b0 = det.bonuses && det.bonuses[0];
+      const b0 = bonuses[0];
       if (b0 && b0.value != null) bonusPct = Number(b0.value);
       const qualityPct = Number(
         det.stats && det.stats.quality != null ? det.stats.quality : NaN);
