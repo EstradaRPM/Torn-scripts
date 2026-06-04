@@ -1,11 +1,11 @@
-// Backfill the last 12 months of Torn auction sales into Supabase.
+// Backfill Torn auction sales into Supabase, back to the start of 2025.
 // Run: node auction-db/backfill.mjs
 //
 // Reads keys from auction-db/secrets.local.json (gitignored). Copy
 // secrets.example.json to secrets.local.json and fill in the three values.
 //
 // Walks the auction feed newest -> oldest using the `to` cursor, stopping
-// at the one-year `from` clamp. Every row is upserted by listing id, so
+// at the start-of-2025 `from` clamp. Every row is upserted by listing id, so
 // re-running is safe and overlapping pages cost nothing.
 
 import fs from 'node:fs';
@@ -24,9 +24,11 @@ const { TORN_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY } =
 const TABLE         = 'auctions';
 const LIMIT         = 100;                       // rows per Torn page
 const TORN_DELAY_MS = 700;                       // ~85 req/min, under the 100 cap
-const ONE_YEAR      = 365 * 24 * 60 * 60;
 const now           = Math.floor(Date.now() / 1000);
-const fromEpoch     = now - ONE_YEAR;
+// Floor the walk at the start of 2025 (UTC). The resume cursor continues from
+// the oldest sale already stored and steps older, so this extends the existing
+// data back to Jan 2025 without re-walking the year already on disk.
+const fromEpoch     = Math.floor(Date.UTC(2025, 0, 1) / 1000);
 
 // Optional `--max-pages=N` flag: stop after N pages (for a quick smoke test).
 // Absent = walk the full year.
