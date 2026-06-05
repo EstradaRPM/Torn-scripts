@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.86
+// @version      0.3.87
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.86';
+  const SCRIPT_VERSION = '0.3.87';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1446,7 +1446,23 @@
       }
       return false;
     },
+    // #328 — membership test against the curated trash-BONUS list. Same matching
+    // as isExcluded (case-insensitive, Array|Set); named separately so the two
+    // call sites read by intent: isExcluded → skip the item entirely (no price
+    // lookup), isTrashBonus → still price it, but at the BB floor (trashBB).
+    isTrashBonus(bonusName, trashBonuses) {
+      return this.isExcluded(bonusName, trashBonuses);
+    },
   };
+
+  // #328 — curated trash-BONUS list. A low-value / joke bonus (e.g. Home Run)
+  // makes the whole weapon junk regardless of its base, so a weapon carrying one
+  // is routed to the BB floor (trashBB) instead of the market-anchored weapon
+  // path — the bonus is worthless and the piece only moves at hand/melt value.
+  // This keys off the per-instance bonus loadout, which the curated trash-NAME
+  // weapon list (ItemClassifier opts.trashSet) cannot see. Distinct from
+  // `excludedBonuses` (skip-entirely): a trash-bonus item still gets a bid.
+  const TRASH_BONUSES = ['home run'];
 
   // Settings tab as declarative data (#311). The tab is an ordered list of
   // collapsible, plain-language SECTIONS; each section holds typed FIELDS that
@@ -3410,7 +3426,8 @@
     // actionable (the auction surface has a v0.2.x legacy fallback — the
     // ledger v0.2.x panel is gone, so we always emit a two-tier ctx).
     const dict = ItemClassifier.getDict();
-    const cls  = dict ? ItemClassifier.classify(item.itemName, dict) : null;
+    const cls  = dict ? ItemClassifier.classify(item.itemName, dict,
+      { bonuses: item.bonuses, trashBonuses: TRASH_BONUSES }) : null;
     // Ledger rows carry the user-set form value `item.type` ('armor' | 'weapon')
     // which is a UI taxonomy. The 'armor' UI value happens to coincide with
     // one of Torn's real armor-type values, so it passes through unchanged;
@@ -3573,7 +3590,9 @@
   // Pure `classify` reads a pre-fetched items dictionary (Torn `/v2/torn/items`),
   // mapped by item name. Impure `fetchItemsDict` fetches once per 24h to
   // `rwth_items_dict`. The classifier routes BB-floor eligibility for armor sets
-  // (Riot/Dune) and curated trash weapons; everything else is informational.
+  // (Riot/Dune), curated trash weapons (opts.trashSet by name) and weapons whose
+  // instance bonus is a trash bonus (opts.bonuses + opts.trashBonuses, #328);
+  // everything else is informational.
   // EOD is red; Delta/Marauder/Sentinel/Vanguard are the orange RW sets (each set
   // covers all components — helmet/body/gloves/boots/pants). Listing them only
   // names the set on the class tag ([Marauder · orange]); pricing still routes by
@@ -3639,10 +3658,19 @@
       }
 
       const trashSet = opts && opts.trashSet;
-      const isTrash = isWeaponType(type) && !!(trashSet && (
+      const nameTrash = isWeaponType(type) && !!(trashSet && (
         (trashSet.has && trashSet.has(name)) ||
         (Array.isArray(trashSet) && trashSet.indexOf(name) !== -1)
       ));
+      // #328 — trash-by-bonus: a low-value/joke bonus (Home Run) marks the
+      // weapon junk no matter its base, so it routes to the BB floor (trashBB)
+      // rather than the market-anchored weapon path. Keys off the instance
+      // bonus loadout (opts.bonuses), which the trash-NAME list above can't see.
+      const trashBonuses = (opts && opts.trashBonuses) || null;
+      const instanceBonuses = (opts && opts.bonuses) || [];
+      const bonusTrash = isWeaponType(type) && !!trashBonuses
+        && instanceBonuses.some(b => b && BonusTrashGuard.isTrashBonus(b.name, trashBonuses));
+      const isTrash = nameTrash || bonusTrash;
 
       const isBBFloorEligible =
         (isArmorType(type) && (armorSet === 'Riot' || armorSet === 'Dune'))
@@ -4619,6 +4647,7 @@
         gap: 6px 12px; margin-bottom: 4px;
       }
       .rwth-card-buymax  { color: #7ed098; font-weight: 700; }
+      .rwth-card-buymax-clamped { color: #e8c06a; }
       .rwth-card-buymed  { color: var(--rwth-muted); font-weight: 400; }
       .rwth-card-room    { color: #7ed098; }
       .rwth-card-over    { color: #ff8a8a; }
@@ -5369,6 +5398,14 @@
   // never narrower than the observed min/max of real sales (see widenedBand).
   const WIDE_BAND_BUFFER = 0.30;
 
+  // #328 — comp sanity clamp ratio. A market-deduction max bid is only honest
+  // when the quality-matched auction comps roughly agree with it. When the bid
+  // runs more than this multiple above where comparable pieces actually clear
+  // (the comp median), the item-market listing it was deduced from is inflated
+  // or off-loadout — clamp the headline down to the realized clearing median
+  // and flag it, so the card trusts realized sales over a lone padded listing.
+  const COMP_CLAMP_RATIO = 1.5;
+
   /** Internal: median of a numeric array. Returns null for empty input. */
   function _median(values) {
     if (!values.length) return null;
@@ -5897,7 +5934,10 @@
      *
      *   floor   = cheapest comparable auction clear (the price to hope for)
      *   typical = comp median (where most clear)
-     *   maxBid  = round(bazaarResale × (1 − tax − mug − margin))   ← hard ceiling
+     *   maxBid  = round(bazaarResale × (1 − tax − mug − margin))   ← hard ceiling,
+     *             then clamped to `typical` when it exceeds typical × compClampRatio
+     *             (#328 — a lone inflated/off-loadout listing can't outvote where
+     *             comparable pieces actually clear; `clamped:true` flags the cap)
      *   verdict = 'pass' when maxBid < floor (every comp cleared above your
      *             ceiling → no margin to flip) | 'buy' otherwise
      *
@@ -5916,8 +5956,19 @@
       const margin = s.margin != null ? s.margin : 0.05;
       const floor   = Math.round(Math.min(...prices));
       const typical = Math.round(_median(prices));
-      const maxBid  = Math.round(resale * (1 - tax - mug - margin));
-      return { floor, typical, maxBid,
+      let maxBid    = Math.round(resale * (1 - tax - mug - margin));
+      // #328 comp sanity clamp — when the resale-deduced bid runs more than
+      // `compClampRatio` above the realized comp median, the listing it came
+      // off is inflated/off-loadout; trust the realized sales and clamp the
+      // headline down to that median (≥ floor, so it never flips to a false
+      // PASS). `clamped` lets the card flag that the bid was capped to comps.
+      const ratio = s.compClampRatio != null ? s.compClampRatio : COMP_CLAMP_RATIO;
+      let clamped = false;
+      if (typical > 0 && maxBid > typical * ratio) {
+        maxBid = typical;
+        clamped = true;
+      }
+      return { floor, typical, maxBid, clamped,
                verdict: maxBid < floor ? 'pass' : 'buy', count: prices.length };
     },
 
@@ -7015,8 +7066,9 @@
         // ceiling.
         buyEl.textContent = plan.verdict === 'pass'
           ? `PASS — clears above your ${fmtChatPrice(plan.maxBid)} max`
-          : `Bid up to ${fmtChatPrice(plan.maxBid)}`;
+          : `Bid up to ${fmtChatPrice(plan.maxBid)}${plan.clamped ? ' (capped to comps)' : ''}`;
         if (plan.verdict === 'pass') buyEl.className += ' rwth-card-buymax-pass';
+        if (plan.clamped) buyEl.className += ' rwth-card-buymax-clamped';
       } else if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
         const tol = buy.tolerance != null ? buy.tolerance : 0;
         buyEl.textContent = `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room`;
@@ -7889,7 +7941,8 @@
       // Resolve item class from the cached items dict. Falls back to DOM-parsed
       // type/rarity when the dict has not been fetched yet.
       const dict = ItemClassifier.getDict();
-      const cls = dict ? ItemClassifier.classify(parsed.itemName, dict) : null;
+      const cls = dict ? ItemClassifier.classify(parsed.itemName, dict,
+        { bonuses: parsed.parsedBonuses, trashBonuses: TRASH_BONUSES }) : null;
       // `parsed.itemType` is DOM-scraped from auction row stat labels
       // ('Damage:' vs 'Armor:') — our own UI taxonomy. The 'armor' UI value
       // happens to coincide with one of Torn's real armor-type values, so it
