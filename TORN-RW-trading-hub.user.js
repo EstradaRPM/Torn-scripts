@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.84
+// @version      0.3.85
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.84';
+  const SCRIPT_VERSION = '0.3.85';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3437,7 +3437,9 @@
 
     // Resolve off the effective rarity (instance wins for weapons) so orange/red
     // weapons route to orangeWeapon / redWeapon, not the yellowWeapon fallback.
-    const effectiveCls = cls ? { ...cls, rarity } : { type, rarity };
+    const effectiveCls = cls
+      ? { ...cls, rarity, hasBonus: bonusCount > 0 }
+      : { type, rarity, hasBonus: bonusCount > 0 };
     let itemClassKey = resolveItemClass(effectiveCls);
     if (!itemClassKey) {
       itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
@@ -3697,7 +3699,14 @@
     if (!cls) return null;
     if (cls.isTrash) return 'trashBB';
     if (isArmorType(cls.type)) {
-      if (cls.armorSet === 'Riot' || cls.armorSet === 'Dune') return 'duneRiotArmor';
+      // Riot/Dune are the cheap base armor sets, priced as close to the bazaar
+      // floor as possible. But a Riot/Dune piece carrying a real RW bonus (e.g. a
+      // 20% impregnable Riot Helm) is a valuable reward piece, NOT trash — it does
+      // not belong on the BB floor. Route it through the comp-priced yellow-armor
+      // path (assaultArmor) so it anchors on quality-matched comps (#326); only
+      // the bonus-less base stays bazaar-floor priced.
+      if ((cls.armorSet === 'Riot' || cls.armorSet === 'Dune') && !cls.hasBonus)
+        return 'duneRiotArmor';
       if (cls.armorSet === 'Assault') return 'assaultArmor';
       if (cls.rarity === 'orange') return 'orangeArmor';
       if (cls.rarity === 'red')    return 'redArmor';
@@ -5351,6 +5360,30 @@
     return banded.length ? banded : list;
   }
 
+  // ─── Armor quality band (pure, #326) ──────────────────────────────────────────
+  // Armor's value axis is QUALITY, not bonus: the bonus is fixed by the item id, so
+  // every listing under that id shares the bonus and all the price variation rides
+  // on quality %. Anchoring the headline on the item-market floor prices a high-
+  // quality piece off near-0%-quality junk listings → undervalued + false PASS.
+  // Instead we band the auction comps to ±tol around the candidate's quality and
+  // median that band — King's "avg of last 5 at similar quality" hand method. The
+  // tolerance is RELATIVE (a fraction of the candidate's quality), not the integer
+  // percentage-point window bandByBonus uses, because quality spans 0→400%+ and a
+  // fixed point window is meaningless across that range (mirrors the ±10/±25%
+  // drill knobs, which are also relative). Falls back to the full set when the band
+  // is empty so a sparse level never blanks the headline.
+  const ARMOR_QUALITY_BAND_TOL = 0.25;
+  function bandByQuality(comps, targetQuality, tol) {
+    const list = Array.isArray(comps) ? comps : [];
+    const q = Number(targetQuality);
+    const w = Number(tol);
+    if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(w)) return list;
+    const banded = list.filter(c =>
+      c && c.quality != null && Number.isFinite(Number(c.quality))
+      && Math.abs(Number(c.quality) - q) <= q * w);
+    return banded.length ? banded : list;
+  }
+
   // ─── mergeLadder (pure) — #302 slice 1 ───────────────────────────────────────
   // Class-tiered quality buckets (yellow default / orange / red), unchanged from
   // the former InlineRenderer._qualityBuckets.
@@ -6786,6 +6819,12 @@
       // bonus outlier) can't set the floor for a stronger candidate. Weapons are
       // unaffected: they anchor on the for-sale bracket, not min-of-comps.
       const isArmorClass = /Armor$/.test(String(s.itemClass || ''));
+      // #326 — comp-priced armor (assault/orange/red) takes its value from QUALITY,
+      // not the item-market floor (set by near-0%-quality junk listings). These
+      // anchor the headline on the quality-banded auction-comp median below; item
+      // market drops to a cross-check. duneRiotArmor/trashBB stay bazaar-floor priced.
+      const compPricedArmor = s.itemClass === 'assaultArmor'
+        || s.itemClass === 'orangeArmor' || s.itemClass === 'redArmor';
       const anchorComps = isArmorClass
         ? bandByBonus(filtered, s.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
         : filtered;
@@ -6814,24 +6853,49 @@
 
       // Auction buy decision — one bonus-matched clearing range + a max bid
       // clamped off the item-market anchor (see PricingEngine.auctionPlan).
-      // Fires for market-anchored weapons AND every comp-based RW armor set
-      // (assault + orange/red). The 20% cut (5% tax + 10% mug + 5% margin) is
+      // For market-anchored WEAPONS the 20% cut (5% tax + 10% mug + 5% margin) is
       // taken off the bonus-matched item-market price directly — NOT off the
       // bazaar rung (= market ÷ 1.05), which would shave the same ~5% twice and
-      // push every max bid a tier too low. Anchored on the bonus-matched comps
-      // (reference.comps), not the raw all-bonus `filtered`. duneRiotArmor keeps
-      // its bazaar-floor headline (it is bazaar-floor priced, not auction-comp
-      // priced). The thin orange/red tiers (orange/red weapons AND orange/red
-      // armor) ride the widened band below, NOT the precise plan.
+      // push every max bid a tier too low. duneRiotArmor (bonus-less Riot/Dune)
+      // keeps its bazaar-floor headline; trashBB hard-floors.
+      //
+      // #326 — comp-priced armor (assault + orange/red, plus any bonus Riot/Dune,
+      // which now routes to assaultArmor) values on QUALITY, not the item-market
+      // floor that near-0%-quality junk listings set. Build a quality-banded comp
+      // pool around the candidate's quality and anchor the headline on its median
+      // (King's "avg of last 5 at similar quality"). assaultArmor rides the plan
+      // below (no resale cut); the thin orange/red tiers ride the widened band.
+      const armorPoolSource = (reference && reference.comps && reference.comps.length)
+        ? reference.comps : filtered;
+      const armorBandComps = compPricedArmor
+        ? bandByQuality(armorPoolSource, s.listingQuality, ARMOR_QUALITY_BAND_TOL)
+        : null;
+      const armorAnchor = (armorBandComps && armorBandComps.length)
+        ? _median(armorBandComps
+            .map(c => Number(c && c.price)).filter(p => Number.isFinite(p) && p > 0))
+        : null;
+
       const planClass = !!buy && (
         buy.anchor === 'market'
         || s.itemClass === 'assaultArmor'
       );
-      const plan = (planClass && ladder && ladder.market != null)
+      // assaultArmor now anchors on the quality-banded comp median with NO resale
+      // cut: those comps already ARE auction clears at the candidate's quality, so
+      // the median IS the bid target — re-cutting it would re-introduce the junk-
+      // floor undervaluation this fix removes (and PASS-vs-floor can never fire
+      // when maxBid = median ≥ floor = min). Market weapons keep the item-market ×
+      // (1 − friction) clamp off ladder.market.
+      const isAssaultArmor = s.itemClass === 'assaultArmor';
+      const plan = (planClass && (isAssaultArmor
+            ? armorAnchor != null
+            : (ladder && ladder.market != null)))
         ? PricingEngine.auctionPlan({
-            comps: (reference && reference.comps && reference.comps.length)
-              ? reference.comps : filtered,
-            bazaarResale: ladder.market,
+            comps: isAssaultArmor
+              ? armorBandComps
+              : ((reference && reference.comps && reference.comps.length)
+                  ? reference.comps : filtered),
+            bazaarResale: isAssaultArmor ? armorAnchor : ladder.market,
+            settings: isAssaultArmor ? { tax: 0, mug: 0, margin: 0 } : undefined,
           })
         : null;
 
@@ -6850,9 +6914,14 @@
         const bandSource = (reference && reference.comps && reference.comps.length)
           ? reference.comps : filtered;
         const candCount = Number(s.bonusCount);
-        const loadoutComps = (isWeaponWide && Number.isFinite(candCount) && candCount > 0)
-          ? bandSource.filter(c => Number(c.bonusCount) === candCount)
-          : bandSource;
+        // Weapons filter to the same bonus-count loadout; armor (#326) bands by
+        // quality so the wide band centers on the candidate's quality, not the
+        // whole-pool median dragged down by near-0% junk-quality clears.
+        const loadoutComps = isWeaponWide
+          ? ((Number.isFinite(candCount) && candCount > 0)
+              ? bandSource.filter(c => Number(c.bonusCount) === candCount)
+              : bandSource)
+          : ((armorBandComps && armorBandComps.length) ? armorBandComps : bandSource);
         band = PricingEngine.widenedBand({ comps: loadoutComps });
       }
 
@@ -6865,7 +6934,10 @@
       // bazaar-floor classes (Dune/Riot/trash) and the orange/red wide-band
       // tiers price off other signals and keep their own treatment.
       const hasResalePrice = Number.isFinite(Number(anchorPrice)) && Number(anchorPrice) > 0;
-      const resaleAnchored = !wideClass
+      // #326 — comp-priced armor no longer anchors on item market, so a missing
+      // item-market price never forces it into the "research it" state; it rides
+      // the quality-banded comp median (assault plan / orange-red wide band).
+      const resaleAnchored = !wideClass && !compPricedArmor
         && (buy.anchor === 'market' || s.itemClass === 'assaultArmor');
       const needsResearch = resaleAnchored && !hasResalePrice;
 
@@ -7102,7 +7174,21 @@
       // resp. buy.max) by construction.
       const chainAnchor = plan ? Number(ladder.market) : Number(anchorPrice);
       const chainLabel  = 'Item market';
-      const chain = (Number.isFinite(chainAnchor) && chainAnchor > 0)
+      // #326 — for comp-priced armor the item-market floor is a CROSS-CHECK, not
+      // the anchor (its floor rides near-0%-quality junk listings). Show the figure
+      // plainly; the headline already rides the quality-banded comp median. No
+      // friction deduction, no "bid up to" off junk, no verdict off junk.
+      if (compPricedArmor) {
+        const imf = Number(anchorPrice);
+        if (Number.isFinite(imf) && imf > 0) {
+          const xc = document.createElement('div');
+          xc.className = 'rwth-card-ref rwth-card-crosscheck';
+          xc.textContent = `Item market floor ${fmtChatPrice(imf)} — cross-check only `
+            + `(quality, not the listing floor, sets armor value)`;
+          badge.appendChild(xc);
+        }
+      }
+      const chain = (!compPricedArmor && Number.isFinite(chainAnchor) && chainAnchor > 0)
         ? PricingEngine.deductionChain({ anchor: chainAnchor }) : null;
       if (chain) {
         const ded = document.createElement('div');
@@ -7841,7 +7927,9 @@
       // Resolve the class off the EFFECTIVE rarity (instance wins for weapons),
       // not the raw dict rarity, so orange/red weapons route to orangeWeapon /
       // redWeapon instead of falling back to yellowWeapon.
-      const effectiveCls = cls ? { ...cls, rarity } : { type, rarity };
+      const effectiveCls = cls
+        ? { ...cls, rarity, hasBonus: bonusCount > 0 }
+        : { type, rarity, hasBonus: bonusCount > 0 };
       let itemClassKey = resolveItemClass(effectiveCls);
       if (!itemClassKey) itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
       const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
