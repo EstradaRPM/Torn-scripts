@@ -1,4 +1,4 @@
-// Backfill Torn auction sales into Supabase, back to the start of 2025.
+// Backfill Torn auction sales into Supabase, back to June 2023.
 // Run: node auction-db/backfill.mjs
 //
 // Reads keys from auction-db/secrets.local.json (gitignored). Copy
@@ -12,13 +12,16 @@
 
 import {
   TORN_DELAY_MS, sleep, stats,
-  loadSecrets, mapRow, fetchTornPage, upsert, boundaryEpoch,
+  loadSecrets, mapRow, hasBonus, fetchTornPage, upsert, boundaryEpoch,
 } from './lib.mjs';
 
 const secrets   = loadSecrets();
 const now       = Math.floor(Date.now() / 1000);
-// Floor the walk at the start of 2025 (UTC).
-const fromEpoch = Math.floor(Date.UTC(2025, 0, 1) / 1000);
+// Floor the walk at June 2023 (UTC) — ~3 years of total history, the depth
+// King recommends for thin orange/red sets. Only bonus-bearing rows are kept
+// (see hasBonus), so the deep history is the part we actually price, not the
+// null-bonus firehose.
+const fromEpoch = Math.floor(Date.UTC(2023, 5, 1) / 1000);
 
 // Optional `--max-pages=N` flag: stop after N pages (for a quick smoke test).
 // Absent = walk the full range.
@@ -38,12 +41,13 @@ async function main() {
   while (true) {
     const rows = await fetchTornPage(secrets, { from: fromEpoch, to: cursor, comment: 'rwth-auction-backfill' });
     if (!rows.length) break;
-    await upsert(secrets, rows.map(mapRow));
-    total += rows.length;
+    const kept = rows.map(mapRow).filter(hasBonus);
+    await upsert(secrets, kept);
+    total += kept.length;
     page  += 1;
     const oldest = Math.min(...rows.map((r) => r.timestamp));
     console.log(
-      `page ${page}: +${rows.length} (total ${total}) oldest=${new Date(oldest * 1000).toISOString()}`,
+      `page ${page}: +${kept.length}/${rows.length} bonus rows (total ${total}) oldest=${new Date(oldest * 1000).toISOString()}`,
     );
     if (page >= MAX_PAGES) { console.log(`Reached --max-pages=${MAX_PAGES}, stopping early.`); break; }
     if (oldest <= fromEpoch) break;   // hit the start-of-2025 floor

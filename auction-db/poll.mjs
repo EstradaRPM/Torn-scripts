@@ -12,7 +12,7 @@
 
 import {
   TORN_DELAY_MS, sleep, stats,
-  loadSecrets, mapRow, fetchTornPage, upsert, boundaryEpoch,
+  loadSecrets, mapRow, hasBonus, fetchTornPage, upsert, boundaryEpoch,
 } from './lib.mjs';
 
 const secrets = loadSecrets();
@@ -33,12 +33,13 @@ async function main() {
   while (true) {
     const rows = await fetchTornPage(secrets, { from: fromEpoch, to: cursor, comment: 'rwth-auction-poll' });
     if (!rows.length) break;
-    await upsert(secrets, rows.map(mapRow));
-    total += rows.length;
+    const kept = rows.map(mapRow).filter(hasBonus);
+    await upsert(secrets, kept);
+    total += kept.length;
     page  += 1;
     const oldest = Math.min(...rows.map((r) => r.timestamp));
     console.log(
-      `page ${page}: +${rows.length} (total ${total}) oldest=${new Date(oldest * 1000).toISOString()}`,
+      `page ${page}: +${kept.length}/${rows.length} bonus rows (total ${total}) oldest=${new Date(oldest * 1000).toISOString()}`,
     );
     if (oldest <= fromEpoch) break;   // caught up to existing data
     cursor = oldest - 1;              // step to older records within the new window

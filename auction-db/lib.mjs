@@ -47,6 +47,13 @@ export async function withRetry(fn, label, tries = 6) {
   }
 }
 
+// Keep only bonus-bearing rows. The global feed is overwhelmingly null-bonus
+// plain/unique items we never price; every RW armor/weapon we DO price carries
+// at least one bonus, so this sheds the storage bloat without losing a single
+// pricing comp. Applied at persist time only — the walk/cursor math still runs
+// over the raw page so pagination is unaffected.
+export const hasBonus = (r) => r != null && r.bonus_id != null;
+
 // One API auction row -> one DB row.
 export function mapRow(a) {
   const it        = a.item || {};
