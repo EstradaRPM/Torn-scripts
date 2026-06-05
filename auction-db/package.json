@@ -1,0 +1,10 @@
+{
+  "name": "auction-db",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Torn auction-history backfill/poll into Supabase. Only vacuum.mjs needs a dependency (pg); backfill/poll/check use native fetch.",
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

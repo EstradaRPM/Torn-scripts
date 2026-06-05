@@ -4,6 +4,9 @@
 # Third-party reference scripts (not ours — kept locally for reference only)
 Torn.com Enhanced Chat Buttons*.user.js
 
+# Node deps (only vacuum.mjs needs `pg`; installed under auction-db/)
+node_modules/
+
 # Auction-DB secrets — never commit real keys
 auction-db/secrets.local.json
 
