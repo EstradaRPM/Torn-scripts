@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.75
+// @version      0.3.76
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.75';
+  const SCRIPT_VERSION = '0.3.76';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5291,6 +5291,26 @@
     return s.length % 2 !== 0 ? s[m] : (s[m - 1] + s[m]) / 2;
   }
 
+  // ─── Armor anchor band (pure, v0.3.76) ───────────────────────────────────────
+  // The armor bid anchors on the cheapest comparable sale cut 10–20% (King's
+  // armor rule). "Comparable" must mean the candidate's own bonus neighbourhood,
+  // not the whole sold pool — otherwise a cheaper, weaker low-bonus sale (or a
+  // one-off high-bonus outlier) sets the floor for a stronger piece. Restrict to
+  // ±tol bonus % of the target (symmetric, both sides); the floor tier, having
+  // nothing below it, simply keeps whatever sits at/above it. Falls back to the
+  // full set when the band is empty so a sparse level never blanks the headline.
+  const ARMOR_ANCHOR_BONUS_TOL = 1;
+  function bandByBonus(comps, targetBonus, tol) {
+    const list = Array.isArray(comps) ? comps : [];
+    const t = Number(targetBonus);
+    const w = Number(tol);
+    if (!Number.isFinite(t) || !Number.isFinite(w)) return list;
+    const banded = list.filter(c =>
+      c && c.bonusValue != null && Number.isFinite(Number(c.bonusValue))
+      && Math.abs(Number(c.bonusValue) - t) <= w);
+    return banded.length ? banded : list;
+  }
+
   // ─── mergeLadder (pure) — #302 slice 1 ───────────────────────────────────────
   // Class-tiered quality buckets (yellow default / orange / red), unchanged from
   // the former InlineRenderer._qualityBuckets.
@@ -6606,8 +6626,17 @@
         crossBracketed = false;
       }
 
+      // v0.3.76 — armor bids anchor on the candidate's own bonus neighbourhood
+      // (±1%), not the whole sold pool, so a cheaper weaker piece (or a high-
+      // bonus outlier) can't set the floor for a stronger candidate. Weapons are
+      // unaffected: they anchor on the for-sale bracket, not min-of-comps.
+      const isArmorClass = /Armor$/.test(String(s.itemClass || ''));
+      const anchorComps = isArmorClass
+        ? bandByBonus(filtered, s.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
+        : filtered;
+
       const buy = PricingEngine.buyTarget({
-        itemClass: s.itemClass, comps: filtered,
+        itemClass: s.itemClass, comps: anchorComps,
         currentBid: s.currentBid, bbFloor: s.bbFloor,
         marketAnchor: anchorPrice,
       });
@@ -7291,7 +7320,13 @@
         if (buy.floor == null) return 'Bazaar floor not loaded yet.';
         return `Bazaar floor ${fmtChatPrice(buy.floor)} (firm) → bid up to ${fmtChatPrice(buy.max)}`;
       }
-      const prices = (filtered || []).map(c => Number(c && c.price))
+      // v0.3.76 — mirror the headline anchor pool: armor reads the cheapest sale
+      // from the candidate's own bonus band (±1%), not the whole pool, so this
+      // "cheapest …" line agrees with buy.range by construction.
+      const anchorComps = /Armor$/.test(String(cls || ''))
+        ? bandByBonus(filtered, ctx.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
+        : filtered;
+      const prices = (anchorComps || []).map(c => Number(c && c.price))
         .filter(p => Number.isFinite(p) && p > 0);
       const mn = prices.length ? Math.min(...prices) : null;
       if (cls === 'assaultArmor') {
