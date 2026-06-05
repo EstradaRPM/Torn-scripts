@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.81
+// @version      0.3.82
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.81';
+  const SCRIPT_VERSION = '0.3.82';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5164,35 +5164,35 @@
     clear() { ListingsFetcher._cache.clear(); },
   };
 
-  // ─── Bracket-tiering market anchor (pure, #298 / PRD #296) ───────────────────
-  // The buy-max deduction is only as good as the price it anchors on. Item-
-  // market listings cluster into price brackets by bonus %, and the step between
-  // brackets is large and real (Enfield Deadeye 25–29% sits near the floor;
-  // 30–35% lists ~30% higher). Anchoring on the *global* cheapest listing prices
-  // a high-bonus target off a weaker, cheaper piece, so the buy max comes out
-  // far too low on exactly the items that matter most.
+  // ─── Bonus-bracket market anchor (pure, #298 / PRD #296) ─────────────────────
+  // The buy-max deduction is only as good as the price it anchors on. Item-market
+  // listings price by bonus %, and the candidate must anchor on ITS OWN bonus's
+  // listing floor — not the global cheapest, which prices a high-bonus target off
+  // a weaker, cheaper piece. The bonus→price curve is non-linear (Enfield Deadeye
+  // 25–29% sits flat near the floor; 30–35% steps up sharply), so we read the
+  // empirical per-bonus floor rather than impose any fixed step: flat regions
+  // stay flat, steep ones stay steep, with no threshold to tune. (The old design
+  // promoted a bracket to a new tier only past a fixed 10% jump, which merged a
+  // 26% candidate onto the 25% floor whenever the real step was <10% — exactly
+  // the flat near-entry regime — and anchored the bid a whole tier too low.)
   //
-  // resolveMarketAnchor(listings, targetBonus, opts) → { anchor, tier, tiers }
+  // resolveMarketAnchor(listings, targetBonus) → { anchor, tier, tiers, fallback }
   //   listings    – [{ price, bonusValue }]  (MARKET only — bazaar is excluded
   //                 from anchor math; it isn't inflated, so deducting off it
-  //                 double-counts, and a cheap high-bonus bazaar piece would
-  //                 falsely trip the tier guard — PRD #296)
+  //                 double-counts — PRD #296)
   //   targetBonus – the candidate item's bonus %
-  //   opts.jumpThreshold – fractional step that promotes a bracket to a new tier
-  //                        (default BRACKET_JUMP_THRESHOLD)
   //
-  // Algorithm (single pass over bonus brackets, ascending):
-  //   1. Market floor = global cheapest listing, ignoring bonus/quality.
-  //   2. Each distinct bonus %'s cheapest listing is its bracket floor.
-  //   3. Promote a bracket to a new tier when BOTH: its floor is ≥ threshold
-  //      above the *previous tier's* floor (so stacked steps each promote), AND
-  //      no higher-bonus listing sits below it (outlier/undercut guard — a cheap
-  //      strong piece cancels the jump so we match/undercut it instead of
-  //      overpaying).
-  //   4. Anchor = floor of the highest tier whose threshold bonus ≤ target;
-  //      below the first jump (or no target) falls back to the global floor.
+  // Algorithm:
+  //   1. Bucket listings by ROUNDED bonus % (Torn trades at integer-% steps;
+  //      rounding keeps 25.9 and 26.1 in one bucket). Each bucket's floor is its
+  //      cheapest listing; `tiers` = those buckets ascending.
+  //   2. Anchor = the candidate's own bucket floor. No listing at the candidate's
+  //      bonus → nearest-bonus bucket (ties → lower), reported in `fallback` so
+  //      the caller can flag "anchored on nearest N%".
+  //   3. Undercut guard: if any strictly-higher-bonus listing is cheaper than
+  //      that floor, the stronger piece is the smarter buy — anchor on it.
+  //   4. No bonus data on the target → global cheapest floor (base bucket).
   // Pure: no DOM, no network, no globals.
-  const BRACKET_JUMP_THRESHOLD = 0.10;
 
   // #300 — the bazaar floor is shown beside the market floor as a cross-check,
   // and a low-margin warning fires when they're "similar". The venue model
@@ -5202,52 +5202,52 @@
   // spread, not a thin one, and does NOT warn. Bazaar stays OUT of the
   // anchor/tiering math (PRD #296); this is display-only.
   const SIMILAR_FLOORS_BAND = 0.10;
-  function resolveMarketAnchor(listings, targetBonus, opts) {
-    const threshold = (opts && Number.isFinite(Number(opts.jumpThreshold)))
-      ? Number(opts.jumpThreshold) : BRACKET_JUMP_THRESHOLD;
+  function resolveMarketAnchor(listings, targetBonus) {
     const valid = (Array.isArray(listings) ? listings : [])
       .map(l => ({ price: Number(l && l.price), bonus: Number(l && l.bonusValue) }))
       .filter(l => Number.isFinite(l.price) && l.price > 0 && Number.isFinite(l.bonus));
-    if (!valid.length) return { anchor: null, tier: null, tiers: [] };
+    if (!valid.length) return { anchor: null, tier: null, tiers: [], fallback: null };
 
     const globalFloor = Math.min(...valid.map(l => l.price));
 
-    // Cheapest listing per distinct bonus %, ascending by bonus.
-    const floorByBonus = new Map();
+    // Cheapest listing per rounded-bonus bucket, ascending.
+    const floorByBucket = new Map();
     for (const l of valid) {
-      const cur = floorByBonus.get(l.bonus);
-      if (cur == null || l.price < cur) floorByBonus.set(l.bonus, l.price);
+      const k = Math.round(l.bonus);
+      const cur = floorByBucket.get(k);
+      if (cur == null || l.price < cur) floorByBucket.set(k, l.price);
     }
-    const brackets = [...floorByBonus.entries()]
-      .map(([bonus, floor]) => ({ bonus, floor }))
-      .sort((a, b) => a.bonus - b.bonus);
+    const tiers = [...floorByBucket.entries()]
+      .map(([bonus, floor]) => ({ thresholdBonus: bonus, floor }))
+      .sort((a, b) => a.thresholdBonus - b.thresholdBonus);
 
-    // Tier 0 is the base tier: its floor is the global cheapest (step 1), so a
-    // cheap strong piece anywhere pulls the base anchor down to it.
-    const tiers = [{ thresholdBonus: brackets[0].bonus, floor: globalFloor }];
-    for (let i = 1; i < brackets.length; i++) {
-      const b = brackets[i];
-      const prev = tiers[tiers.length - 1];
-      const jumped = b.floor >= prev.floor * (1 + threshold);
-      // Undercut guard: a higher-bonus listing going cheaper than this bracket's
-      // floor means the strong piece is the better buy — don't establish a tier
-      // here (PRD #296 user story 6).
-      const undercut = valid.some(l => l.bonus > b.bonus && l.price < b.floor);
-      if (jumped && !undercut) {
-        tiers.push({ thresholdBonus: b.bonus, floor: b.floor });
-      }
-    }
-
-    // Anchor = highest tier whose threshold bonus ≤ target; below the first jump
-    // (or no/NaN target) falls back to the base tier (global floor).
     const tb = Number(targetBonus);
-    let tier = tiers[0];
-    if (Number.isFinite(tb)) {
-      for (const t of tiers) {
-        if (t.thresholdBonus <= tb) tier = t;
-      }
+    if (!Number.isFinite(tb)) {
+      return { anchor: globalFloor, tier: tiers[0], tiers, fallback: null };
     }
-    return { anchor: tier.floor, tier, tiers };
+    const tbk = Math.round(tb);
+
+    // The candidate's own bucket, else the nearest bonus bucket (ties → lower,
+    // since `tiers` ascends and we replace only on a strictly closer bucket).
+    let tier = tiers.find(t => t.thresholdBonus === tbk) || null;
+    let fallback = null;
+    if (!tier) {
+      for (const t of tiers) {
+        if (tier == null
+            || Math.abs(t.thresholdBonus - tbk) < Math.abs(tier.thresholdBonus - tbk)) {
+          tier = t;
+        }
+      }
+      fallback = tier ? tier.thresholdBonus : null;
+    }
+
+    // Undercut guard: never anchor above a cheaper, strictly stronger piece.
+    let anchor = tier.floor;
+    for (const l of valid) {
+      if (Math.round(l.bonus) > tbk && l.price < anchor) anchor = l.price;
+    }
+
+    return { anchor, tier, tiers, fallback };
   }
 
   // ─── PricingEngine (pure) ─────────────────────────────────────────────────────
@@ -6010,7 +6010,7 @@
      * comps – Array<{ price, bonusValue }>. Caller passes the already-filtered
      *         comp set used elsewhere on the card.
      */
-    deriveSensitivity(comps) {
+    deriveSensitivity(comps, targetBonus) {
       const list = (comps || []).filter(c => c
         && Number.isFinite(Number(c.price)) && Number(c.price) > 0
         && Number.isFinite(Number(c.bonusValue)));
@@ -6027,21 +6027,34 @@
       const points = [...byBonus.entries()]
         .map(([b, prices]) => ({ b, p: _median(prices) }))
         .sort((a, b) => a.b - b.b);
-      const n = points.length;
-      const meanX = points.reduce((s, pt) => s + pt.b, 0) / n;
-      const meanY = points.reduce((s, pt) => s + pt.p, 0) / n;
-      let num = 0, den = 0;
+
+      // LOCAL slope, not a single global line. The bonus→price curve is non-
+      // linear (flat near entry, steep up high), so a line fit across the whole
+      // 25–35% span lies in both regimes. Read the step between the two distinct
+      // bonus points that straddle the candidate's bonus; with the target outside
+      // the range (or only one side present) use the two points nearest it. This
+      // answers "what is 1% worth HERE", which is what the bid actually needs.
+      const tb = Number(targetBonus);
+      const center = Number.isFinite(tb) ? tb : points[Math.floor(points.length / 2)].b;
+      let lo = null, hi = null;
       for (const pt of points) {
-        num += (pt.b - meanX) * (pt.p - meanY);
-        den += (pt.b - meanX) * (pt.b - meanX);
+        if (pt.b <= center && (lo == null || pt.b > lo.b)) lo = pt;
+        if (pt.b >= center && (hi == null || pt.b < hi.b)) hi = pt;
       }
-      const slope = den > 0 ? num / den : 0;
+      let a, b;
+      if (lo && hi && lo.b !== hi.b) { a = lo; b = hi; }
+      else {
+        const near = [...points].sort((x, y) =>
+          Math.abs(x.b - center) - Math.abs(y.b - center));
+        a = near[0]; b = near[1];
+        if (a.b > b.b) { const t = a; a = b; b = t; }
+      }
+      const slope = (b.b !== a.b) ? (b.p - a.p) / (b.b - a.b) : 0;
       const median = _median(list.map(c => Number(c.price))) || 0;
       const threshold = Math.abs(median) * SENSITIVITY_FLAT_FRACTION;
-      if (Math.abs(slope) <= threshold) {
-        return { label: 'flat', slope, perPct: slope, comps: list.length, distinctBonus };
-      }
-      return { label: 'sloped', slope, perPct: slope, comps: list.length, distinctBonus };
+      const label = Math.abs(slope) <= threshold ? 'flat' : 'sloped';
+      return { label, slope, perPct: slope, comps: list.length, distinctBonus,
+               localLo: a.b, localHi: b.b };
     },
 
     /**
@@ -7008,13 +7021,13 @@
       }
 
       // ── derived sensitivity (slice 19b) ───────────────────────────────
-      const sens = PricingEngine.deriveSensitivity(filtered);
+      const sens = PricingEngine.deriveSensitivity(filtered, s.primaryBonusValue);
       const sensEl = document.createElement('div');
       sensEl.className = 'rwth-card-sensitivity';
       if (sens.label === 'sloped') {
-        sensEl.textContent = `each 1% of bonus is worth about ${fmtChatPrice(Math.abs(sens.perPct))} on this weapon`;
+        sensEl.textContent = `each 1% of bonus is worth about ${fmtChatPrice(Math.abs(sens.perPct))} near your bonus level`;
       } else if (sens.label === 'flat') {
-        sensEl.textContent = 'bonus % barely changes the price on this weapon';
+        sensEl.textContent = 'bonus % barely changes the price near your bonus level';
       } else {
         sensEl.textContent = 'not enough sales to tell how much bonus is worth';
       }
@@ -7102,9 +7115,14 @@
       // 785m bazaar resale. The auction buy decision now lives in the headline.
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
+      // Flag when the anchor fell back to a neighbouring bonus bucket (no live
+      // listing at the candidate's own bonus) so the price is never a silent guess.
+      const mktLabel = (bracket && bracket.fallback != null)
+        ? `Item market (nearest ${bracket.fallback}%)`
+        : 'Item market';
       const rungs = [
         ['Bazaar / Forum', ladder.bazaar != null ? fmtChatPrice(ladder.bazaar) : null],
-        ['Item market',    ladder.market != null ? fmtChatPrice(ladder.market) : null],
+        [mktLabel,         ladder.market != null ? fmtChatPrice(ladder.market) : null],
         ['Floor',          ladder.floor  != null ? fmtChatPrice(ladder.floor)  : null],
       ];
       for (const [label, text] of rungs) {
@@ -7841,7 +7859,6 @@
     BonusTrashGuard,
     similarity,
     resolveMarketAnchor,
-    BRACKET_JUMP_THRESHOLD,
     PricingEngine,
     CompWidener,
     BBEngine,

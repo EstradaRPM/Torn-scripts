@@ -152,6 +152,51 @@ function resolveItemClass(cls) {
   return null;
 }
 
+// ── resolveMarketAnchor (mirror of the IIFE fn — keep in sync) ────────────────
+function resolveMarketAnchor(listings, targetBonus) {
+  const valid = (Array.isArray(listings) ? listings : [])
+    .map(l => ({ price: Number(l && l.price), bonus: Number(l && l.bonusValue) }))
+    .filter(l => Number.isFinite(l.price) && l.price > 0 && Number.isFinite(l.bonus));
+  if (!valid.length) return { anchor: null, tier: null, tiers: [], fallback: null };
+
+  const globalFloor = Math.min(...valid.map(l => l.price));
+
+  const floorByBucket = new Map();
+  for (const l of valid) {
+    const k = Math.round(l.bonus);
+    const cur = floorByBucket.get(k);
+    if (cur == null || l.price < cur) floorByBucket.set(k, l.price);
+  }
+  const tiers = [...floorByBucket.entries()]
+    .map(([bonus, floor]) => ({ thresholdBonus: bonus, floor }))
+    .sort((a, b) => a.thresholdBonus - b.thresholdBonus);
+
+  const tb = Number(targetBonus);
+  if (!Number.isFinite(tb)) {
+    return { anchor: globalFloor, tier: tiers[0], tiers, fallback: null };
+  }
+  const tbk = Math.round(tb);
+
+  let tier = tiers.find(t => t.thresholdBonus === tbk) || null;
+  let fallback = null;
+  if (!tier) {
+    for (const t of tiers) {
+      if (tier == null
+          || Math.abs(t.thresholdBonus - tbk) < Math.abs(tier.thresholdBonus - tbk)) {
+        tier = t;
+      }
+    }
+    fallback = tier ? tier.thresholdBonus : null;
+  }
+
+  let anchor = tier.floor;
+  for (const l of valid) {
+    if (Math.round(l.bonus) > tbk && l.price < anchor) anchor = l.price;
+  }
+
+  return { anchor, tier, tiers, fallback };
+}
+
 // ── isNearBase ────────────────────────────────────────────────────────────────
 
 // ── calcProfitMatrix ──────────────────────────────────────────────────────────
@@ -484,6 +529,72 @@ console.log('\nresolveItemClass — Behavior 3: orange/red armor route by rarity
 {
   assertEq('orange armor', resolveItemClass({ type: 'armor', rarity: 'orange' }), 'orangeArmor');
   assertEq('red armor (EOD)', resolveItemClass({ type: 'armor', rarity: 'red' }), 'redArmor');
+}
+
+console.log('\nresolveMarketAnchor — Behavior 1: a small <10% step no longer merges the candidate down a bracket');
+{
+  // The reported bug: 26% lists at 290m, the 25% floor at 270m (+7.4%, under the
+  // old 10% jump gate). The old tiering merged 26% onto the 25% floor → 270m.
+  // Now the candidate anchors on its own bucket → 290m.
+  const listings = [
+    { price: 270e6, bonusValue: 25 }, { price: 290e6, bonusValue: 26 },
+    { price: 400e6, bonusValue: 27 }, { price: 445e6, bonusValue: 28 },
+  ];
+  const r = resolveMarketAnchor(listings, 26);
+  assertEq('anchors on the 26% bucket, not the 25% floor', r.anchor, 290e6);
+  assertEq('no fallback (own bucket present)', r.fallback, null);
+}
+
+console.log('\nresolveMarketAnchor — Behavior 2: non-linear curve — each bucket keeps its own empirical floor');
+{
+  // A steep high-end step and a flat low-end step coexist; both read truthfully.
+  const listings = [
+    { price: 100e6, bonusValue: 25 }, { price: 105e6, bonusValue: 26 }, // flat (+5%)
+    { price: 300e6, bonusValue: 34 }, { price: 320e6, bonusValue: 35 }, // steep
+  ];
+  assertEq('flat entry bucket', resolveMarketAnchor(listings, 26).anchor, 105e6);
+  assertEq('steep high bucket', resolveMarketAnchor(listings, 35).anchor, 320e6);
+}
+
+console.log('\nresolveMarketAnchor — Behavior 3: undercut guard — a cheaper, stronger piece wins the anchor');
+{
+  // A 27% listed BELOW the 26% floor is the smarter buy → anchor on it.
+  const r = resolveMarketAnchor(
+    [{ price: 290e6, bonusValue: 26 }, { price: 285e6, bonusValue: 27 }], 26);
+  assertEq('anchors on the cheaper 27%', r.anchor, 285e6);
+}
+
+console.log('\nresolveMarketAnchor — Behavior 4: a cheaper WEAKER piece never pulls the anchor down');
+{
+  // A 25% at 270m below the 26% floor is a lower tier, not a better buy — ignored.
+  const r = resolveMarketAnchor(
+    [{ price: 270e6, bonusValue: 25 }, { price: 290e6, bonusValue: 26 }], 26);
+  assertEq('stays on the 26% floor', r.anchor, 290e6);
+}
+
+console.log('\nresolveMarketAnchor — Behavior 5: empty own bucket → nearest bonus, flagged');
+{
+  // No 26% listed → nearest is 25% (tie distance 1 each way, lower wins).
+  const r = resolveMarketAnchor(
+    [{ price: 270e6, bonusValue: 25 }, { price: 400e6, bonusValue: 27 }], 26);
+  assertEq('falls back to nearest bucket floor', r.anchor, 270e6);
+  assertEq('reports the fallback bonus', r.fallback, 25);
+}
+
+console.log('\nresolveMarketAnchor — Behavior 6: fractional bonuses bucket by rounding');
+{
+  // 25.9 and 26.1 both round to 26 and share one bucket (cheapest wins).
+  const r = resolveMarketAnchor(
+    [{ price: 295e6, bonusValue: 25.9 }, { price: 288e6, bonusValue: 26.1 }], 26);
+  assertEq('cheapest of the rounded-26 bucket', r.anchor, 288e6);
+}
+
+console.log('\nresolveMarketAnchor — Behavior 7: no bonus on target → global floor; empty → null');
+{
+  const r = resolveMarketAnchor(
+    [{ price: 270e6, bonusValue: 25 }, { price: 290e6, bonusValue: 26 }], NaN);
+  assertEq('global cheapest when target bonus unknown', r.anchor, 270e6);
+  assert('no listings → null anchor', resolveMarketAnchor([], 26).anchor === null);
 }
 
 console.log('\n── summary ──────────────────────────────────────────────────────────────────');
