@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.78
+// @version      0.3.79
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.78';
+  const SCRIPT_VERSION = '0.3.79';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5771,7 +5771,8 @@
      * auctionPlan({ comps, bazaarResale, settings }) →
      *   { floor, typical, maxBid, verdict, count } | null
      *
-     * The single auction buy decision for market-anchored weapons. Replaces the
+     * The single auction buy decision for market-anchored weapons and every
+     * comp-based RW armor set (assault + orange/red armor). Replaces the
      * old split surface (an item-market×0.80 "Bid up to" point PLUS a redundant
      * sell-ladder "Auction" relist range) that let the suggested bid sit ABOVE
      * the resale target — e.g. "bid up to 823m" beside a 785m bazaar resale.
@@ -6713,13 +6714,22 @@
         bonusName: s.primaryBonusName,
       });
 
-      // Auction buy decision for market-anchored weapons — one bonus-matched
-      // clearing range + a resale-clamped max bid (see PricingEngine.auctionPlan).
+      // Auction buy decision — one bonus-matched clearing range + a resale-
+      // clamped max bid (see PricingEngine.auctionPlan). Fires for market-
+      // anchored weapons AND every comp-based RW armor set (assault + orange/
+      // red): they all BUY at auction and resell off it, so the bid is clamped
+      // off the bazaar/forum rung and can never sit above the resale price.
       // Anchored on the bonus-matched comps (reference.comps), not the raw all-
-      // bonus `filtered`, and clamped off the bazaar/forum rung so the suggested
-      // bid can never sit above what the piece resells for. Other classes (armor,
-      // orange/red) keep their existing headline below.
-      const plan = (buy && buy.anchor === 'market' && ladder && ladder.bazaar != null)
+      // bonus `filtered`. duneRiotArmor keeps its bazaar-floor headline (it is
+      // bazaar-floor priced, not auction-comp priced); orange/red WEAPONS keep
+      // their range headline (orange/red ARMOR now rides the plan too).
+      const planClass = !!buy && (
+        buy.anchor === 'market'
+        || s.itemClass === 'assaultArmor'
+        || s.itemClass === 'orangeArmor'
+        || s.itemClass === 'redArmor'
+      );
+      const plan = (planClass && ladder && ladder.bazaar != null)
         ? PricingEngine.auctionPlan({
             comps: (reference && reference.comps && reference.comps.length)
               ? reference.comps : filtered,
@@ -6742,8 +6752,9 @@
       const buyEl = document.createElement('span');
       buyEl.className = 'rwth-card-buymax';
       if (plan) {
-        // Market-anchored weapon: single decision line. PASS when the cheapest
-        // comparable clear is already above your resale-clamped ceiling.
+        // Market-anchored weapon or RW armor: single decision line. PASS when
+        // the cheapest comparable clear is already above your resale-clamped
+        // ceiling.
         buyEl.textContent = plan.verdict === 'pass'
           ? `PASS — clears above your ${fmtChatPrice(plan.maxBid)} max`
           : `Bid up to ${fmtChatPrice(plan.maxBid)}`;
@@ -6765,9 +6776,10 @@
         buyEl.textContent = 'Bid up to —';
       }
       head.appendChild(buyEl);
-      // Auction-clearing range. For market-anchored weapons this is the single
-      // bonus-matched range (floor → typical) the decision rides on; for other
-      // classes the legacy median-target / raw-median lines below still apply.
+      // Auction-clearing range. For plan classes (market-anchored weapons + RW
+      // armor) this is the single bonus-matched range (floor → typical) the
+      // decision rides on; for other classes the legacy median-target / raw-
+      // median lines below still apply.
       if (plan) {
         const acEl = document.createElement('span');
         acEl.className = 'rwth-card-buymed';
@@ -6799,9 +6811,9 @@
         fl.textContent = `bazaar floor ${fmtChatPrice(s.bbFloor)}`;
         head.appendChild(fl);
       }
-      // Room vs the live bid. For market-anchored weapons this measures against
-      // the resale-clamped max (plan.maxBid), so it agrees with the headline;
-      // other classes keep buyTarget's own delta.
+      // Room vs the live bid. For plan classes (weapons + RW armor) this
+      // measures against the resale-clamped max (plan.maxBid), so it agrees with
+      // the headline; other classes keep buyTarget's own delta.
       const cbNum = Number(s.currentBid);
       const bidDelta = plan
         ? (Number.isFinite(cbNum) ? plan.maxBid - cbNum : null)
@@ -6890,11 +6902,12 @@
 
       // ── deduction chain + verdict (slice 20e, #295) ───────────────────
       // The tax/mug/margin cut runs off the RESALE price you actually exit at.
-      // For market-anchored weapons that is the conservative bazaar/forum rung
-      // (the lowest realistic resale), so the max bid can never sit above what
-      // the piece resells for. Other classes keep the bonus-bracket market
-      // listing as the anchor. Either way the deduction's buyMax matches the
-      // headline (plan.maxBid resp. buy.max) by construction.
+      // For plan classes (market-anchored weapons + RW armor) that is the
+      // conservative bazaar/forum rung (the lowest realistic resale), so the max
+      // bid can never sit above what the piece resells for. Other classes keep
+      // the bonus-bracket market listing as the anchor. Either way the
+      // deduction's buyMax matches the headline (plan.maxBid resp. buy.max) by
+      // construction.
       const chainAnchor = plan ? Number(ladder.bazaar) : Number(anchorPrice);
       const chainLabel  = plan ? 'Bazaar resale' : 'Market price';
       const chain = (Number.isFinite(chainAnchor) && chainAnchor > 0)
@@ -6908,8 +6921,9 @@
           + ` → bid up to ${fmtChatPrice(chain.buyMax)}`;
         badge.appendChild(ded);
 
-        // For market-anchored weapons the headline + "under/over your max" delta
-        // already carry the decision against the live bid, so skip the duplicate
+        // For plan classes (weapons + RW armor) the headline + "under/over your
+        // max" delta already carry the decision against the live bid, so skip the
+        // duplicate
         // sentence here (it also avoids it disagreeing with the headline PASS,
         // which is about the comp floor, not this auction's current bid).
         const cb = Number(s.currentBid);
