@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.80
+// @version      0.3.81
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.80';
+  const SCRIPT_VERSION = '0.3.81';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4954,11 +4954,13 @@
      * Returns { auctions, total }, cached via Cache.
      *
      * Accepts the same query the rest of the hub already speaks
-     * ({ item_name, bonus1_id, bonus2_id, sort_by, sort_order, limit, offset })
+     * ({ item_name, bonus1_id, bonus2_id, rarity, sort_by, sort_order, limit, offset })
      * and translates it to PostgREST filters:
      *   - item_name  → item_name=eq.<name>
      *   - bonus1_id  → bonus_id=eq.<id>   (primary bonus, denormalised column)
      *   - bonus2_id  → bonuses=cs.[{"id":<id>}]  (jsonb contains a second bonus)
+     *   - rarity     → rarity=eq.<rarity> (weapons share one item id across
+     *                  yellow/orange/red; armor's id already pins its tier)
      *   - sort_by 'timestamp' → sold_at_epoch, 'price' → price
      *
      * Each row is reshaped to the comp shape compShape() reads: an epoch
@@ -4972,10 +4974,11 @@
       if (cached) return cached;
 
       const params = new URLSearchParams();
-      params.set('select', 'item_name,price,quality,sold_at_epoch,bonus_id,bonus_title,bonus_value,bonuses');
+      params.set('select', 'item_name,price,quality,sold_at_epoch,bonus_id,bonus_title,bonus_value,bonuses,rarity');
       if (q.item_name) params.set('item_name', `eq.${q.item_name}`);
       if (q.bonus1_id != null) params.set('bonus_id', `eq.${q.bonus1_id}`);
       if (q.bonus2_id != null) params.append('bonuses', `cs.[{"id":${q.bonus2_id}}]`);
+      if (q.rarity) params.set('rarity', `eq.${q.rarity}`);
       const sortCol = q.sort_by === 'price' ? 'price' : 'sold_at_epoch';
       const dir     = q.sort_order === 'asc' ? 'asc' : 'desc';
       params.set('order', `${sortCol}.${dir}`);
@@ -6076,6 +6079,16 @@
         if (i === 0) supabaseQuery.bonus1_id = id;
         else         supabaseQuery.bonus2_id = id;
       });
+
+      // A weapon item id spans yellow/orange/red (rarity is a per-instance
+      // attribute, not the id), so without a rarity filter a pricier orange/red
+      // sale at the same bonus contaminates a yellow eval — e.g. a $2.71b orange
+      // Enfield landing in a yellow Enfield's pool. Armor's item id already IS
+      // its tier (riot/dune yellow, EOD red), so item_name alone pins it — no
+      // rarity filter there. Mirrors the ListingsFetcher item-market post-filter.
+      const isArmor = isArmorType(String(item && item.type || '').toLowerCase());
+      const rarity  = item && item.rarity ? String(item.rarity).toLowerCase() : '';
+      if (!isArmor && rarity) supabaseQuery.rarity = rarity;
 
       const [clearedRaw, listings] = await Promise.all([
         SupabaseClient.search(supabaseQuery).then(r => r.auctions || []).catch(() => []),
