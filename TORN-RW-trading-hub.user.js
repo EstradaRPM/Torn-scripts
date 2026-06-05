@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.79
+// @version      0.3.80
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.79';
+  const SCRIPT_VERSION = '0.3.80';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3418,10 +3418,15 @@
     // among the three weapon types (RW pricing keys off rarity, not subtype).
     const type = (cls && cls.type)
       || (item.type === 'armor' ? 'armor' : 'primary');
-    const rarity = (cls && cls.rarity) || item.rarity || null;
+    // Instance rarity wins for weapons (per-instance bonus loadout on a shared
+    // item id); armor keeps dict-rarity precedence. See the live-auction path.
+    const rarity = isWeaponType(type)
+      ? (item.rarity || (cls && cls.rarity) || null)
+      : ((cls && cls.rarity) || item.rarity || null);
+    const bonusCount = (item.bonuses || []).length;
     const classTag = cls
-      ? formatClassTag({ ...cls, rarity })
-      : formatClassTag({ type, rarity });
+      ? formatClassTag({ ...cls, rarity }, bonusCount)
+      : formatClassTag({ type, rarity }, bonusCount);
 
     const bbRate = MEM.bbRate && MEM.bbRate.rate;
     const bbClassKey = isArmorType(type) ? 'armor' : (cls && cls.weaponBase) || null;
@@ -3430,7 +3435,10 @@
           { bonusCount: (item.bonuses || []).length })
       : null;
 
-    let itemClassKey = resolveItemClass(cls);
+    // Resolve off the effective rarity (instance wins for weapons) so orange/red
+    // weapons route to orangeWeapon / redWeapon, not the yellowWeapon fallback.
+    const effectiveCls = cls ? { ...cls, rarity } : { type, rarity };
+    let itemClassKey = resolveItemClass(effectiveCls);
     if (!itemClassKey) {
       itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
     }
@@ -3452,6 +3460,7 @@
       ctx: {
         itemClass: itemClassKey,
         rarity,
+        bonusCount,
         classTag,
         bbFloor,
         currentBid: null,
@@ -3563,7 +3572,12 @@
   // mapped by item name. Impure `fetchItemsDict` fetches once per 24h to
   // `rwth_items_dict`. The classifier routes BB-floor eligibility for armor sets
   // (Riot/Dune) and curated trash weapons; everything else is informational.
-  const ARMOR_SETS = ['Riot', 'Dune', 'Assault', 'Impregnable', 'EOD'];
+  // EOD is red; Delta/Marauder/Sentinel/Vanguard are the orange RW sets (each set
+  // covers all components — helmet/body/gloves/boots/pants). Listing them only
+  // names the set on the class tag ([Marauder · orange]); pricing still routes by
+  // rarity (orange→orangeArmor, red→redArmor), so no per-set bonus table is needed.
+  const ARMOR_SETS = ['Riot', 'Dune', 'Assault', 'Impregnable', 'EOD',
+    'Delta', 'Marauder', 'Sentinel', 'Vanguard'];
   const ITEMS_DICT_TTL_MS = 24 * 60 * 60 * 1000;
 
   // Maps Torn's weapon_class / sub_type strings to the keys BBEngine.MULTIPLIERS uses.
@@ -3702,7 +3716,7 @@
   // Pretty short-form class tag for the inline badge: `[Riot · yellow]` for
   // recognised armor sets, `[Yellow weapon]` for plain weapons, `[trash · yellow]`
   // when the curated trash flag is set. Empty when nothing classifies.
-  function formatClassTag(cls) {
+  function formatClassTag(cls, bonusCount) {
     if (!cls) return '';
     const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
     if (isArmorType(cls.type)) {
@@ -3711,7 +3725,10 @@
     }
     if (isWeaponType(cls.type)) {
       if (cls.isTrash) return `[trash${cls.rarity ? ' · ' + cls.rarity : ''}]`;
-      return cls.rarity ? `[${cap(cls.rarity)} weapon]` : '[weapon]';
+      // A 2-bonus weapon is flagged on the tag so the double-bonus warning has a
+      // matching header (e.g. "[Red weapon · 2 bonuses]").
+      const dbl = Number(bonusCount) >= 2 ? ' · 2 bonuses' : '';
+      return cls.rarity ? `[${cap(cls.rarity)} weapon${dbl}]` : `[weapon${dbl}]`;
     }
     return '';
   }
@@ -5285,14 +5302,23 @@
 
   const RECENCY_DEFAULTS = {
     yellowWeapon:  180,
-    orangeWeapon:  548,
+    // Orange weapons/armor look back the full 3yr (matching red): the tier is
+    // thin/illiquid, so the widened band needs every comparable clear the 3yr
+    // DB depth captured (v0.3.80). Orange no longer rides auctionPlan, so this
+    // window feeds the widened band only.
+    orangeWeapon: 1095,
     redWeapon:    1095,
     assaultArmor:  180,
-    orangeArmor:   548,
+    orangeArmor:  1095,
     redArmor:     1095,
     duneRiotArmor: null,
     trashBB:       null,
   };
+
+  // v0.3.80 — half-width of the median-centered widened bid band shown for the
+  // thin orange/red tiers (orange/red weapons + orange/red armor). The band is
+  // never narrower than the observed min/max of real sales (see widenedBand).
+  const WIDE_BAND_BUFFER = 0.30;
 
   /** Internal: median of a numeric array. Returns null for empty input. */
   function _median(values) {
@@ -5814,6 +5840,36 @@
     },
 
     /**
+     * widenedBand({ comps, buffer }) →
+     *   { median, lo, hi, count, buffer } | null
+     *
+     * The thin orange/red tiers (orange/red weapons + orange/red armor) trade
+     * too rarely for a single-point bid to be honest. Instead of pretending to
+     * a precise number we center on the comp median and open a wide band around
+     * it — median ± `buffer` (default WIDE_BAND_BUFFER, 0.30) — then widen the
+     * band further so it is NEVER narrower than the actual min/max of observed
+     * sales. With one comp the band still brackets it; with a real spread the
+     * observed extremes win. Returns null without any priced comp.
+     *
+     * comps  – Array<{ price }> — caller passes the loadout/rarity-matched pool.
+     * buffer – fractional half-width; defaults to WIDE_BAND_BUFFER.
+     */
+    widenedBand(args) {
+      const a = args || {};
+      const prices = ((a.comps) || [])
+        .map(c => Number(c && c.price))
+        .filter(p => Number.isFinite(p) && p > 0);
+      if (!prices.length) return null;
+      const buffer = Number.isFinite(Number(a.buffer)) ? Number(a.buffer) : WIDE_BAND_BUFFER;
+      const median = _median(prices);
+      const obsMin = Math.min(...prices);
+      const obsMax = Math.max(...prices);
+      const lo = Math.max(0, Math.min(Math.round(median * (1 - buffer)), obsMin));
+      const hi = Math.max(Math.round(median * (1 + buffer)), obsMax);
+      return { median: Math.round(median), lo, hi, count: prices.length, buffer };
+    },
+
+    /**
      * deductionChain({ anchor, settings }) →
      *   { anchor, tax, mug, margin, buyMax, resaleNet } | null
      *
@@ -6324,11 +6380,18 @@
                 : c.bonusPct != null ? c.bonusPct
                 : bvFromArray != null ? bvFromArray : null;
     const bv = bvRaw != null ? Number(bvRaw) : NaN;
+    // Bonus loadout size (1 = single-bonus orange/yellow, 2 = double-bonus red).
+    // A single-bonus candidate's Supabase pool is queried by bonus1_id alone, so
+    // it is contaminated by 2-bonus sales that also carry that bonus; the
+    // wide-band caller filters on this to keep the pool same-loadout.
+    const bonusCount = Array.isArray(c.bonuses) ? c.bonuses.length
+                     : (Array.isArray(c.bonus_values) ? c.bonus_values.length : null);
     const out = {
       price: p,
       quality: Number.isFinite(q) ? q : 0,
       timestamp,
       bonusValue: Number.isFinite(bv) ? bv : null,
+      bonusCount,
     };
     // v0.3.0 slice 19d (#288) — carry base-widen provenance + the source
     // item name so the SOLD ladder + ref line can mark widened-base rows.
@@ -6721,13 +6784,12 @@
       // off the bazaar/forum rung and can never sit above the resale price.
       // Anchored on the bonus-matched comps (reference.comps), not the raw all-
       // bonus `filtered`. duneRiotArmor keeps its bazaar-floor headline (it is
-      // bazaar-floor priced, not auction-comp priced); orange/red WEAPONS keep
-      // their range headline (orange/red ARMOR now rides the plan too).
+      // bazaar-floor priced, not auction-comp priced). The thin orange/red tiers
+      // (orange/red weapons AND orange/red armor) ride the widened band below,
+      // NOT the precise plan — a single-point bid is false precision there.
       const planClass = !!buy && (
         buy.anchor === 'market'
         || s.itemClass === 'assaultArmor'
-        || s.itemClass === 'orangeArmor'
-        || s.itemClass === 'redArmor'
       );
       const plan = (planClass && ladder && ladder.bazaar != null)
         ? PricingEngine.auctionPlan({
@@ -6736,6 +6798,27 @@
             bazaarResale: ladder.bazaar,
           })
         : null;
+
+      // v0.3.80 — widened band for the thin orange/red tiers. A weapon's rarity
+      // is a per-instance loadout, so a single-bonus candidate's pool (queried by
+      // bonus1_id alone) is contaminated by 2-bonus sales; filter to the same
+      // bonus count first. Armor is one tier per item id, so its pool is already
+      // same-loadout (no filter). Double-bonus weapons (≥2 bonuses) get the band
+      // tagged unreliable behind a stronger warning — never a confident point.
+      const wideClass = s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon'
+        || s.itemClass === 'orangeArmor' || s.itemClass === 'redArmor';
+      const isWeaponWide = s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon';
+      const isDoubleBonus = isWeaponWide && Number(s.bonusCount) >= 2;
+      let band = null;
+      if (wideClass) {
+        const bandSource = (reference && reference.comps && reference.comps.length)
+          ? reference.comps : filtered;
+        const candCount = Number(s.bonusCount);
+        const loadoutComps = (isWeaponWide && Number.isFinite(candCount) && candCount > 0)
+          ? bandSource.filter(c => Number(c.bonusCount) === candCount)
+          : bandSource;
+        band = PricingEngine.widenedBand({ comps: loadoutComps });
+      }
 
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
       badge.textContent = '';
@@ -6751,7 +6834,19 @@
       }
       const buyEl = document.createElement('span');
       buyEl.className = 'rwth-card-buymax';
-      if (plan) {
+      if (wideClass) {
+        // Thin orange/red tier — median-centered wide band, never a single point.
+        if (band) {
+          const tag = isDoubleBonus
+            ? ' (very unreliable)'
+            : ` (median ${fmtChatPrice(band.median)}, wide)`;
+          buyEl.textContent = `Bid ${fmtChatPrice(band.lo)} – ${fmtChatPrice(band.hi)}${tag}`;
+        } else {
+          // No same-loadout comps at all: a double-bonus piece leans entirely on
+          // the warning below; a single-bonus piece shows the dash.
+          buyEl.textContent = isDoubleBonus ? 'No reliable price' : 'Bid up to —';
+        }
+      } else if (plan) {
         // Market-anchored weapon or RW armor: single decision line. PASS when
         // the cheapest comparable clear is already above your resale-clamped
         // ceiling.
@@ -6843,6 +6938,18 @@
       head.appendChild(toggleBtn);
       badge.appendChild(head);
 
+      // ── caution flag for the thin orange/red tiers (v0.3.80) ──────────
+      // Neutral, fact-based wording: state the data limitation, make no claim
+      // about market behaviour. Double-bonus weapons get the stronger warning.
+      if (wideClass) {
+        const flagEl = document.createElement('div');
+        flagEl.className = 'rwth-card-ref rwth-card-thin';
+        flagEl.textContent = isDoubleBonus
+          ? '⚠ Double-bonus weapons are extremely rare. This range may rest on only 1–2 old sales — research recent auctions yourself before bidding.'
+          : '⚠ Limited sales data — proceed with caution. Treat this as a rough range and check recent auctions before bidding.';
+        badge.appendChild(flagEl);
+      }
+
       // ── reference summary ─────────────────────────────────────────────
       if (reference && (reference.count > 0 || reference.widenedBonusCount || reference.suppressedByChange)) {
         const refEl = document.createElement('div');
@@ -6880,7 +6987,7 @@
       // v0.3.0 slice 19d (#288) — thin-reference label. Surfaces below the ref
       // line whenever the comp set stayed under 5 even after base-widening,
       // so the user knows the headline range is a judgment call, not a fit.
-      if (thinReference) {
+      if (thinReference && !wideClass) {
         const thinEl = document.createElement('div');
         thinEl.className = 'rwth-card-ref rwth-card-thin';
         thinEl.textContent = 'few comparable sales — treat this as a rough guess';
@@ -7578,10 +7685,18 @@
       // (RW pricing keys off rarity, not subtype).
       const type = (cls && cls.type)
         || (parsed.itemType === 'armor' ? 'armor' : 'primary');
-      const rarity = (cls && cls.rarity) || parsed.rarity || null;
+      // A weapon's rarity is a per-instance bonus loadout on a shared item id —
+      // the items dict has no per-instance rarity, so the glow-scraped instance
+      // rarity (parsed.rarity) MUST win for weapons or every orange/red piece
+      // falls back to yellowWeapon. Armor keeps dict-rarity precedence (each
+      // armor id already IS its tier); the instance rarity stays a fallback.
+      const rarity = isWeaponType(type)
+        ? (parsed.rarity || (cls && cls.rarity) || null)
+        : ((cls && cls.rarity) || parsed.rarity || null);
+      const bonusCount = (parsed.parsedBonuses || []).length;
       const classTag = cls
-        ? formatClassTag({ ...cls, rarity })
-        : formatClassTag({ type, rarity });
+        ? formatClassTag({ ...cls, rarity }, bonusCount)
+        : formatClassTag({ type, rarity }, bonusCount);
 
       // BB floor — used as hard guard on Riot/Dune/trash and informational
       // elsewhere. `'armor'` here is BBEngine's internal multiplier key
@@ -7633,13 +7748,18 @@
       // auction fell through to the one-line "no comp" badge while the SAME item
       // rendered the full card on the ledger. Armor routes off its set, not
       // rarity, which is why armors were unaffected (v0.3.30, #298 follow-up).
-      let itemClassKey = resolveItemClass(cls);
+      // Resolve the class off the EFFECTIVE rarity (instance wins for weapons),
+      // not the raw dict rarity, so orange/red weapons route to orangeWeapon /
+      // redWeapon instead of falling back to yellowWeapon.
+      const effectiveCls = cls ? { ...cls, rarity } : { type, rarity };
+      let itemClassKey = resolveItemClass(effectiveCls);
       if (!itemClassKey) itemClassKey = isArmorType(type) ? 'assaultArmor' : 'yellowWeapon';
       const primaryBonus = (parsed.parsedBonuses || [])[0] || null;
       const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
       InlineRenderer.renderTwoTierCard(info, {
         itemClass: itemClassKey,
-        rarity: cls && cls.rarity,
+        rarity,
+        bonusCount,
         classTag,
         bbFloor,
         currentBid: listingPrice,

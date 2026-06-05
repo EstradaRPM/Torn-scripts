@@ -110,6 +110,48 @@ function isFloorPositioned(listing, floorCluster) {
   return listing.price <= floorCluster.floorPrice * 1.12;
 }
 
+// ── widenedBand (mirror of the IIFE method — keep in sync) ────────────────────
+const WIDE_BAND_BUFFER = 0.30;
+function widenedBand(args) {
+  const a = args || {};
+  const prices = ((a.comps) || [])
+    .map(c => Number(c && c.price))
+    .filter(p => Number.isFinite(p) && p > 0);
+  if (!prices.length) return null;
+  const buffer = Number.isFinite(Number(a.buffer)) ? Number(a.buffer) : WIDE_BAND_BUFFER;
+  const median = _median(prices);
+  const obsMin = Math.min(...prices);
+  const obsMax = Math.max(...prices);
+  const lo = Math.max(0, Math.min(Math.round(median * (1 - buffer)), obsMin));
+  const hi = Math.max(Math.round(median * (1 + buffer)), obsMax);
+  return { median: Math.round(median), lo, hi, count: prices.length, buffer };
+}
+
+// ── resolveItemClass (mirror of the IIFE fn — keep in sync) ───────────────────
+const WEAPON_TYPES = ['primary', 'secondary', 'melee'];
+const ARMOR_TYPES  = ['armor', 'defensive'];
+function isWeaponType(type) { return WEAPON_TYPES.indexOf(type) !== -1; }
+function isArmorType(type)  { return ARMOR_TYPES.indexOf(type)  !== -1; }
+function resolveItemClass(cls) {
+  if (!cls) return null;
+  if (cls.isTrash) return 'trashBB';
+  if (isArmorType(cls.type)) {
+    if (cls.armorSet === 'Riot' || cls.armorSet === 'Dune') return 'duneRiotArmor';
+    if (cls.armorSet === 'Assault') return 'assaultArmor';
+    if (cls.rarity === 'orange') return 'orangeArmor';
+    if (cls.rarity === 'red')    return 'redArmor';
+    if (cls.rarity === 'yellow') return 'assaultArmor';
+    return null;
+  }
+  if (isWeaponType(cls.type)) {
+    if (cls.rarity === 'yellow') return 'yellowWeapon';
+    if (cls.rarity === 'orange') return 'orangeWeapon';
+    if (cls.rarity === 'red')    return 'redWeapon';
+    return null;
+  }
+  return null;
+}
+
 // ── isNearBase ────────────────────────────────────────────────────────────────
 
 // ── calcProfitMatrix ──────────────────────────────────────────────────────────
@@ -388,6 +430,60 @@ console.log('\nauctionPlan — Behavior 4: custom friction knobs widen the ceili
     settings: { margin: 0 },
   });
   assertEq('maxBid = bazaar × 0.85', p.maxBid, 850e6);
+}
+
+console.log('\nwidenedBand — Behavior 1: median ± 30% with a real spread');
+{
+  // prices 100,120,200 → median 120; ±30% → 84..156; observed min/max 100/200
+  // widen so band brackets reality: lo = min(84,100)=84; hi = max(156,200)=200.
+  const b = widenedBand({ comps: [{ price: 100 }, { price: 120 }, { price: 200 }] });
+  assertEq('median', b.median, 120);
+  assertEq('lo = buffer floor (below observed min)', b.lo, 84);
+  assertEq('hi = observed max (wider than buffer)', b.hi, 200);
+  assertEq('count', b.count, 3);
+}
+
+console.log('\nwidenedBand — Behavior 2: single comp still yields a band that brackets it');
+{
+  // one comp at 200 → median 200; ±30% → 140..260; observed min/max both 200.
+  const b = widenedBand({ comps: [{ price: 200 }] });
+  assertEq('lo', b.lo, 140);
+  assertEq('hi', b.hi, 260);
+  assert('band brackets the lone comp', b.lo <= 200 && 200 <= b.hi);
+}
+
+console.log('\nwidenedBand — Behavior 3: empty / unpriced → null');
+{
+  assert('no comps → null', widenedBand({ comps: [] }) === null);
+  assert('unpriced → null', widenedBand({ comps: [{ price: 0 }, { price: -1 }] }) === null);
+}
+
+console.log('\nwidenedBand — Behavior 4: custom buffer widens the band');
+{
+  // median 100, buffer 0.5 → 50..150; observed min/max both 100.
+  const b = widenedBand({ comps: [{ price: 100 }], buffer: 0.5 });
+  assertEq('lo', b.lo, 50);
+  assertEq('hi', b.hi, 150);
+}
+
+console.log('\nresolveItemClass — Behavior 1: instance rarity routes orange/red weapons');
+{
+  // A weapon dict carries no per-instance rarity; the caller overrides cls.rarity
+  // with the glow rarity before routing. Orange glow → orangeWeapon, red → red.
+  assertEq('orange weapon', resolveItemClass({ type: 'primary', rarity: 'orange' }), 'orangeWeapon');
+  assertEq('red weapon',    resolveItemClass({ type: 'melee',   rarity: 'red' }),    'redWeapon');
+  assertEq('yellow weapon', resolveItemClass({ type: 'secondary', rarity: 'yellow' }), 'yellowWeapon');
+}
+
+console.log('\nresolveItemClass — Behavior 2: weapon with no rarity → null (caller falls back)');
+{
+  assert('no rarity → null', resolveItemClass({ type: 'primary', rarity: null }) === null);
+}
+
+console.log('\nresolveItemClass — Behavior 3: orange/red armor route by rarity');
+{
+  assertEq('orange armor', resolveItemClass({ type: 'armor', rarity: 'orange' }), 'orangeArmor');
+  assertEq('red armor (EOD)', resolveItemClass({ type: 'armor', rarity: 'red' }), 'redArmor');
 }
 
 console.log('\n── summary ──────────────────────────────────────────────────────────────────');
