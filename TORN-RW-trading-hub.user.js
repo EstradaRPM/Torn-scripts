@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.85
+// @version      0.3.86
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.85';
+  const SCRIPT_VERSION = '0.3.86';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5072,11 +5072,21 @@
       let bonusPct = NaN;
       const b0 = bonuses[0];
       if (b0 && b0.value != null) bonusPct = Number(b0.value);
+      // Full bonus loadout (#327) — every bonus name lowercased. The fetch
+      // filters weapons to the candidate's exact loadout so a 2-bonus piece is
+      // never anchored on a single-bonus listing of the same primary.
+      const bonusNames = bonuses
+        .map(b => {
+          const nm = b && (b.title != null ? b.title : b.name);
+          return nm != null ? String(nm).trim().toLowerCase() : '';
+        })
+        .filter(Boolean);
       const qualityPct = Number(
         det.stats && det.stats.quality != null ? det.stats.quality : NaN);
       return {
         price,
         bonusPct: Number.isFinite(bonusPct) ? bonusPct : null,
+        bonusNames,
         qualityPct: Number.isFinite(qualityPct) ? qualityPct : null,
         // Rarity colour ('yellow' | 'orange' | 'red') straight from the API so
         // downstream can compare like-for-like by colour.
@@ -5133,8 +5143,19 @@
       const bonuses = ((item && item.bonuses) || []).filter(b => b && b.name);
       const bonus   = ListingsFetcher._bonusTitle(bonuses[0] && bonuses[0].name);
       const rarity  = item && item.rarity ? String(item.rarity).toLowerCase() : '';
+      // Full bonus loadout the candidate carries (#327), lowercased. The server
+      // `bonus=` param filters on the primary only, so a 2-bonus weapon still
+      // pulls back single-bonus listings of the same primary; weapons are post-
+      // filtered to this exact loadout below. The loadout is folded into the
+      // cache key so two pieces sharing a primary (e.g. Weaken vs Weaken/Frenzy)
+      // never serve each other's filtered set. Armor is one fixed loadout per
+      // item id, so it keys + fetches plainly with no loadout filter.
+      const wantLoadout = bonuses
+        .map(b => String(b.name).trim().toLowerCase()).filter(Boolean);
+      const loadoutKey = isArmor ? 'armor'
+        : (wantLoadout.slice().sort().join('+') || bonus.toLowerCase());
       const key  = 'im:' + (itemId != null ? itemId : ((item && item.itemName) || ''))
-        + ':' + (isArmor ? 'armor' : bonus.toLowerCase()) + ':' + rarity;
+        + ':' + loadoutKey + ':' + rarity;
       const now  = Date.now();
       const hit  = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
@@ -5161,6 +5182,22 @@
             if (!isArmor && rarity) {
               market = market.filter(
                 l => (l.rarity || '').toLowerCase() === rarity);
+            }
+            // Full-loadout match (#327): keep only listings whose complete bonus
+            // set — every name AND the count — equals the candidate's. Drops a
+            // single-bonus piece from a 2-combo candidate's pool (and a 2-combo
+            // from a single-bonus pool), so the deduction can never anchor on a
+            // cheaper, weaker, different piece. When this empties the pool the
+            // candidate has no same-loadout listing to price off — the card
+            // routes to its widened-band / needs-research state rather than
+            // anchoring on a single-bonus listing. Armor is one fixed loadout
+            // per item id, so it is left unfiltered.
+            if (!isArmor && wantLoadout.length) {
+              market = market.filter(l => {
+                const got = Array.isArray(l.bonusNames) ? l.bonusNames : [];
+                return got.length === wantLoadout.length
+                  && wantLoadout.every(n => got.includes(n));
+              });
             }
           }
         }
