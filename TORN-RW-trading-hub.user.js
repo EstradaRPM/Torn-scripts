@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.83
+// @version      0.3.84
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.83';
+  const SCRIPT_VERSION = '0.3.84';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5780,17 +5780,26 @@
       const med = _median(prices);
       const anchorIn = Number(a.marketAnchor);
       const mc  = Number(a.marketCheapest);
+      // The resale rungs (bazaar / item market / floor) may ONLY come from a
+      // real live item-market price — the bonus-bracket anchor or the cheapest
+      // current listing. They must NEVER fall back to the comp median: those
+      // comps are auction SALE prices (what winners paid to buy the item), not a
+      // resale price you can flip into. Deducting friction off a buy price and
+      // calling the result a bid is circular. With no live market price the
+      // resale rungs stay null and the caller shows a "needs research" state
+      // instead of a made-up number. (`auctionClearing` is still reported — it
+      // is honestly labelled as a past-sale figure, never used as resale.)
       const anchor = Number.isFinite(anchorIn) && anchorIn > 0 ? anchorIn
-        : (Number.isFinite(mc) && mc > 0 ? mc : med);
+        : (Number.isFinite(mc) && mc > 0 ? mc : null);
+      const auctionClearing = med != null ? Math.round(med) : null;
       if (anchor == null) {
-        return { auctionFloor: null, auctionClearing: null,
+        return { auctionFloor: null, auctionClearing,
                  bazaar: null, market: null, forum: null, floor: null };
       }
       const market = Math.round(anchor);
       const bazaar = Math.round(market / 1.05);
       const forum  = bazaar; // same aggressive front as bazaar (see model above)
       const auctionFloor    = Math.round(market * 0.85);
-      const auctionClearing = med != null ? Math.round(med) : null;
       const buyCost = Number(a.buyCost);
       const floor = Math.max(bazaar, Number.isFinite(buyCost) ? Math.round(buyCost) : 0);
       return { auctionFloor, auctionClearing, bazaar, market, forum, floor };
@@ -6847,6 +6856,19 @@
         band = PricingEngine.widenedBand({ comps: loadoutComps });
       }
 
+      // A friction-deducted bid is only honest when there is a REAL item-market
+      // price to deduct from (the bonus-bracket anchor or the cheapest live
+      // listing). With none, we refuse to invent one out of past auction sales —
+      // those are what winners paid, not a resale price — so the resale-anchored
+      // classes (market-priced weapons + the assault-armor plan) drop to a "go
+      // research it" state rather than a fabricated bid or a false PASS. The
+      // bazaar-floor classes (Dune/Riot/trash) and the orange/red wide-band
+      // tiers price off other signals and keep their own treatment.
+      const hasResalePrice = Number.isFinite(Number(anchorPrice)) && Number(anchorPrice) > 0;
+      const resaleAnchored = !wideClass
+        && (buy.anchor === 'market' || s.itemClass === 'assaultArmor');
+      const needsResearch = resaleAnchored && !hasResalePrice;
+
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
       badge.textContent = '';
 
@@ -6873,6 +6895,11 @@
           // the warning below; a single-bonus piece shows the dash.
           buyEl.textContent = isDoubleBonus ? 'No reliable price' : 'Bid up to —';
         }
+      } else if (needsResearch) {
+        // No live listings → no resale price to base a bid on. Say so plainly
+        // rather than deducting off past auction sales (a buy price, not resale).
+        buyEl.textContent = 'No price to go on — research before bidding';
+        buyEl.className += ' rwth-card-buymax-pass';
       } else if (plan) {
         // Market-anchored weapon or RW armor: single decision line. PASS when
         // the cheapest comparable clear is already above your resale-clamped
@@ -6911,6 +6938,23 @@
         acEl.textContent = `clears ${range} at auction`;
         if (plan.count < 5) acEl.textContent += ' (few comps)';
         head.appendChild(acEl);
+      } else if (needsResearch) {
+        // Surface what comparable pieces actually SOLD for at past auctions, as
+        // background — never a bid. The bonus-matched comps if we have them,
+        // else the raw pool.
+        const refComps = (reference && reference.comps && reference.comps.length)
+          ? reference.comps : filtered;
+        const rp = refComps.map(c => Number(c && c.price)).filter(p => Number.isFinite(p) && p > 0);
+        if (rp.length) {
+          const lo = Math.round(Math.min(...rp));
+          const md = Math.round(_median(rp));
+          const acEl = document.createElement('span');
+          acEl.className = 'rwth-card-buymed';
+          acEl.textContent = lo === md
+            ? `sold ~${fmtChatPrice(md)} at past auctions`
+            : `sold ${fmtChatPrice(lo)}–${fmtChatPrice(md)} at past auctions`;
+          head.appendChild(acEl);
+        }
       } else {
         if (buy.medianTarget != null) {
           const medEl = document.createElement('span');
@@ -6937,9 +6981,10 @@
       // measures against the resale-clamped max (plan.maxBid), so it agrees with
       // the headline; other classes keep buyTarget's own delta.
       const cbNum = Number(s.currentBid);
-      const bidDelta = plan
-        ? (Number.isFinite(cbNum) ? plan.maxBid - cbNum : null)
-        : buy.currentBidDelta;
+      const bidDelta = needsResearch ? null
+        : (plan
+            ? (Number.isFinite(cbNum) ? plan.maxBid - cbNum : null)
+            : buy.currentBidDelta);
       if (bidDelta != null) {
         const d = bidDelta;
         const delta = document.createElement('span');
@@ -6964,6 +7009,20 @@
       });
       head.appendChild(toggleBtn);
       badge.appendChild(head);
+
+      // ── no-resale-price explainer ─────────────────────────────────────
+      // Plain-English: tell the user WHY there's no bid and what to do, instead
+      // of a dash or a number pulled out of thin air.
+      if (needsResearch) {
+        const note = document.createElement('div');
+        note.className = 'rwth-card-ref rwth-card-thin';
+        note.textContent = "Nothing comparable is listed for sale right now, so "
+          + "there's no resale price to work a safe bid back from. The only figures "
+          + "we have are what similar pieces sold for at past auctions (shown above) "
+          + "— that's what buyers paid, not what you could resell for. Check recent "
+          + "sales yourself and set your own max before bidding.";
+        badge.appendChild(note);
+      }
 
       // ── caution flag for the thin orange/red tiers (v0.3.80) ──────────
       // Neutral, fact-based wording: state the data limitation, make no claim
