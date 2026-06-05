@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.82
+// @version      0.3.83
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.82';
+  const SCRIPT_VERSION = '0.3.83';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -6803,25 +6803,26 @@
         bonusName: s.primaryBonusName,
       });
 
-      // Auction buy decision — one bonus-matched clearing range + a resale-
-      // clamped max bid (see PricingEngine.auctionPlan). Fires for market-
-      // anchored weapons AND every comp-based RW armor set (assault + orange/
-      // red): they all BUY at auction and resell off it, so the bid is clamped
-      // off the bazaar/forum rung and can never sit above the resale price.
-      // Anchored on the bonus-matched comps (reference.comps), not the raw all-
-      // bonus `filtered`. duneRiotArmor keeps its bazaar-floor headline (it is
-      // bazaar-floor priced, not auction-comp priced). The thin orange/red tiers
-      // (orange/red weapons AND orange/red armor) ride the widened band below,
-      // NOT the precise plan — a single-point bid is false precision there.
+      // Auction buy decision — one bonus-matched clearing range + a max bid
+      // clamped off the item-market anchor (see PricingEngine.auctionPlan).
+      // Fires for market-anchored weapons AND every comp-based RW armor set
+      // (assault + orange/red). The 20% cut (5% tax + 10% mug + 5% margin) is
+      // taken off the bonus-matched item-market price directly — NOT off the
+      // bazaar rung (= market ÷ 1.05), which would shave the same ~5% twice and
+      // push every max bid a tier too low. Anchored on the bonus-matched comps
+      // (reference.comps), not the raw all-bonus `filtered`. duneRiotArmor keeps
+      // its bazaar-floor headline (it is bazaar-floor priced, not auction-comp
+      // priced). The thin orange/red tiers (orange/red weapons AND orange/red
+      // armor) ride the widened band below, NOT the precise plan.
       const planClass = !!buy && (
         buy.anchor === 'market'
         || s.itemClass === 'assaultArmor'
       );
-      const plan = (planClass && ladder && ladder.bazaar != null)
+      const plan = (planClass && ladder && ladder.market != null)
         ? PricingEngine.auctionPlan({
             comps: (reference && reference.comps && reference.comps.length)
               ? reference.comps : filtered,
-            bazaarResale: ladder.bazaar,
+            bazaarResale: ladder.market,
           })
         : null;
 
@@ -7034,15 +7035,14 @@
       badge.appendChild(sensEl);
 
       // ── deduction chain + verdict (slice 20e, #295) ───────────────────
-      // The tax/mug/margin cut runs off the RESALE price you actually exit at.
-      // For plan classes (market-anchored weapons + RW armor) that is the
-      // conservative bazaar/forum rung (the lowest realistic resale), so the max
-      // bid can never sit above what the piece resells for. Other classes keep
-      // the bonus-bracket market listing as the anchor. Either way the
-      // deduction's buyMax matches the headline (plan.maxBid resp. buy.max) by
-      // construction.
-      const chainAnchor = plan ? Number(ladder.bazaar) : Number(anchorPrice);
-      const chainLabel  = plan ? 'Bazaar resale' : 'Market price';
+      // The tax/mug/margin cut runs off the bonus-matched item-market price for
+      // every class — plan classes (market-anchored weapons + RW armor) and the
+      // rest alike. The ~20% cut already accounts for resale friction; taking it
+      // off the bazaar rung (= market ÷ 1.05) instead would double-count the same
+      // ~5%. Either way the deduction's buyMax matches the headline (plan.maxBid
+      // resp. buy.max) by construction.
+      const chainAnchor = plan ? Number(ladder.market) : Number(anchorPrice);
+      const chainLabel  = 'Item market';
       const chain = (Number.isFinite(chainAnchor) && chainAnchor > 0)
         ? PricingEngine.deductionChain({ anchor: chainAnchor }) : null;
       if (chain) {
