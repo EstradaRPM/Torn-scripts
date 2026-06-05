@@ -24,7 +24,6 @@ create table if not exists public.auctions (
   bonus_title   text,
   bonus_value   numeric,
   bonuses       jsonb,                -- full bonus array as returned
-  raw           jsonb,                -- the entire original API row
   ingested_at   timestamptz default now()
 );
 

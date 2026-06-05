@@ -84,7 +84,6 @@ export function mapRow(a) {
     bonus_title: b0.title ?? null,
     bonus_value: b0.value ?? null,
     bonuses,
-    raw: a,
   };
 }
 
