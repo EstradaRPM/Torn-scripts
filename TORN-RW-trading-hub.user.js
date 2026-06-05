@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.76
+// @version      0.3.77
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.76';
+  const SCRIPT_VERSION = '0.3.77';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5088,37 +5088,48 @@
      */
     async fetch(item) {
       const itemId = ListingsFetcher._resolveItemId(item);
-      // Filter the item market by the candidate's primary bonus so the endpoint
-      // returns same-bonus RW listings directly, instead of the cheapest plain
-      // (un-bonused) copies. The `bonus` param takes a bonus title (e.g.
-      // "Deadeye") or a rarity colour; we pass the title. One filtered call per
-      // item — same on-demand trigger, same 5-min cache.
+      // Armor and weapons are queried differently because their item-market
+      // shape differs at the item-id level:
+      //   • A weapon item id spans many bonus/rarity combinations (no bonus,
+      //     one bonus, two; null→red). To get same-bonus comps we MUST filter
+      //     by the candidate's primary bonus title; without it the endpoint
+      //     returns the cheapest plain (un-bonused) copies.
+      //   • A RW armor *item id* already IS its bonus tier — every listing under
+      //     that id is the same RW piece and carries bonus/percent/rarity inline
+      //     every time. So armor fetches by item id ALONE: no bonus filter (it
+      //     resolves to an empty title for armor, which used to fail the guard
+      //     and skip the fetch, blanking every for-sale band) and no rarity
+      //     post-filter (the id is the rarity).
+      const isArmor = isArmorType(String(item && item.type || '').toLowerCase());
       const bonuses = ((item && item.bonuses) || []).filter(b => b && b.name);
       const bonus   = ListingsFetcher._bonusTitle(bonuses[0] && bonuses[0].name);
       const rarity  = item && item.rarity ? String(item.rarity).toLowerCase() : '';
       const key  = 'im:' + (itemId != null ? itemId : ((item && item.itemName) || ''))
-        + ':' + bonus.toLowerCase() + ':' + rarity;
+        + ':' + (isArmor ? 'armor' : bonus.toLowerCase()) + ':' + rarity;
       const now  = Date.now();
       const hit  = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
       let market = [];
       try {
         const apiKey = (MEM.settings && MEM.settings.apiKey || '').trim();
-        if (itemId != null && bonus && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey)) {
-          const url = `${API_BASE}/v2/market/${itemId}/itemmarket`
-            + `?bonus=${encodeURIComponent(bonus)}`
-            + `&limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
+        // Weapons require a resolved bonus title; armor needs only the item id.
+        const queryable = itemId != null && (isArmor || !!bonus)
+          && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey);
+        if (queryable) {
+          const url = `${API_BASE}/v2/market/${itemId}/itemmarket?`
+            + (isArmor ? '' : `bonus=${encodeURIComponent(bonus)}&`)
+            + `limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
           const res = await fetch(url);
           const d   = await res.json();
           if (d && !d.error && d.itemmarket && Array.isArray(d.itemmarket.listings)) {
             market = d.itemmarket.listings
               .map(ListingsFetcher._shapeItemMarket)
               .filter(Boolean);
-            // Same-colour comps only: filter to the candidate's rarity when
-            // known, so a yellow (1-bonus) piece is not anchored against pricier
-            // orange/red pieces that share the same bonus. Unknown rarity keeps
-            // all bonus-matched listings.
-            if (rarity) {
+            // Weapons only: keep same-colour comps so a yellow (1-bonus) piece
+            // is not anchored against pricier orange/red pieces that share the
+            // same bonus. Armor is a single RW tier per item id, so its listings
+            // are already like-for-like — no rarity post-filter.
+            if (!isArmor && rarity) {
               market = market.filter(
                 l => (l.rarity || '').toLowerCase() === rarity);
             }
