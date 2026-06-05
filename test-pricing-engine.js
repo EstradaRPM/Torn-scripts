@@ -80,6 +80,31 @@ function calcSuggestedBid(currentBid, maxBid, lean = 0.30) {
   return Math.round(currentBid + lean * (maxBid - currentBid));
 }
 
+// ── auctionPlan (mirror of the IIFE method — keep in sync) ────────────────────
+function _median(arr) {
+  const xs = (arr || []).filter(n => Number.isFinite(n)).slice().sort((a, b) => a - b);
+  if (!xs.length) return null;
+  const mid = Math.floor(xs.length / 2);
+  return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+}
+function auctionPlan(args) {
+  const a = args || {};
+  const s = a.settings || {};
+  const prices = ((a.comps) || [])
+    .map(c => Number(c && c.price))
+    .filter(p => Number.isFinite(p) && p > 0);
+  const resale = Number(a.bazaarResale);
+  if (!prices.length || !(Number.isFinite(resale) && resale > 0)) return null;
+  const tax    = s.tax    != null ? s.tax    : 0.05;
+  const mug    = s.mug    != null ? s.mug    : 0.10;
+  const margin = s.margin != null ? s.margin : 0.05;
+  const floor   = Math.round(Math.min(...prices));
+  const typical = Math.round(_median(prices));
+  const maxBid  = Math.round(resale * (1 - tax - mug - margin));
+  return { floor, typical, maxBid,
+           verdict: maxBid < floor ? 'pass' : 'buy', count: prices.length };
+}
+
 function isFloorPositioned(listing, floorCluster) {
   if (!floorCluster.isValid || floorCluster.floorPrice == null) return false;
   return listing.price <= floorCluster.floorPrice * 1.12;
@@ -319,6 +344,50 @@ console.log('\nisNearBase — Behavior 8: Dune set uses its own baseBonusPct (30
 {
   assert('bonusPct=32 true for Dune',  isNearBase({ qualityPct: 10, bonusPct: 32 }, 'Dune') === true);
   assert('bonusPct=33 false for Dune', isNearBase({ qualityPct: 10, bonusPct: 33 }, 'Dune') === false);
+}
+
+console.log('\nauctionPlan — Behavior 1: healthy flip → buy, max clamped off bazaar');
+{
+  // comps clear 540–600m (typ 565m); bazaar resale 785m → max 785×0.80 = 628m.
+  const p = auctionPlan({
+    comps: [{ price: 540e6 }, { price: 560e6 }, { price: 570e6 }, { price: 600e6 }],
+    bazaarResale: 785e6,
+  });
+  assertEq('floor = cheapest comp', p.floor, 540e6);
+  assertEq('typical = comp median', p.typical, 565e6);
+  assertEq('maxBid = bazaar × 0.80', p.maxBid, 628e6);
+  assertEq('verdict buy (maxBid ≥ floor)', p.verdict, 'buy');
+}
+
+console.log('\nauctionPlan — Behavior 2: auction clears above ceiling → pass');
+{
+  // The reported bug: comps clear 701–823m but bazaar resale only 785m.
+  // max = 785×0.80 = 628m < floor 701m → no margin → pass.
+  const p = auctionPlan({
+    comps: [{ price: 701e6 }, { price: 750e6 }, { price: 823e6 }],
+    bazaarResale: 785e6,
+  });
+  assertEq('maxBid stays below resale', p.maxBid, 628e6);
+  assert('maxBid is below the comp floor', p.maxBid < p.floor);
+  assertEq('verdict pass', p.verdict, 'pass');
+}
+
+console.log('\nauctionPlan — Behavior 3: degenerate inputs → null');
+{
+  assert('no comps → null', auctionPlan({ comps: [], bazaarResale: 100e6 }) === null);
+  assert('no resale → null', auctionPlan({ comps: [{ price: 10e6 }], bazaarResale: 0 }) === null);
+  assert('unpriced comps → null', auctionPlan({ comps: [{ price: 0 }, { price: -5 }], bazaarResale: 100e6 }) === null);
+}
+
+console.log('\nauctionPlan — Behavior 4: custom friction knobs widen the ceiling');
+{
+  // Drop margin to 0 → max = bazaar × (1 − 0.05 − 0.10) = 0.85.
+  const p = auctionPlan({
+    comps: [{ price: 100e6 }],
+    bazaarResale: 1000e6,
+    settings: { margin: 0 },
+  });
+  assertEq('maxBid = bazaar × 0.85', p.maxBid, 850e6);
 }
 
 console.log('\n── summary ──────────────────────────────────────────────────────────────────');

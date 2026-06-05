@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.77
+// @version      0.3.78
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.77';
+  const SCRIPT_VERSION = '0.3.78';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5768,6 +5768,51 @@
     },
 
     /**
+     * auctionPlan({ comps, bazaarResale, settings }) →
+     *   { floor, typical, maxBid, verdict, count } | null
+     *
+     * The single auction buy decision for market-anchored weapons. Replaces the
+     * old split surface (an item-market×0.80 "Bid up to" point PLUS a redundant
+     * sell-ladder "Auction" relist range) that let the suggested bid sit ABOVE
+     * the resale target — e.g. "bid up to 823m" beside a 785m bazaar resale.
+     *
+     *   `comps`        – bonus-matched cleared comps (compReference output), so
+     *                    floor/typical describe where THIS bonus tier actually
+     *                    clears, not an all-bonus median contaminated by
+     *                    stronger pieces.
+     *   `bazaarResale` – the conservative resale venue (bazaar/forum). The max
+     *                    bid is clamped off this, NEVER off the auction comps:
+     *                    you resell off-auction, so the friction cut belongs on
+     *                    the resale price, and bazaar is the lowest realistic
+     *                    exit, so a bid under it is safe at every venue.
+     *
+     *   floor   = cheapest comparable auction clear (the price to hope for)
+     *   typical = comp median (where most clear)
+     *   maxBid  = round(bazaarResale × (1 − tax − mug − margin))   ← hard ceiling
+     *   verdict = 'pass' when maxBid < floor (every comp cleared above your
+     *             ceiling → no margin to flip) | 'buy' otherwise
+     *
+     * Returns null without priced comps or a positive resale anchor.
+     */
+    auctionPlan(args) {
+      const a = args || {};
+      const s = a.settings || {};
+      const prices = ((a.comps) || [])
+        .map(c => Number(c && c.price))
+        .filter(p => Number.isFinite(p) && p > 0);
+      const resale = Number(a.bazaarResale);
+      if (!prices.length || !(Number.isFinite(resale) && resale > 0)) return null;
+      const tax    = s.tax    != null ? s.tax    : 0.05;
+      const mug    = s.mug    != null ? s.mug    : 0.10;
+      const margin = s.margin != null ? s.margin : 0.05;
+      const floor   = Math.round(Math.min(...prices));
+      const typical = Math.round(_median(prices));
+      const maxBid  = Math.round(resale * (1 - tax - mug - margin));
+      return { floor, typical, maxBid,
+               verdict: maxBid < floor ? 'pass' : 'buy', count: prices.length };
+    },
+
+    /**
      * deductionChain({ anchor, settings }) →
      *   { anchor, tax, mug, margin, buyMax, resaleNet } | null
      *
@@ -6668,6 +6713,20 @@
         bonusName: s.primaryBonusName,
       });
 
+      // Auction buy decision for market-anchored weapons — one bonus-matched
+      // clearing range + a resale-clamped max bid (see PricingEngine.auctionPlan).
+      // Anchored on the bonus-matched comps (reference.comps), not the raw all-
+      // bonus `filtered`, and clamped off the bazaar/forum rung so the suggested
+      // bid can never sit above what the piece resells for. Other classes (armor,
+      // orange/red) keep their existing headline below.
+      const plan = (buy && buy.anchor === 'market' && ladder && ladder.bazaar != null)
+        ? PricingEngine.auctionPlan({
+            comps: (reference && reference.comps && reference.comps.length)
+              ? reference.comps : filtered,
+            bazaarResale: ladder.bazaar,
+          })
+        : null;
+
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
       badge.textContent = '';
 
@@ -6682,7 +6741,14 @@
       }
       const buyEl = document.createElement('span');
       buyEl.className = 'rwth-card-buymax';
-      if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
+      if (plan) {
+        // Market-anchored weapon: single decision line. PASS when the cheapest
+        // comparable clear is already above your resale-clamped ceiling.
+        buyEl.textContent = plan.verdict === 'pass'
+          ? `PASS — clears above your ${fmtChatPrice(plan.maxBid)} max`
+          : `Bid up to ${fmtChatPrice(plan.maxBid)}`;
+        if (plan.verdict === 'pass') buyEl.className += ' rwth-card-buymax-pass';
+      } else if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
         const tol = buy.tolerance != null ? buy.tolerance : 0;
         buyEl.textContent = `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room`;
       } else if (thinReference && Array.isArray(buy.range)) {
@@ -6699,19 +6765,33 @@
         buyEl.textContent = 'Bid up to —';
       }
       head.appendChild(buyEl);
-      if (buy.medianTarget != null) {
-        const medEl = document.createElement('span');
-        medEl.className = 'rwth-card-buymed';
-        medEl.textContent = `typical ${fmtChatPrice(buy.medianTarget)}`;
-        head.appendChild(medEl);
-      }
-      // Auction-clearing reference (what it actually sells for at auction) —
-      // shown raw, NOT deducted. The bid sits against this, not derived from it.
-      if (buy.auctionMedian != null) {
-        const amEl = document.createElement('span');
-        amEl.className = 'rwth-card-buymed';
-        amEl.textContent = `sells ~${fmtChatPrice(buy.auctionMedian)} at auction`;
-        head.appendChild(amEl);
+      // Auction-clearing range. For market-anchored weapons this is the single
+      // bonus-matched range (floor → typical) the decision rides on; for other
+      // classes the legacy median-target / raw-median lines below still apply.
+      if (plan) {
+        const acEl = document.createElement('span');
+        acEl.className = 'rwth-card-buymed';
+        const range = plan.floor === plan.typical
+          ? fmtChatPrice(plan.typical)
+          : `${fmtChatPrice(plan.floor)}–${fmtChatPrice(plan.typical)}`;
+        acEl.textContent = `clears ${range} at auction`;
+        if (plan.count < 5) acEl.textContent += ' (few comps)';
+        head.appendChild(acEl);
+      } else {
+        if (buy.medianTarget != null) {
+          const medEl = document.createElement('span');
+          medEl.className = 'rwth-card-buymed';
+          medEl.textContent = `typical ${fmtChatPrice(buy.medianTarget)}`;
+          head.appendChild(medEl);
+        }
+        // Auction-clearing reference (what it actually sells for at auction) —
+        // shown raw, NOT deducted. The bid sits against this, not derived from it.
+        if (buy.auctionMedian != null) {
+          const amEl = document.createElement('span');
+          amEl.className = 'rwth-card-buymed';
+          amEl.textContent = `sells ~${fmtChatPrice(buy.auctionMedian)} at auction`;
+          head.appendChild(amEl);
+        }
       }
       if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && buy.max != null) {
         const fl = document.createElement('span');
@@ -6719,8 +6799,15 @@
         fl.textContent = `bazaar floor ${fmtChatPrice(s.bbFloor)}`;
         head.appendChild(fl);
       }
-      if (buy.currentBidDelta != null) {
-        const d = buy.currentBidDelta;
+      // Room vs the live bid. For market-anchored weapons this measures against
+      // the resale-clamped max (plan.maxBid), so it agrees with the headline;
+      // other classes keep buyTarget's own delta.
+      const cbNum = Number(s.currentBid);
+      const bidDelta = plan
+        ? (Number.isFinite(cbNum) ? plan.maxBid - cbNum : null)
+        : buy.currentBidDelta;
+      if (bidDelta != null) {
+        const d = bidDelta;
         const delta = document.createElement('span');
         if (d >= 0) {
           delta.className = 'rwth-card-room';
@@ -6802,25 +6889,31 @@
       badge.appendChild(sensEl);
 
       // ── deduction chain + verdict (slice 20e, #295) ───────────────────
-      // Anchor the tax/mug/margin cut on the bonus-bracket market listing (the
-      // inflated resale ask for the candidate's tier — v0.3.29/#298), not the
-      // auction-comp median: deducting resale friction off an auction-cleared
-      // price double-counts (see buyTarget). Reads the same `anchorPrice` as the
-      // headline buy max, so the two never disagree.
-      const chainAnchor = Number(anchorPrice);
+      // The tax/mug/margin cut runs off the RESALE price you actually exit at.
+      // For market-anchored weapons that is the conservative bazaar/forum rung
+      // (the lowest realistic resale), so the max bid can never sit above what
+      // the piece resells for. Other classes keep the bonus-bracket market
+      // listing as the anchor. Either way the deduction's buyMax matches the
+      // headline (plan.maxBid resp. buy.max) by construction.
+      const chainAnchor = plan ? Number(ladder.bazaar) : Number(anchorPrice);
+      const chainLabel  = plan ? 'Bazaar resale' : 'Market price';
       const chain = (Number.isFinite(chainAnchor) && chainAnchor > 0)
         ? PricingEngine.deductionChain({ anchor: chainAnchor }) : null;
       if (chain) {
         const ded = document.createElement('div');
         ded.className = 'rwth-card-ref rwth-card-ded';
         ded.textContent =
-          `Market price ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          `${chainLabel} ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
           + ` − ${Math.round(chain.mug * 100)}% mug risk − ${Math.round(chain.margin * 100)}% your profit`
           + ` → bid up to ${fmtChatPrice(chain.buyMax)}`;
         badge.appendChild(ded);
 
+        // For market-anchored weapons the headline + "under/over your max" delta
+        // already carry the decision against the live bid, so skip the duplicate
+        // sentence here (it also avoids it disagreeing with the headline PASS,
+        // which is about the comp floor, not this auction's current bid).
         const cb = Number(s.currentBid);
-        if (Number.isFinite(cb) && cb > 0) {
+        if (!plan && Number.isFinite(cb) && cb > 0) {
           const verd = document.createElement('div');
           verd.className = 'rwth-card-ref rwth-card-verdict';
           verd.textContent = cb <= chain.buyMax
@@ -6869,22 +6962,13 @@
       }
 
       // ── ladder ────────────────────────────────────────────────────────
-      // Corrected venue model (see sellLadder): bazaar = forum < item market.
-      // Auction is a range — relist floor → typical clearing. All rungs anchor
-      // on the same bracket price the buy-max uses, so the card tells one story.
+      // RESALE venues only (corrected model: bazaar = forum < item market). The
+      // auction is where you BUY, not a resale rung — folding it in here is what
+      // made the old "Auction 701–823m" line read like a bid sitting above the
+      // 785m bazaar resale. The auction buy decision now lives in the headline.
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
-      const fmtLadderRange = (lo, hi) => {
-        const a2 = (lo == null) ? null : Number(lo);
-        const b2 = (hi == null) ? null : Number(hi);
-        if (a2 == null && b2 == null) return null;
-        if (a2 == null) return fmtChatPrice(b2);
-        if (b2 == null) return fmtChatPrice(a2);
-        const loV = Math.min(a2, b2), hiV = Math.max(a2, b2);
-        return loV === hiV ? fmtChatPrice(loV) : `${fmtChatPrice(loV)}–${fmtChatPrice(hiV)}`;
-      };
       const rungs = [
-        ['Auction',        fmtLadderRange(ladder.auctionFloor, ladder.auctionClearing)],
         ['Bazaar / Forum', ladder.bazaar != null ? fmtChatPrice(ladder.bazaar) : null],
         ['Item market',    ladder.market != null ? fmtChatPrice(ladder.market) : null],
         ['Floor',          ladder.floor  != null ? fmtChatPrice(ladder.floor)  : null],
