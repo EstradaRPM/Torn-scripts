@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.88
+// @version      0.3.89
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.88';
+  const SCRIPT_VERSION = '0.3.89';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -279,7 +279,11 @@
       // location checkboxes above. When on, the builders apply the 5%
       // grossFromNet gross-up and render the markup-notice callout. Default off.
       const markup = s.markup === true;
-      return { identity, theme, copy, sections, locations, availability, images, markup };
+      // #331 — optional "include mug buffer" toggle layered on top of markup.
+      // Only meaningful when markup is on; the builders read it together with the
+      // markup flag before applying the mug gross-up. Default off.
+      const mugMarkup = s.mugMarkup === true;
+      return { identity, theme, copy, sections, locations, availability, images, markup, mugMarkup };
     },
   };
 
@@ -399,6 +403,10 @@
       // from `locations` — ticking Item Market never changes prices. Replaces the
       // retired `rwth_adv_mode` field (migrated in hydrate).
       markup: false,
+      // #331 — when item-market markup is on, also gross the listing up to cover
+      // a possible mug on the cash after the sale, using intel.mugBuffer. Default
+      // off so current item-market prices are unchanged until opted in.
+      mugMarkup: false,
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -1871,13 +1879,22 @@
   // *roundest* is chosen (1-2-5 ×10ⁿ steps, largest first) — the 1% tolerance
   // exists precisely to allow a clean, round listing number. Returns null for a
   // missing/non-positive list price. Pure.
-  function itemMarketListPrice(listPrice, fee) {
+  //
+  // #331 — an optional mug fraction grosses the listing up further so the price
+  // still nets the ask after BOTH the fee and a possible mug on the cash. The
+  // fee and the mug apply in sequence, so they compound: gross = net / ((1 − fee)
+  // × (1 − mug)). With mug 0 (the default) the divisor collapses to (1 − fee) and
+  // the math is byte-identical to the fee-only path.
+  function itemMarketListPrice(listPrice, fee, mug) {
     const net = Number(listPrice);
     if (!Number.isFinite(net) || net <= 0) return null;
     const f = fee != null ? fee : MARKET_FEE;
-    const ideal = net / (1 - f);
-    const lo = (net * 0.99) / (1 - f);   // gross whose net is 1% under list
-    const hi = (net * 1.01) / (1 - f);   // gross whose net is 1% over list
+    const m = Number(mug);
+    const mugFrac = Number.isFinite(m) && m > 0 ? m : 0;
+    const divisor = (1 - f) * (1 - mugFrac);
+    const ideal = net / divisor;
+    const lo = (net * 0.99) / divisor;   // gross whose net is 1% under list
+    const hi = (net * 1.01) / divisor;   // gross whose net is 1% over list
     // Walk 1-2-5 ×10ⁿ steps from coarse to fine; the first step with a multiple
     // inside [lo, hi] is the roundest. Snap to the multiple nearest the ideal.
     for (let p = 1e12; p >= 1; p /= 10) {
@@ -2420,14 +2437,15 @@
 
   // One checkbox-selected ledger item on the Advertise tab. The list-price and
   // image-URL inputs persist straight onto the ledger row via syncAdvertiseEdit.
-  function buildAdvItemRow(item, checked, imgOpen, markup) {
+  function buildAdvItemRow(item, checked, imgOpen, markup, mug) {
     const bonus = fmtBonuses(item);
     const hasImg = !!(item.gyazoUrl && String(item.gyazoUrl).trim());
     // Markup on (#321) — a read-only hint: the marked-up gross to list at on
     // the item market, plus the net it clears (≈ the advertised list price).
+    // #331 — a non-zero mug fraction grosses the listing up further.
     let marketHint = '';
     if (markup) {
-      const gross = itemMarketListPrice(item.listPrice);
+      const gross = itemMarketListPrice(item.listPrice, null, mug);
       if (gross != null) {
         marketHint = `<div class="rwth-adv-market">Item market: `
           + `<b>${escapeAttr(fmtMoney(gross))}</b> `
@@ -2556,6 +2574,11 @@
     const ui = (mem && mem.ui) || MEM.ui;
     const intel = (mem && mem.intel) || MEM.intel;
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
+    // #331 — when both markup and the "include mug buffer" toggle are on, the
+    // per-item item-market hint grosses up to also cover a mug, using the user's
+    // existing intel.mugBuffer cushion (a percent). Off ⇒ mug 0 ⇒ fee-only price.
+    const mugMarkup = resolved.mugMarkup;
+    const mugFrac = (markup && mugMarkup) ? (Number(intel.mugBuffer) || 0) / 100 : 0;
     // #324 — the shop banner + per-surface picture overrides moved here from the
     // Settings tab. They reuse the Settings `image` field renderer (button + URL
     // popover) so the same persistence path (toggle-setimg/close-setimg) applies.
@@ -2571,7 +2594,7 @@
         help: 'Optional. A different picture for your signature. Blank uses the shop banner.' },
     ];
     const itemRows = listed.length
-      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id, markup)).join('')
+      ? listed.map(i => buildAdvItemRow(i, isChecked(i), A.imgEditId === i.id, markup, mugFrac)).join('')
       : `<div class="rwth-placeholder">No listed items yet.</div>`;
     const txRows = transactions.length
       ? transactions.map(buildTxRow).join('')
@@ -2623,12 +2646,21 @@
                  placeholder="${escapeAttr(ADV_COPY_DEFAULTS.markupNotice)}"
                  autocomplete="off" spellcheck="false">
         </label>` : '';
+    // #331 — the "include mug buffer" toggle surfaces only when markup is on. It
+    // grosses each item-market list price up further (using the mug cushion from
+    // Settings) so the price still nets the ask after both the fee and a mug.
+    const mugMarkupField = markup ? `
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-mug${mugMarkup ? ' checked' : ''}>
+          Also cover a mug on the sale (lists higher so the price after fees and a possible mug still nets your ask, using your ${Number(intel.mugBuffer) || 0}% mug cushion)
+        </label>` : '';
     const itemsBody = `
         <label class="rwth-intel-check">
           <input type="checkbox" data-adv-markup${markup ? ' checked' : ''}>
           Mark prices up for the item market (lists 5% over your ask so the price after fees still nets your ask)
         </label>
         <span class="rwth-field-help">This is the only control that changes your prices. It shows each item-market list price on the rows below and adds a notice to your posts. It never changes where buyers find your items.</span>
+        ${mugMarkupField}
         ${markupNoticeField}
         ${itemRows}`;
 
@@ -2961,6 +2993,14 @@
     // decoupled from the location checkboxes; it is the only control that prices.
     if (e.target.matches && e.target.matches('[data-adv-markup]')) {
       MEM.settings = { ...MEM.settings, markup: e.target.checked };
+      Store.set('rwth_settings', MEM.settings);
+      render();
+      return;
+    }
+    // #331 — the "include mug buffer" toggle persists to rwth_settings and
+    // re-renders so the per-item item-market hint grosses up to also cover a mug.
+    if (e.target.matches && e.target.matches('[data-adv-mug]')) {
+      MEM.settings = { ...MEM.settings, mugMarkup: e.target.checked };
       Store.set('rwth_settings', MEM.settings);
       render();
       return;
