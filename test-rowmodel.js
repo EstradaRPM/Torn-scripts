@@ -1,6 +1,7 @@
 // node test-rowmodel.js
-// Tests for RowModel.forItem (issue #336, #325 slice a) — the pure per-row
-// projection a ledger row renders: { status, buy, ask, net, age }. Mirrors
+// Tests for RowModel.forItem (issues #336 slice a, #338 slice b) — the pure
+// per-row projection a ledger row renders:
+// { status, buy, ask, net, roiPct, roiKind, age, belowCost }. Mirrors
 // test-ledgerstats.js's plain-assert style and loads the shipped .user.js
 // directly (ADR-0002 seam) so the real code is exercised. External behavior
 // only: feed an item + injected now, assert the projection.
@@ -65,6 +66,9 @@ console.log('\nheld row');
   assertEq('ask null (no listPrice)', m.ask, null);
   assertEq('net null (not sold)', m.net, null);
   assertEq('age = buy-anchored span', m.age, 3);
+  assertEq('held: no ROI kind', m.roiKind, null);
+  assertEq('held: roiPct null', m.roiPct, null);
+  assertEq('held: not below cost', m.belowCost, false);
 }
 
 // ── listed: buy + ask present, net not-set ────────────────────────────────────
@@ -77,6 +81,9 @@ console.log('\nlisted row');
   assertEq('ask = listPrice', m.ask, 1500);
   assertEq('net null (not sold)', m.net, null);
   assertEq('age buy-anchored', m.age, 3);
+  assertEq('listed: projected ROI kind', m.roiKind, 'projected');
+  assertEq('listed: projected ROI off (ask-buy)/buy', m.roiPct, 0.5);
+  assertEq('listed above cost: not below cost', m.belowCost, false);
 }
 
 // ── sold: all three legs present ──────────────────────────────────────────────
@@ -89,15 +96,54 @@ console.log('\nsold row');
   assertEq('ask = listPrice still present', m.ask, 1500);
   assertEq('net = saleNet', m.net, 1450);
   assertEq('age buy-anchored (now - buy, not sold span)', m.age, 5);
+  assertEq('sold: realized ROI kind', m.roiKind, 'realized');
+  assertEq('sold: realized ROI off (net-buy)/buy', m.roiPct, 0.45);
+  assertEq('sold: never below cost', m.belowCost, false);
 }
 
-// ── below-cost ask is just a smaller number here (no flag in this slice) ───────
+// ── below-cost: a listed ask below buy flags belowCost (loud loss marker) ──────
 
 console.log('\nlisted below cost');
 {
   const m = RowModel.forItem(listed({ listPrice: 800 }), NOW);
   assertEq('ask reflects the low list price', m.ask, 800);
   assertEq('buy unchanged', m.buy, 1000);
+  assertEq('ask < buy -> belowCost true', m.belowCost, true);
+  assertEq('still projected (listed)', m.roiKind, 'projected');
+  assertEq('projected ROI is the negative margin', m.roiPct, -0.2);
+
+  const mEq = RowModel.forItem(listed({ listPrice: 1000 }), NOW);
+  assertEq('ask == buy -> NOT below cost', mEq.belowCost, false);
+  assertEq('ask == buy -> ROI 0', mEq.roiPct, 0);
+
+  const mHeldLow = RowModel.forItem(held({ listPrice: 800 }), NOW);
+  assertEq('held with a stray low list price -> never below cost', mHeldLow.belowCost, false);
+
+  const mSoldLow = RowModel.forItem(sold({ listPrice: 800, saleNet: 700 }), NOW);
+  assertEq('sold -> never below cost (realized, not a live ask)', mSoldLow.belowCost, false);
+}
+
+// ── ROI is null (no kind, no NaN) when there is no basis or the leg is missing ─
+
+console.log('\nROI null cases');
+{
+  const mNoAsk = RowModel.forItem(listed({ listPrice: null }), NOW);
+  assertEq('listed missing ask -> roiKind null', mNoAsk.roiKind, null);
+  assertEq('listed missing ask -> roiPct null', mNoAsk.roiPct, null);
+
+  const mNoNet = RowModel.forItem(sold({ saleNet: null }), NOW);
+  assertEq('sold missing net -> roiKind null', mNoNet.roiKind, null);
+  assertEq('sold missing net -> roiPct null', mNoNet.roiPct, null);
+
+  const mZeroBuy = RowModel.forItem(listed({ buyPrice: 0 }), NOW);
+  assertEq('zero buy -> roiPct null (no divide-by-zero)', mZeroBuy.roiPct, null);
+  assertEq('zero buy -> roiKind null', mZeroBuy.roiKind, null);
+
+  const mNoBuy = RowModel.forItem(listed({ buyPrice: null }), NOW);
+  assertEq('absent buy -> roiPct null', mNoBuy.roiPct, null);
+  assertEq('absent buy -> roiKind null', mNoBuy.roiKind, null);
+  assert('zero/absent buy never yields NaN ROI',
+    [mZeroBuy.roiPct, mNoBuy.roiPct].every(v => v === null || Number.isFinite(v)));
 }
 
 // ── not-set discipline: null / '' never coerced to 0 ──────────────────────────
@@ -150,10 +196,15 @@ console.log('\npartial records');
   assertEq('bare item: net null', m.net, null);
   assertEq('bare item: age null', m.age, null);
 
+  assertEq('bare item: roiPct null', m.roiPct, null);
+  assertEq('bare item: roiKind null', m.roiKind, null);
+  assertEq('bare item: not below cost', m.belowCost, false);
+
   const mNull = RowModel.forItem(null, NOW);
   assertEq('null item: status undefined, no throw', mNull.status, undefined);
-  assert('no NaN in any leg', [mNull.buy, mNull.ask, mNull.net, mNull.age]
+  assert('no NaN in any leg', [mNull.buy, mNull.ask, mNull.net, mNull.age, mNull.roiPct]
     .every(v => v === null || Number.isFinite(v)));
+  assertEq('null item: not below cost', mNull.belowCost, false);
 
   const mStr = RowModel.forItem(held({ buyPrice: '1000' }), NOW);
   assertEq('numeric-string buyPrice -> null (strings are not finite numbers)', mStr.buy, null);
