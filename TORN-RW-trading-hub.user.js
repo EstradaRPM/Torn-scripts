@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.92
+// @version      0.3.93
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.92';
+  const SCRIPT_VERSION = '0.3.93';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1223,12 +1223,37 @@
         bucket.value += fin(it.saleNet) || 0;
       }
 
+      // Per-status rollups so each filter chip can show its own count + value,
+      // tying the table back to the dashboard at the point the user acts on it.
+      // held → capital cost (sum buyPrice), listed → ask value (sum finite
+      // listPrice; an unset list price adds 0, never NaN), sold → count only.
+      // Status-keyed (not the saleNet-filtered `sold` above) so each count
+      // matches what the chip's status filter actually shows.
+      const byStatus = {
+        held:   { count: 0, cost: 0 },
+        listed: { count: 0, askValue: 0 },
+        sold:   { count: 0 },
+      };
+      for (const it of list) {
+        if (!it) continue;
+        if (it.status === 'held') {
+          byStatus.held.count += 1;
+          byStatus.held.cost  += cost(it);
+        } else if (it.status === 'listed') {
+          byStatus.listed.count += 1;
+          const lp = fin(it.listPrice);
+          if (lp != null) byStatus.listed.askValue += lp;
+        } else if (it.status === 'sold') {
+          byStatus.sold.count += 1;
+        }
+      }
+
       return {
         realized, realizedRoiPct, pending, capitalDeployed,
         winRate, avgDaysToClear, feesPaid,
         soldCount: sold.length, listedCount: listed.length,
         best, worst, cumulativeProfit,
-        marginBuckets, agingBuckets, venueSplit,
+        marginBuckets, agingBuckets, venueSplit, byStatus,
       };
     },
   };
@@ -1419,18 +1444,34 @@
     const L = (mem && mem.ledger) || { items: [], statusFilter: 'listed' };
     const items = L.items || [];
     const filter = L.statusFilter || 'listed';
+    const now = Date.now();
     const filtered = filter === 'all' ? items : items.filter(i => i.status === filter);
 
-    const filterBtns = STATUS_FILTERS.map(f =>
-      `<button class="rwth-filter${f === filter ? ' rwth-filter-active' : ''}" type="button"
-               data-filter="${f}">${f}</button>`).join('');
+    // Per-chip count + value rollup (#337) so each filter ties back to the
+    // dashboard. held shows capital cost, listed shows ask value, all shows the
+    // total count; sold and all carry no money tail. Compact money (fmtChatPrice)
+    // returns empty for non-positive, so a zero/empty bucket shows count only.
+    const bs = LedgerStats.summarize(items, now).byStatus;
+    const chipMeta = {
+      all:    { count: items.length },
+      held:   { count: bs.held.count,   value: bs.held.cost,       suffix: 'cost' },
+      listed: { count: bs.listed.count, value: bs.listed.askValue, suffix: 'at ask' },
+      sold:   { count: bs.sold.count },
+    };
+    const filterBtns = STATUS_FILTERS.map(f => {
+      const m = chipMeta[f] || { count: 0 };
+      const money = m.value ? fmtChatPrice(m.value) : '';
+      const tail = money ? ` <span class="rwth-filter-val">${money} ${m.suffix}</span>` : '';
+      return `<button class="rwth-filter${f === filter ? ' rwth-filter-active' : ''}" type="button"
+               data-filter="${f}"><span class="rwth-filter-name">${f}</span> <span class="rwth-filter-count">(${m.count})</span>${tail}</button>`;
+    }).join('');
 
     const intel = (mem && mem.intel) || MEM.intel;
     const rowCtx = {
       intelLedger: !!(intel.enabled && intel.enabled.ledger),
       priceCheckId: L.priceCheckId,
       priceCheckResults: L.priceCheckResults || {},
-      now: Date.now(),
+      now,
     };
     const list = filtered.length
       ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId, rowCtx)).join('')
@@ -1440,7 +1481,7 @@
     const err = mem && mem.fetchError;
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     return `<div class="rwth-ledger">
-      ${buildLedgerDashboard(items, Date.now(), fold.analytics)}
+      ${buildLedgerDashboard(items, now, fold.analytics)}
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
         <div class="rwth-ledger-actions">
@@ -4450,13 +4491,15 @@
       .rwth-rarity-yellow { background: #ffd93b; }
       .rwth-rarity-orange { background: #ff9f1c; }
       .rwth-rarity-red    { background: var(--rwth-danger); }
-      .rwth-filters { display: flex; gap: 4px; }
+      .rwth-filters { display: flex; gap: 4px; flex-wrap: wrap; }
       .rwth-filter {
         background: none; border: 1px solid var(--rwth-border); border-radius: 4px;
         color: var(--rwth-muted); cursor: pointer; padding: 4px 8px;
         font: 600 10px var(--rwth-font-mono); text-transform: uppercase; letter-spacing: .3px;
       }
       .rwth-filter:hover { color: var(--rwth-text); }
+      .rwth-filter-count { font-weight: 400; opacity: .75; }
+      .rwth-filter-val { text-transform: none; font-weight: 400; opacity: .8; }
       .rwth-filter-active { color: var(--rwth-bg); background: var(--rwth-accent); border-color: var(--rwth-accent); }
       .rwth-btn-add { padding: 5px 12px; }
 

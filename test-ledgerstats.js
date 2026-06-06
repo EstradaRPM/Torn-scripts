@@ -337,6 +337,56 @@ console.log('\nvenueSplit — populated by count and value');
   assertEq('other value', s.venueSplit.other.value, 900);
 }
 
+// ── per-status rollups (#337) ─────────────────────────────────────────────────
+
+console.log('\nbyStatus — empty');
+{
+  const s = LedgerStats.summarize([], NOW);
+  assertEq('held count 0', s.byStatus.held.count, 0);
+  assertEq('held cost 0', s.byStatus.held.cost, 0);
+  assertEq('listed count 0', s.byStatus.listed.count, 0);
+  assertEq('listed askValue 0', s.byStatus.listed.askValue, 0);
+  assertEq('sold count 0', s.byStatus.sold.count, 0);
+}
+
+console.log('\nbyStatus — counts and value totals');
+{
+  const s = LedgerStats.summarize([
+    held({ buyPrice: 1000 }),
+    held({ buyPrice: 2500 }),
+    listed({ buyPrice: 4000, listPrice: 6000 }),
+    listed({ buyPrice: 3000, listPrice: 5000 }),
+    sold(),
+    sold(),
+    sold(),
+  ], NOW);
+  assertEq('held count', s.byStatus.held.count, 2);
+  assertEq('held cost sums buyPrice', s.byStatus.held.cost, 3500);
+  assertEq('listed count', s.byStatus.listed.count, 2);
+  assertEq('listed askValue sums listPrice', s.byStatus.listed.askValue, 11000);
+  assertEq('sold count (status-keyed)', s.byStatus.sold.count, 3);
+}
+
+console.log('\nbyStatus — unset listPrice contributes 0, never NaN');
+{
+  const s = LedgerStats.summarize([
+    listed({ buyPrice: 1000, listPrice: null }),       // unset → 0 askValue
+    listed({ buyPrice: 1000, listPrice: undefined }),  // unset → 0 askValue
+    listed({ buyPrice: 1000, listPrice: 2500 }),       // the only priced one
+  ], NOW);
+  assertEq('listed count includes unpriced rows', s.byStatus.listed.count, 3);
+  assertEq('askValue counts only the finite listPrice', s.byStatus.listed.askValue, 2500);
+  assert('askValue finite (no NaN)', Number.isFinite(s.byStatus.listed.askValue));
+}
+
+console.log('\nbyStatus — sold count ignores saleNet finiteness');
+{
+  // soldCount filters by finite saleNet; the chip count is purely status-keyed.
+  const s = LedgerStats.summarize([sold({ saleNet: null }), sold({ saleNet: 1400 })], NOW);
+  assertEq('soldCount drops the unpriced sale', s.soldCount, 1);
+  assertEq('byStatus.sold counts both', s.byStatus.sold.count, 2);
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
