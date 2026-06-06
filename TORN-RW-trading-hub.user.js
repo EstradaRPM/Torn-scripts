@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.89
+// @version      0.3.90
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.89';
+  const SCRIPT_VERSION = '0.3.90';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -7204,7 +7204,14 @@
           head.appendChild(amEl);
         }
       }
-      if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && buy.max != null) {
+      // Orange/red weapon classes return buy.max === null by design (thin,
+      // illiquid tier — band only, no point max), so the floor would be dropped
+      // for exactly the tier that most needs a sanity anchor. Show it for those
+      // classes too; s.bbFloor already reflects the orange2/red2 multiplier for
+      // 2-bonus pieces (computed via bonusCount upstream). duneRiotArmor stays out.
+      const showsBBFloor = buy.max != null
+        || s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon';
+      if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && showsBBFloor) {
         const fl = document.createElement('span');
         fl.className = 'rwth-card-bbfloor';
         fl.textContent = `bazaar floor ${fmtChatPrice(s.bbFloor)}`;
