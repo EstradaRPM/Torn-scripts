@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.94
+// @version      0.3.95
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.94';
+  const SCRIPT_VERSION = '0.3.95';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -811,7 +811,16 @@
       // Loud only for a guaranteed loss: a listed row whose finite ask sits
       // below its finite buy. A held/sold row is never flagged below-cost.
       const belowCost = it.status === 'listed' && ask != null && buy != null && ask < buy;
-      return { status: it.status, buy, ask, net, roiPct, roiKind, age, belowCost };
+      // Aging severity for live capital only (held + listed): buy-anchored off
+      // the same age span, so it tracks how long money has actually been tied
+      // up — not list/de-list churn. Sold has banked out, so it is never aged
+      // (null), as is any row with a non-finite buy stamp (age null). Bands:
+      // ok < 14d, amber 14-30d, red >= 30d.
+      let agingLevel = null;
+      if ((it.status === 'held' || it.status === 'listed') && age != null) {
+        agingLevel = age < 14 ? 'ok' : age < 30 ? 'amber' : 'red';
+      }
+      return { status: it.status, buy, ask, net, roiPct, roiKind, age, belowCost, agingLevel };
     },
   };
 
@@ -820,16 +829,20 @@
   // Legs the RowModel leaves null (held has no ask/net; listed has no net)
   // render as a dimmed em-dash so the strip reads consistently across statuses.
   function rowStrip(m) {
-    const cell = (k, v) =>
-      `<span class="rwth-cell${v == null ? ' rwth-cell-empty' : ''}">`
+    const cell = (k, v, cls) =>
+      `<span class="rwth-cell${v == null ? ' rwth-cell-empty' : ''}${cls ? ' ' + cls : ''}">`
       + `<span class="rwth-cell-k">${k}</span>`
       + `<span class="rwth-cell-v">${v == null ? '—' : v}</span></span>`;
+    // Aging severity colors the age cell so idle capital separates from fresh
+    // stock; ok is the neutral default (no class).
+    const ageCls = m.agingLevel === 'amber' ? 'rwth-cell-amber'
+      : m.agingLevel === 'red' ? 'rwth-cell-red' : '';
     return `<div class="rwth-row-strip">`
       + cell('buy', m.buy == null ? null : fmtMoney(m.buy))
       + cell('ask', m.ask == null ? null : fmtMoney(m.ask))
       + cell('net', m.net == null ? null : fmtMoney(m.net))
       + roiCell(m)
-      + cell('age', m.age == null ? null : m.age + 'd')
+      + cell('age', m.age == null ? null : m.age + 'd', ageCls)
       + `</div>`;
   }
 
@@ -4364,6 +4377,7 @@
         --rwth-text: #cfe;                   /* body text                   */
         --rwth-muted: #8aa;                  /* secondary / muted text      */
         --rwth-danger: #ff5d5d;              /* errors / destructive        */
+        --rwth-warn: #ffb347;                /* aging warning / amber       */
         /* Secondary-tinted borders & fills, faint → bright. */
         --rwth-fill-faint: #00e5ff0a;
         --rwth-fill-hover: #00e5ff11;
@@ -4656,6 +4670,8 @@
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .rwth-cell-empty .rwth-cell-v { color: var(--rwth-muted); opacity: .55; }
+      .rwth-cell-amber .rwth-cell-v { color: var(--rwth-warn); }
+      .rwth-cell-red .rwth-cell-v { color: var(--rwth-danger); font-weight: 700; }
       .rwth-status {
         font: 700 10px var(--rwth-font-mono); text-transform: uppercase;
         padding: 2px 6px; border-radius: 3px;

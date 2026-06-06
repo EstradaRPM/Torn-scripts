@@ -1,7 +1,7 @@
 // node test-rowmodel.js
-// Tests for RowModel.forItem (issues #336 slice a, #338 slice b) — the pure
-// per-row projection a ledger row renders:
-// { status, buy, ask, net, roiPct, roiKind, age, belowCost }. Mirrors
+// Tests for RowModel.forItem (issues #336 slice a, #338 slice b, #339 slice c) —
+// the pure per-row projection a ledger row renders:
+// { status, buy, ask, net, roiPct, roiKind, age, belowCost, agingLevel }. Mirrors
 // test-ledgerstats.js's plain-assert style and loads the shipped .user.js
 // directly (ADR-0002 seam) so the real code is exercised. External behavior
 // only: feed an item + injected now, assert the projection.
@@ -216,6 +216,32 @@ console.log('\nage spans');
 {
   assertEq('13 days', RowModel.forItem(held({ buyTimestamp: NOW - 13 * DAY }), NOW).age, 13);
   assertEq('30 days', RowModel.forItem(held({ buyTimestamp: NOW - 30 * DAY }), NOW).age, 30);
+}
+
+// ── aging severity: buy-anchored bands for live capital only ───────────────────
+
+console.log('\naging level');
+{
+  // ok < 14d, amber 14-30d, red >= 30d — band boundaries on held + listed.
+  assertEq('held 0d -> ok', RowModel.forItem(held({ buyTimestamp: NOW }), NOW).agingLevel, 'ok');
+  assertEq('held just under 14d -> ok', RowModel.forItem(held({ buyTimestamp: NOW - 13 * DAY }), NOW).agingLevel, 'ok');
+  assertEq('held exactly 14d -> amber', RowModel.forItem(held({ buyTimestamp: NOW - 14 * DAY }), NOW).agingLevel, 'amber');
+  assertEq('held just under 30d -> amber', RowModel.forItem(held({ buyTimestamp: NOW - 29 * DAY }), NOW).agingLevel, 'amber');
+  assertEq('held exactly 30d -> red', RowModel.forItem(held({ buyTimestamp: NOW - 30 * DAY }), NOW).agingLevel, 'red');
+  assertEq('held well over 30d -> red', RowModel.forItem(held({ buyTimestamp: NOW - 90 * DAY }), NOW).agingLevel, 'red');
+
+  // Listed rows age the same way (live capital).
+  assertEq('listed 20d -> amber', RowModel.forItem(listed({ buyTimestamp: NOW - 20 * DAY }), NOW).agingLevel, 'amber');
+  assertEq('listed 40d -> red', RowModel.forItem(listed({ buyTimestamp: NOW - 40 * DAY }), NOW).agingLevel, 'red');
+
+  // Sold has banked out — never aged, however old the buy stamp.
+  assertEq('sold 5d -> agingLevel null', RowModel.forItem(sold({ buyTimestamp: NOW - 5 * DAY }), NOW).agingLevel, null);
+  assertEq('sold 90d -> agingLevel null', RowModel.forItem(sold({ buyTimestamp: NOW - 90 * DAY }), NOW).agingLevel, null);
+
+  // Non-finite buy stamp -> age null -> agingLevel null.
+  assertEq('held no buy stamp -> agingLevel null', RowModel.forItem(held({ buyTimestamp: null }), NOW).agingLevel, null);
+  assertEq('held NaN buy stamp -> agingLevel null', RowModel.forItem(held({ buyTimestamp: NaN }), NOW).agingLevel, null);
+  assertEq('held out-of-order stamp -> agingLevel null', RowModel.forItem(held({ buyTimestamp: NOW + 2 * DAY }), NOW).agingLevel, null);
 }
 
 // ── summary ────────────────────────────────────────────────────────────────────
