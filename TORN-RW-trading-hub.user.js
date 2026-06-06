@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.93
+// @version      0.3.94
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.93';
+  const SCRIPT_VERSION = '0.3.94';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -789,24 +789,36 @@
     forItem(item, now) {
       const it = item || {};
       const fin = v => (Number.isFinite(v) ? v : null);
+      const buy = fin(it.buyPrice);
+      const ask = fin(it.listPrice);
+      const net = fin(it.saleNet);
       // Guard the raw buy stamp here: spanDays coerces via Number(), so a null
       // stamp would read as 0 (epoch) and yield a bogus multi-thousand-day age.
       const age = (Number.isFinite(it.buyTimestamp) && Number.isFinite(now))
         ? spanDays(it.buyTimestamp, now) : null;
-      return {
-        status: it.status,
-        buy: fin(it.buyPrice),
-        ask: fin(it.listPrice),
-        net: fin(it.saleNet),
-        age,
-      };
+      // ROI distinguishes hope from banked money: a listed row projects off its
+      // ask ((ask-buy)/buy), a sold row realizes off its net ((net-buy)/buy).
+      // roiKind/roiPct stay null when there is no buy basis to divide by (0 or
+      // absent) or the measured leg is missing — never a divide-by-zero or NaN.
+      let roiPct = null, roiKind = null;
+      if (buy != null && buy !== 0) {
+        if (it.status === 'listed' && ask != null) {
+          roiPct = (ask - buy) / buy; roiKind = 'projected';
+        } else if (it.status === 'sold' && net != null) {
+          roiPct = (net - buy) / buy; roiKind = 'realized';
+        }
+      }
+      // Loud only for a guaranteed loss: a listed row whose finite ask sits
+      // below its finite buy. A held/sold row is never flagged below-cost.
+      const belowCost = it.status === 'listed' && ask != null && buy != null && ask < buy;
+      return { status: it.status, buy, ask, net, roiPct, roiKind, age, belowCost };
     },
   };
 
   // Line 2 of a row: the lifecycle strip. A fixed-cell CSS grid (buy / ask /
-  // net / age) so every figure lands in the same column down the list. Legs the
-  // RowModel leaves null (held has no ask/net; listed has no net) render as a
-  // dimmed em-dash so the strip reads consistently across statuses.
+  // net / roi / age) so every figure lands in the same column down the list.
+  // Legs the RowModel leaves null (held has no ask/net; listed has no net)
+  // render as a dimmed em-dash so the strip reads consistently across statuses.
   function rowStrip(m) {
     const cell = (k, v) =>
       `<span class="rwth-cell${v == null ? ' rwth-cell-empty' : ''}">`
@@ -816,8 +828,39 @@
       + cell('buy', m.buy == null ? null : fmtMoney(m.buy))
       + cell('ask', m.ask == null ? null : fmtMoney(m.ask))
       + cell('net', m.net == null ? null : fmtMoney(m.net))
+      + roiCell(m)
       + cell('age', m.age == null ? null : m.age + 'd')
       + `</div>`;
+  }
+
+  // The ROI cell, rendered so hope never reads like banked money: a projected
+  // (listed) ROI is tilde-prefixed and muted (~+47%); a realized (sold) ROI is
+  // solid and P/L-colored (+80%). A below-cost listed ask gets a loud,
+  // distinct marker so a guaranteed loss never reads like a small win. Null
+  // ROI (no buy basis or missing leg) renders the dimmed em-dash like any
+  // not-set leg.
+  function roiCell(m) {
+    if (m.roiPct == null) {
+      return `<span class="rwth-cell rwth-cell-empty">`
+        + `<span class="rwth-cell-k">roi</span>`
+        + `<span class="rwth-cell-v">—</span></span>`;
+    }
+    const pct = Math.round(m.roiPct * 100);
+    const body = (pct >= 0 ? '+' : '') + pct + '%';
+    if (m.belowCost) {
+      return `<span class="rwth-cell rwth-cell-belowcost">`
+        + `<span class="rwth-cell-k">roi</span>`
+        + `<span class="rwth-cell-v">! ${body}</span></span>`;
+    }
+    if (m.roiKind === 'projected') {
+      return `<span class="rwth-cell">`
+        + `<span class="rwth-cell-k">roi</span>`
+        + `<span class="rwth-cell-v rwth-roi-projected">~${body}</span></span>`;
+    }
+    const pl = pct >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+    return `<span class="rwth-cell">`
+      + `<span class="rwth-cell-k">roi</span>`
+      + `<span class="rwth-cell-v rwth-roi ${pl}">${body}</span></span>`;
   }
 
   function buildLedgerRow(item, expanded, ctx) {
@@ -4600,7 +4643,7 @@
       .rwth-row-bonus { font: 400 11px var(--rwth-font-mono); color: var(--rwth-secondary); }
       .rwth-row-price { font: 600 11px var(--rwth-font-mono); color: var(--rwth-text); }
       .rwth-row-strip {
-        display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 6px; align-items: baseline;
       }
       .rwth-cell { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
@@ -4622,6 +4665,12 @@
       .rwth-roi { font: 700 11px var(--rwth-font-mono); }
       .rwth-roi-pos { color: var(--rwth-accent); }
       .rwth-roi-neg { color: var(--rwth-danger); }
+      .rwth-roi-projected { color: var(--rwth-muted); font-weight: 400; opacity: .85; }
+      .rwth-cell-belowcost .rwth-cell-k { color: var(--rwth-danger); }
+      .rwth-cell-belowcost .rwth-cell-v {
+        color: #fff; background: var(--rwth-danger); font-weight: 700;
+        padding: 0 5px; border-radius: 3px;
+      }
       .rwth-row-detail {
         border-top: 1px solid var(--rwth-border-soft); padding: 8px 9px;
         display: flex; flex-direction: column; gap: 8px;
