@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.90
+// @version      0.3.91
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.90';
+  const SCRIPT_VERSION = '0.3.91';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4867,25 +4867,6 @@
     document.head.appendChild(style);
   }
 
-  // ─── similarity (pure) ───────────────────────────────────────────────────────
-  // Mirrors Price Checker's calcRange exactly (ADR-0002 pure seam).
-  const similarity = {
-    /**
-     * calcRange(value, tolerancePct) → { min, max }
-     * tolerancePct === 0  → exact match (min === max === value)
-     * otherwise           → floor(value*(1-t)) / ceil(value*(1+t))
-     *                        where t = tolerancePct / 100
-     */
-    calcRange(value, tolerancePct) {
-      if (tolerancePct === 0) return { min: value, max: value };
-      const t = tolerancePct / 100;
-      return {
-        min: Math.floor(value * (1 - t)),
-        max: Math.ceil(value  * (1 + t)),
-      };
-    },
-  };
-
   // ─── Search layer (ADR-0003) ─────────────────────────────────────────────────
   // Impure: our own Supabase auction history (self-owned DB, see auction-db/) +
   // the Torn item market (official API), with a 5-min LRU cache around Supabase only (mirrors the
@@ -5710,115 +5691,6 @@
   };
 
   const PricingEngine = {
-    /**
-     * verdict(listing, comps, opts) → { tier, reference, band, compsUsed, tolerance,
-     *                                    slope?, slopeProjection?, thin? }
-     *
-     * listing  – { price: number, quality: number }
-     * comps    – Array<{ price: number, quality: number }>
-     *            pre-filtered for item + bonus-name match; quality window applied here.
-     * opts     – { tolerance?: number, band?: number }
-     *            tolerance default 10 (widens on thin); band default 7.
-     *
-     * Widen-on-thin: starts at ±10%, widens to ±20%, then ±30% if count < 3.
-     * Flags thin:true when widened.  tier='thin' if still <3; tier='none' if 0 comps.
-     *
-     * Slope: computed only when listing.quality is outside [min,max] of comp qualities.
-     * Never replaces median reference — surfaced as supplementary data.
-     */
-    verdict(listing, comps, opts = {}) {
-      const band         = opts.band ?? 7;
-      const startTol     = opts.tolerance ?? 10;
-      const widths       = [startTol, 20, 30];
-
-      let filtered   = [];
-      let tolerance  = startTol;
-      let thin       = false;
-
-      for (const tol of widths) {
-        const { min, max } = similarity.calcRange(listing.quality, tol);
-        filtered  = comps.filter(c => c.quality >= min && c.quality <= max);
-        tolerance = tol;
-        if (filtered.length >= 3) break;
-        if (tol !== startTol) thin = true;  // widened at least once
-      }
-
-      if (filtered.length === 0) {
-        return { tier: 'none', reference: null, band, compsUsed: 0, tolerance };
-      }
-
-      if (filtered.length < 3) {
-        thin = true;
-        return { tier: 'thin', reference: null, band, compsUsed: filtered.length, tolerance, thin };
-      }
-
-      const reference = _median(filtered.map(c => c.price));
-      const lo        = reference * (1 - band / 100);
-      const hi        = reference * (1 + band / 100);
-
-      let tier;
-      if (listing.price < lo)      tier = 'good';
-      else if (listing.price > hi) tier = 'over';
-      else                          tier = 'fair';
-
-      const result = { tier, reference, band, compsUsed: filtered.length, tolerance };
-      if (thin) result.thin = true;
-
-      // Slope branch — only when listing quality is outside the comp quality range.
-      const qualities   = filtered.map(c => c.quality);
-      const minQuality  = Math.min(...qualities);
-      const maxQuality  = Math.max(...qualities);
-
-      if (listing.quality < minQuality || listing.quality > maxQuality) {
-        if (maxQuality !== minQuality) {
-          // Use the comps at the quality extremes for a simple two-point slope.
-          const atMin = filtered.filter(c => c.quality === minQuality);
-          const atMax = filtered.filter(c => c.quality === maxQuality);
-          const minPrice = _median(atMin.map(c => c.price));
-          const maxPrice = _median(atMax.map(c => c.price));
-          result.slope           = (maxPrice - minPrice) / (maxQuality - minQuality);
-          result.slopeProjection = minPrice + (listing.quality - minQuality) * result.slope;
-        }
-      }
-
-      return result;
-    },
-
-    /**
-     * ledgerSuggest(listingComps, buyPrice, opts) →
-     *   { expected, suggestedList, projectedNet, profit, roi }
-     *
-     * listingComps – Array<{ price: number }> — the comp set for this item.
-     * buyPrice     – number — what you paid.
-     * opts         – { markup?: number, mugBuffer?: number }
-     *                markup     default 1.20  (target sell multiplier on cost)
-     *                mugBuffer  default 10    (% above expected to buffer above market)
-     *                market fee hard-coded 5%.
-     *
-     * suggestedList = max(buyPrice × markup, expected × (1 + mugBuffer%))
-     * This ensures you always meet your markup target AND stay above the
-     * mugBuffer threshold above market (neither alone is sufficient in all cases).
-     */
-    ledgerSuggest(listingComps, buyPrice, opts = {}) {
-      const markup    = opts.markup    ?? 1.20;
-      const mugBuffer = opts.mugBuffer ?? 10;
-      const FEE       = 0.05;
-
-      const prices   = listingComps.map(c => c.price).filter(p => typeof p === 'number' && p > 0);
-      const expected = _median(prices) ?? 0;
-
-      const suggestedList = Math.round(
-        Math.max(buyPrice * markup, expected * (1 + mugBuffer / 100))
-      );
-      const projectedNet = Math.round(suggestedList * (1 - FEE));
-      const profit       = projectedNet - buyPrice;
-      const roi          = buyPrice > 0
-        ? Math.round((profit / buyPrice) * 10000) / 100
-        : 0;
-
-      return { expected, suggestedList, projectedNet, profit, roi };
-    },
-
     /**
      * resolveSettings(intel) → { tax, mug, margin, compClampRatio }
      *
@@ -6663,36 +6535,13 @@
         badge.textContent = s.error + askPart;
         return;
       }
-      const v = s.verdict;
-      if (!v || v.tier === 'none') {
-        badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
-        const askPart = (s.askingCount && s.askingMedian != null)
-          ? ` · ${s.askingCount} for sale (typical ${fmtChatPrice(s.askingMedian)})` : '';
-        badge.textContent = 'no comparable sales' + askPart;
-        return;
-      }
-      const labels = { good: 'Good buy', fair: 'Fair', over: 'Overpriced', thin: 'Few sales' };
-      const tierLabel = labels[v.tier] || v.tier;
-      badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-' + v.tier;
-      const parts = [];
-      if (s.classTag) parts.push(s.classTag);
-      parts.push(tierLabel);
-      if (s.listingPrice != null && v.reference != null) {
-        parts.push(`asking ${fmtChatPrice(s.listingPrice)} vs typical ${fmtChatPrice(v.reference)}`);
-      } else if (v.reference != null) {
-        parts.push(`typical ${fmtChatPrice(v.reference)}`);
-      }
-      parts.push(`(${v.compsUsed} similar sales · ±${v.tolerance}% bonus)`);
-      if (v.slopeProjection != null && s.listingQuality != null) {
-        parts.push(`projected ${fmtChatPrice(v.slopeProjection)} at ${s.listingQuality}% quality`);
-      }
-      if (s.bbFloor != null) {
-        parts.push(`bazaar floor ${fmtChatPrice(s.bbFloor)}`);
-      }
-      if (s.askingCount && s.askingMedian != null) {
-        parts.push(`${s.askingCount} for sale (typical ${fmtChatPrice(s.askingMedian)})`);
-      }
-      badge.textContent = parts.join(' · ');
+      // no-comp fallback — the only non-loading/error/skipped state callers
+      // reach (e.g. { error: 'no comparable sales', … } routes through s.error
+      // above; this guards a bare/empty state).
+      badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-none';
+      const askPart = (s.askingCount && s.askingMedian != null)
+        ? ` · ${s.askingCount} for sale (typical ${fmtChatPrice(s.askingMedian)})` : '';
+      badge.textContent = 'no comparable sales' + askPart;
     },
     /**
      * renderMarketFloorCard(infoEl, ctx) — no-cleared-comp fallback (#291).
@@ -8173,7 +8022,6 @@
     AdvertiseGenerator,
     itemMarketListPrice,
     BonusTrashGuard,
-    similarity,
     resolveMarketAnchor,
     PricingEngine,
     CompWidener,
