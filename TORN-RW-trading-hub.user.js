@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.91
+// @version      0.3.92
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.91';
+  const SCRIPT_VERSION = '0.3.92';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -777,44 +777,58 @@
     return Math.round((b - a) / DAY_MS);
   }
 
-  // Status-aware figure cluster for a row head: the numbers that matter for the
-  // item's state. Listed → ask + pending; sold → net + realized + days-to-clear;
-  // held → buy price + aging. Money figures reuse the hub's $ / -$ formatting.
-  function rowFigs(item, now) {
-    const roiCls = n => (n >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg');
-    const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
-    const fig = (k, v, cls) =>
-      `<span class="rwth-fig${cls ? ' ' + cls : ''}">${
-        k ? `<span class="rwth-fig-k">${k}</span> ` : ''}${v}</span>`;
+  // Pure per-row projection — the figures a ledger row renders, with every leg
+  // finite-guarded and null/'' kept as sentinels (never coerced to 0) so a
+  // missing price reads as "not set", not "$0". Absorbs the per-status branching
+  // the old rowFigs tangled inline: buy applies to every row, ask only once a
+  // listPrice exists (held has none), net only once saleNet exists (sold has
+  // it). age is buy-anchored (now - buyTimestamp) via spanDays, so it is null —
+  // never negative — on a non-finite or out-of-order stamp. No DOM / Store /
+  // wall-clock reads; exposed via __RwthPure for the Node test seam (ADR-0002).
+  const RowModel = {
+    forItem(item, now) {
+      const it = item || {};
+      const fin = v => (Number.isFinite(v) ? v : null);
+      // Guard the raw buy stamp here: spanDays coerces via Number(), so a null
+      // stamp would read as 0 (epoch) and yield a bogus multi-thousand-day age.
+      const age = (Number.isFinite(it.buyTimestamp) && Number.isFinite(now))
+        ? spanDays(it.buyTimestamp, now) : null;
+      return {
+        status: it.status,
+        buy: fin(it.buyPrice),
+        ask: fin(it.listPrice),
+        net: fin(it.saleNet),
+        age,
+      };
+    },
+  };
 
-    if (item.status === 'listed') {
-      const ask = item.listPrice;
-      if (ask == null) return fig('ask', '—');
-      const pending = (Number(ask) || 0) - (item.buyPrice || 0);
-      return fig('ask', fmtMoney(ask))
-        + fig('', signed(pending), 'rwth-roi ' + roiCls(pending));
-    }
-    if (item.status === 'sold') {
-      const realized = ROI.compute(item);
-      const days = spanDays(item.buyTimestamp, item.soldTimestamp);
-      return fig('net', item.saleNet != null ? fmtMoney(item.saleNet) : '—')
-        + (realized != null ? fig('', signed(realized), 'rwth-roi ' + roiCls(realized)) : '')
-        + (days != null ? fig('', days + 'd', 'rwth-fig-muted') : '');
-    }
-    // held
-    const age = spanDays(item.buyTimestamp, now);
-    return fig('buy', fmtMoney(item.buyPrice))
-      + (age != null ? fig('', age + 'd held', 'rwth-fig-muted') : '');
+  // Line 2 of a row: the lifecycle strip. A fixed-cell CSS grid (buy / ask /
+  // net / age) so every figure lands in the same column down the list. Legs the
+  // RowModel leaves null (held has no ask/net; listed has no net) render as a
+  // dimmed em-dash so the strip reads consistently across statuses.
+  function rowStrip(m) {
+    const cell = (k, v) =>
+      `<span class="rwth-cell${v == null ? ' rwth-cell-empty' : ''}">`
+      + `<span class="rwth-cell-k">${k}</span>`
+      + `<span class="rwth-cell-v">${v == null ? '—' : v}</span></span>`;
+    return `<div class="rwth-row-strip">`
+      + cell('buy', m.buy == null ? null : fmtMoney(m.buy))
+      + cell('ask', m.ask == null ? null : fmtMoney(m.ask))
+      + cell('net', m.net == null ? null : fmtMoney(m.net))
+      + cell('age', m.age == null ? null : m.age + 'd')
+      + `</div>`;
   }
 
   function buildLedgerRow(item, expanded, ctx) {
     const c = ctx || {};
     const bonus = fmtBonuses(item);
+    const model = RowModel.forItem(item, c.now || Date.now());
     const head = `<div class="rwth-row-head" data-row-toggle="${item.id}">
         <span class="rwth-row-name">${escapeAttr(item.itemName)}${
           bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''} ${
           rarityChip(item.rarity)}</span>
-        <span class="rwth-row-figs">${rowFigs(item, c.now || Date.now())}</span>
+        ${rowStrip(model)}
       </div>`;
     if (!expanded) return `<div class="rwth-row">${head}</div>`;
     const ledgerIntelOn = c.intelLedger !== false;
@@ -4535,22 +4549,27 @@
       .rwth-row { border: 1px solid var(--rwth-border-soft); border-radius: 4px; }
       .rwth-row-expanded { border-color: var(--rwth-border-bright); }
       .rwth-row-head {
-        display: flex; align-items: center; gap: 8px; cursor: pointer;
+        display: flex; flex-direction: column; gap: 5px; cursor: pointer;
         padding: 7px 9px;
       }
       .rwth-row-head:hover { background: var(--rwth-fill-hover); }
-      .rwth-row-name { flex: 1; font: 600 12px var(--rwth-font-ui); color: var(--rwth-text); }
+      .rwth-row-name { font: 600 12px var(--rwth-font-ui); color: var(--rwth-text); }
       .rwth-row-bonus { font: 400 11px var(--rwth-font-mono); color: var(--rwth-secondary); }
       .rwth-row-price { font: 600 11px var(--rwth-font-mono); color: var(--rwth-text); }
-      .rwth-row-figs {
-        display: flex; align-items: baseline; gap: 10px;
-        font: 600 11px var(--rwth-font-mono); color: var(--rwth-text); white-space: nowrap;
+      .rwth-row-strip {
+        display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px; align-items: baseline;
       }
-      .rwth-fig-k {
-        font-weight: 400; color: var(--rwth-muted); text-transform: uppercase;
-        letter-spacing: .3px; font-size: 9px;
+      .rwth-cell { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+      .rwth-cell-k {
+        flex: none; font: 400 9px var(--rwth-font-mono); color: var(--rwth-muted);
+        text-transform: uppercase; letter-spacing: .3px;
       }
-      .rwth-fig-muted { color: var(--rwth-muted); font-weight: 400; }
+      .rwth-cell-v {
+        min-width: 0; font: 600 11px var(--rwth-font-mono); color: var(--rwth-text);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .rwth-cell-empty .rwth-cell-v { color: var(--rwth-muted); opacity: .55; }
       .rwth-status {
         font: 700 10px var(--rwth-font-mono); text-transform: uppercase;
         padding: 2px 6px; border-radius: 3px;
@@ -8004,6 +8023,7 @@
     buildLedgerTab,
     buildLedgerDashboard,
     LedgerStats,
+    RowModel,
     ChartGeom,
     buildAdvertiseTab,
     buildSettingsTab,

@@ -1,0 +1,173 @@
+// node test-rowmodel.js
+// Tests for RowModel.forItem (issue #336, #325 slice a) — the pure per-row
+// projection a ledger row renders: { status, buy, ask, net, age }. Mirrors
+// test-ledgerstats.js's plain-assert style and loads the shipped .user.js
+// directly (ADR-0002 seam) so the real code is exercised. External behavior
+// only: feed an item + injected now, assert the projection.
+
+'use strict';
+
+// ── Browser-global shim (lets the IIFE load under Node, skips DOM bootstrap) ──
+
+function makeMockStorage() {
+  const data = {};
+  return {
+    getItem:    k => (Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null),
+    setItem:    (k, v) => { data[k] = String(v); },
+    removeItem: k => { delete data[k]; },
+    clear:      () => { for (const k of Object.keys(data)) delete data[k]; },
+  };
+}
+
+globalThis.__RWTH_TEST__ = true;
+globalThis.localStorage = makeMockStorage();
+globalThis.document = {};
+
+require('./TORN-RW-trading-hub.user.js');
+
+const { RowModel } = globalThis.__RwthPure;
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+let passed = 0;
+let failed = 0;
+
+function assertEq(label, a, b) {
+  if (a === b) { console.log(`  ✓ ${label}`); passed++; }
+  else { console.error(`  ✗ ${label}  (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`); failed++; }
+}
+
+function assert(label, condition) {
+  if (condition) { console.log(`  ✓ ${label}`); passed++; }
+  else { console.error(`  ✗ ${label}`); failed++; }
+}
+
+const DAY = 86_400_000;
+const NOW = 1_700_000_000_000;
+
+function held(over = {})   { return { status: 'held',   itemName: 'Item', buyPrice: 1000, buyTimestamp: NOW - 3 * DAY, ...over }; }
+function listed(over = {}) { return { status: 'listed', itemName: 'Item', buyPrice: 1000, listPrice: 1500, buyTimestamp: NOW - 3 * DAY, ...over }; }
+function sold(over = {})   {
+  return {
+    status: 'sold', itemName: 'Item', buyPrice: 1000, listPrice: 1500,
+    saleNet: 1450, saleFees: 50,
+    buyTimestamp: NOW - 5 * DAY, soldTimestamp: NOW, ...over,
+  };
+}
+
+// ── held: buy present, ask + net are not-set ──────────────────────────────────
+
+console.log('\nheld row');
+{
+  const m = RowModel.forItem(held(), NOW);
+  assertEq('status held', m.status, 'held');
+  assertEq('buy = buyPrice', m.buy, 1000);
+  assertEq('ask null (no listPrice)', m.ask, null);
+  assertEq('net null (not sold)', m.net, null);
+  assertEq('age = buy-anchored span', m.age, 3);
+}
+
+// ── listed: buy + ask present, net not-set ────────────────────────────────────
+
+console.log('\nlisted row');
+{
+  const m = RowModel.forItem(listed(), NOW);
+  assertEq('status listed', m.status, 'listed');
+  assertEq('buy present', m.buy, 1000);
+  assertEq('ask = listPrice', m.ask, 1500);
+  assertEq('net null (not sold)', m.net, null);
+  assertEq('age buy-anchored', m.age, 3);
+}
+
+// ── sold: all three legs present ──────────────────────────────────────────────
+
+console.log('\nsold row');
+{
+  const m = RowModel.forItem(sold(), NOW);
+  assertEq('status sold', m.status, 'sold');
+  assertEq('buy present', m.buy, 1000);
+  assertEq('ask = listPrice still present', m.ask, 1500);
+  assertEq('net = saleNet', m.net, 1450);
+  assertEq('age buy-anchored (now - buy, not sold span)', m.age, 5);
+}
+
+// ── below-cost ask is just a smaller number here (no flag in this slice) ───────
+
+console.log('\nlisted below cost');
+{
+  const m = RowModel.forItem(listed({ listPrice: 800 }), NOW);
+  assertEq('ask reflects the low list price', m.ask, 800);
+  assertEq('buy unchanged', m.buy, 1000);
+}
+
+// ── not-set discipline: null / '' never coerced to 0 ──────────────────────────
+
+console.log('\nnot-set discipline');
+{
+  const mAsk = RowModel.forItem(listed({ listPrice: null }), NOW);
+  assertEq('null listPrice -> ask null, not 0', mAsk.ask, null);
+
+  const mEmpty = RowModel.forItem(listed({ listPrice: '' }), NOW);
+  assertEq("'' listPrice -> ask null (not coerced)", mEmpty.ask, null);
+
+  const mNet = RowModel.forItem(sold({ saleNet: null }), NOW);
+  assertEq('null saleNet -> net null, not 0', mNet.net, null);
+
+  const mBuy = RowModel.forItem(held({ buyPrice: null }), NOW);
+  assertEq('null buyPrice -> buy null, not 0', mBuy.buy, null);
+
+  const mZero = RowModel.forItem(held({ buyPrice: 0 }), NOW);
+  assertEq('finite 0 buy stays 0 (a real value, not a sentinel)', mZero.buy, 0);
+}
+
+// ── age edge cases: non-finite / out-of-order never negative ───────────────────
+
+console.log('\nage guards');
+{
+  const mNoStamp = RowModel.forItem(held({ buyTimestamp: null }), NOW);
+  assertEq('non-finite buy stamp -> age null', mNoStamp.age, null);
+
+  const mFuture = RowModel.forItem(held({ buyTimestamp: NOW + 2 * DAY }), NOW);
+  assertEq('out-of-order stamp -> age null (never negative)', mFuture.age, null);
+
+  const mNaN = RowModel.forItem(held({ buyTimestamp: NaN }), NOW);
+  assertEq('NaN stamp -> age null', mNaN.age, null);
+
+  const mSame = RowModel.forItem(held({ buyTimestamp: NOW }), NOW);
+  assertEq('same instant -> age 0', mSame.age, 0);
+
+  const mBadNow = RowModel.forItem(held(), NaN);
+  assertEq('non-finite now -> age null', mBadNow.age, null);
+}
+
+// ── partial / garbage records never throw or yield NaN ─────────────────────────
+
+console.log('\npartial records');
+{
+  const m = RowModel.forItem({ status: 'held' }, NOW);
+  assertEq('bare item: buy null', m.buy, null);
+  assertEq('bare item: ask null', m.ask, null);
+  assertEq('bare item: net null', m.net, null);
+  assertEq('bare item: age null', m.age, null);
+
+  const mNull = RowModel.forItem(null, NOW);
+  assertEq('null item: status undefined, no throw', mNull.status, undefined);
+  assert('no NaN in any leg', [mNull.buy, mNull.ask, mNull.net, mNull.age]
+    .every(v => v === null || Number.isFinite(v)));
+
+  const mStr = RowModel.forItem(held({ buyPrice: '1000' }), NOW);
+  assertEq('numeric-string buyPrice -> null (strings are not finite numbers)', mStr.buy, null);
+}
+
+// ── aging band span values (consumed by a later slice, but age must be exact) ──
+
+console.log('\nage spans');
+{
+  assertEq('13 days', RowModel.forItem(held({ buyTimestamp: NOW - 13 * DAY }), NOW).age, 13);
+  assertEq('30 days', RowModel.forItem(held({ buyTimestamp: NOW - 30 * DAY }), NOW).age, 30);
+}
+
+// ── summary ────────────────────────────────────────────────────────────────────
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
