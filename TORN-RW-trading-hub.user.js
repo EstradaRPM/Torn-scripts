@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.95
+// @version      0.3.96
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.95';
+  const SCRIPT_VERSION = '0.3.96';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -828,7 +828,7 @@
   // net / roi / age) so every figure lands in the same column down the list.
   // Legs the RowModel leaves null (held has no ask/net; listed has no net)
   // render as a dimmed em-dash so the strip reads consistently across statuses.
-  function rowStrip(m) {
+  function rowStrip(m, id) {
     const cell = (k, v, cls) =>
       `<span class="rwth-cell${v == null ? ' rwth-cell-empty' : ''}${cls ? ' ' + cls : ''}">`
       + `<span class="rwth-cell-k">${k}</span>`
@@ -839,11 +839,37 @@
       : m.agingLevel === 'red' ? 'rwth-cell-red' : '';
     return `<div class="rwth-row-strip">`
       + cell('buy', m.buy == null ? null : fmtMoney(m.buy))
-      + cell('ask', m.ask == null ? null : fmtMoney(m.ask))
+      + askCell(m, id)
       + cell('net', m.net == null ? null : fmtMoney(m.net))
       + roiCell(m)
       + cell('age', m.age == null ? null : m.age + 'd', ageCls)
       + `</div>`;
+  }
+
+  // #340 — the ask cell carries the row's two highest-frequency edits inline, so
+  // re-pricing and advancing stock never need an expand. A listed row renders its
+  // ask as an in-place input (commits listPrice on blur/Enter via Ledger.update,
+  // the same path the Advertise tab uses); a held row, which has no ask yet,
+  // renders a one-click "list" button (Ledger.markListed) in the same slot. Both
+  // are tagged data-row-ctl so the row-toggle handler ignores their clicks and
+  // does not collapse the row. Sold/other rows keep the static value.
+  function askCell(m, id) {
+    if (m.status === 'held') {
+      return `<span class="rwth-cell rwth-cell-ctl">`
+        + `<span class="rwth-cell-k">ask</span>`
+        + `<button class="rwth-cell-btn" type="button" data-action="mark-listed" data-row-ctl`
+        + ` data-id="${escapeAttr(id)}">list</button></span>`;
+    }
+    if (m.status === 'listed') {
+      const v = m.ask == null ? '' : m.ask;
+      return `<span class="rwth-cell rwth-cell-ctl">`
+        + `<span class="rwth-cell-k">ask</span>`
+        + `<input class="rwth-ask-edit" type="text" inputmode="numeric" data-ask-edit data-row-ctl`
+        + ` data-id="${escapeAttr(id)}" value="${escapeAttr(v)}" aria-label="ask price"></span>`;
+    }
+    return `<span class="rwth-cell${m.ask == null ? ' rwth-cell-empty' : ''}">`
+      + `<span class="rwth-cell-k">ask</span>`
+      + `<span class="rwth-cell-v">${m.ask == null ? '—' : fmtMoney(m.ask)}</span></span>`;
   }
 
   // The ROI cell, rendered so hope never reads like banked money: a projected
@@ -884,7 +910,7 @@
         <span class="rwth-row-name">${escapeAttr(item.itemName)}${
           bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''} ${
           rarityChip(item.rarity)}</span>
-        ${rowStrip(model)}
+        ${rowStrip(model, item.id)}
       </div>`;
     if (!expanded) return `<div class="rwth-row">${head}</div>`;
     const ledgerIntelOn = c.intelLedger !== false;
@@ -3014,8 +3040,10 @@
         setState({ ui: { ...MEM.ui, activeTab: tabBtn.dataset.tab } });
         return;
       }
+      // #340 — an inline ask edit / list button lives inside the toggle head;
+      // skip the expand/collapse so its click reaches the input or action handler.
       const rowToggle = e.target.closest('[data-row-toggle]');
-      if (rowToggle) {
+      if (rowToggle && !e.target.closest('[data-row-ctl]')) {
         const id = rowToggle.dataset.rowToggle;
         const nextExpanded = MEM.ledger.expandedId === id ? null : id;
         const nextPriceCheck = nextExpanded === MEM.ledger.priceCheckId
@@ -3078,8 +3106,16 @@
     // Scan-checklist edits → write straight back into MEM.ledger.scanResults and
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
-    root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); });
-    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); });
+    root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
+    // #340 — Enter commits the inline ask edit. A lone text input (not in a form)
+    // does not blur on Enter by itself, so force the blur that fires `change`.
+    root.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.matches && e.target.matches('[data-ask-edit]')) {
+        e.preventDefault();
+        e.target.blur();
+      }
+    });
   }
 
   // #313 — keep the Player ID field's locked state in step with the key field
@@ -3230,6 +3266,23 @@
       Store.set('rwth_ledger', MEM.ledger.items);
       if (e.type === 'change') render();
     }
+  }
+
+  // #340 — in-place ask edit on a listed row. Commits only on blur/Enter
+  // (change), writing listPrice through the same Ledger.update path the Advertise
+  // tab uses (no schema change). Blank / non-numeric / non-positive input is
+  // rejected: a re-render restores the stored value, so a bad keystroke never
+  // writes NaN or corrupts the record.
+  function syncLedgerRowEdit(e) {
+    const el = e.target;
+    if (!el.matches || !el.matches('[data-ask-edit]')) return;
+    if (e.type !== 'change') return;
+    const id = el.dataset.id;
+    const item = (MEM.ledger.items || []).find(i => i.id === id);
+    if (!item) return;
+    const n = numOrNull(el.value);
+    if (n == null || n <= 0) { render(); return; }
+    Ledger.update(id, { listPrice: n });
   }
 
   function syncScanEdit(e) {
@@ -4682,6 +4735,22 @@
       .rwth-roi-pos { color: var(--rwth-accent); }
       .rwth-roi-neg { color: var(--rwth-danger); }
       .rwth-roi-projected { color: var(--rwth-muted); font-weight: 400; opacity: .85; }
+      /* #340 — inline ask edit + one-click list, both sized to live inside a
+         strip cell so the grid stays aligned at 360px docked. */
+      .rwth-cell-ctl { gap: 4px; }
+      .rwth-ask-edit {
+        width: 100%; min-width: 0; box-sizing: border-box;
+        background: var(--rwth-fill-faint); border: 1px solid var(--rwth-border-strong);
+        border-radius: 3px; color: var(--rwth-text);
+        font: 600 11px var(--rwth-font-mono); padding: 1px 4px;
+      }
+      .rwth-ask-edit:focus { outline: none; border-color: var(--rwth-accent); }
+      .rwth-cell-btn {
+        background: none; border: 1px solid var(--rwth-secondary-strong); border-radius: 3px;
+        color: var(--rwth-secondary); cursor: pointer; padding: 1px 6px;
+        font: 700 10px var(--rwth-font-mono); text-transform: uppercase; line-height: 1.5;
+      }
+      .rwth-cell-btn:hover { color: var(--rwth-accent); border-color: var(--rwth-accent); }
       .rwth-cell-belowcost .rwth-cell-k { color: var(--rwth-danger); }
       .rwth-cell-belowcost .rwth-cell-v {
         color: #fff; background: var(--rwth-danger); font-weight: 700;
