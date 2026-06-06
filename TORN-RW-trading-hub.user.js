@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.87
+// @version      0.3.88
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.87';
+  const SCRIPT_VERSION = '0.3.88';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -403,11 +403,9 @@
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
       enabled: { auction: true, ledger: true },
-      defaults: { ignoreQuality: false },
       qualityClampDefault: false,
       mugBuffer: 10,
-      marginTarget: 15,
-      markup: 1.20,
+      marginTarget: 5,
       // v0.3.0 slice 9 — user-curated seed data. Empty by design: PRD #265
       // ships the mechanism only, the user supplies the lists in Settings.
       excludedBonuses: [],                                  // ["cupid", "achilles", …]
@@ -495,7 +493,6 @@
         ...MEM.intel,
         ...intel,
         enabled:  { ...MEM.intel.enabled,  ...(intel.enabled  || {}) },
-        defaults: { ...MEM.intel.defaults, ...(intel.defaults || {}) },
         excludedBonuses: Array.isArray(intel.excludedBonuses) ? intel.excludedBonuses.slice() : [],
         bonusChangeDates: (intel.bonusChangeDates && typeof intel.bonusChangeDates === 'object')
           ? { ...intel.bonusChangeDates } : {},
@@ -503,6 +500,17 @@
           ? intel.similarBases.map(c => Array.isArray(c) ? c.slice() : []).filter(c => c.length)
           : [],
       };
+      // #330 — drop the two retired intel knobs (markup, defaults.ignoreQuality)
+      // if a stored payload still carries them, so nothing downstream re-reads a
+      // dead value.
+      delete MEM.intel.markup;
+      delete MEM.intel.defaults;
+      // #330 — marginTarget is now wired to the engine margin. The old UI default
+      // was 15, but it was never read, so a stored 15 is the untouched stale
+      // default; coerce it to the new 5 default so the verified ~20% deduction
+      // (ded = 1 − tax − mug − margin = 0.80) is preserved instead of jumping to
+      // a ~30% cut the moment the knob goes live.
+      if (Number(MEM.intel.marginTarget) === 15) MEM.intel.marginTarget = 5;
     }
   }
 
@@ -1514,11 +1522,6 @@
         { type: 'number', path: 'marginTarget', label: 'Profit goal (%)',
           min: 0, max: 200, step: 1,
           help: 'How much profit over what you paid before the hub calls something a good buy.' },
-        { type: 'number', path: 'markup', label: 'Sell-price multiplier (×)',
-          min: 1, max: 10, step: 0.01,
-          help: 'What to multiply the value by when suggesting a sell price. 1.5 = list 50% above value.' },
-        { type: 'toggle', path: 'defaults.ignoreQuality', label: 'Ignore item quality by default',
-          help: 'Treat all qualities as comparable when pricing, unless you change it on a single item.' },
         { type: 'toggle', path: 'qualityClampDefault', label: 'Match exact quality by default',
           help: 'Start new items pinned to their exact quality bracket when finding comparable sales.' },
       ],
@@ -3115,10 +3118,8 @@
     // Collect intel settings.
     const nextIntel = {
       enabled:  { ...MEM.intel.enabled },
-      defaults: { ...MEM.intel.defaults },
       mugBuffer:    MEM.intel.mugBuffer,
       marginTarget: MEM.intel.marginTarget,
-      markup:       MEM.intel.markup,
       qualityClampDefault: MEM.intel.qualityClampDefault,
       excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
       bonusChangeDates: { ...(MEM.intel.bonusChangeDates || {}) },
@@ -3129,11 +3130,9 @@
       const val  = el.type === 'checkbox' ? el.checked : el.value;
       if (path === 'enabled.auction')           nextIntel.enabled.auction  = Boolean(val);
       else if (path === 'enabled.ledger')       nextIntel.enabled.ledger   = Boolean(val);
-      else if (path === 'defaults.ignoreQuality') nextIntel.defaults.ignoreQuality = Boolean(val);
       else if (path === 'qualityClampDefault') nextIntel.qualityClampDefault = Boolean(val);
       else if (path === 'mugBuffer')    nextIntel.mugBuffer    = Number(val) || 0;
       else if (path === 'marginTarget') nextIntel.marginTarget = Number(val) || 0;
-      else if (path === 'markup')       nextIntel.markup       = Number(val) || 1;
     });
 
     // Trash list — hard "don't fetch" filter.
@@ -5781,6 +5780,33 @@
     },
 
     /**
+     * resolveSettings(intel) → { tax, mug, margin, compClampRatio }
+     *
+     * #330 — the single, class-agnostic bridge from the persisted `MEM.intel`
+     * (Pricing-brain panel) to the friction `settings` shape every engine entry
+     * point expects. Intel stores integer percents (mugBuffer 10, marginTarget
+     * 5); the engine wants fractions (0.10, 0.05), so the percent→fraction
+     * conversion happens here, in one place, and nowhere else. Missing/blank keys
+     * fall back to the engine defaults the call sites used to hardcode: 5% tax,
+     * 10% mug, 5% margin, COMP_CLAMP_RATIO. There is no tax knob, so tax is always
+     * the 5% default. Knows nothing about item classes — the assault-armor
+     * zero-friction override stays a per-call-site concern.
+     */
+    resolveSettings(intel) {
+      const i = intel || {};
+      const pct = (v, dflt) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n / 100 : dflt;
+      };
+      return {
+        tax: 0.05,
+        mug: pct(i.mugBuffer, 0.10),
+        margin: pct(i.marginTarget, 0.05),
+        compClampRatio: COMP_CLAMP_RATIO,
+      };
+    },
+
+    /**
      * buyTarget({ itemClass, comps, currentBid, settings, bbFloor }) →
      *   { max, floor, median?, medianTarget?, range?, tolerance?, currentBidDelta }
      *
@@ -6642,7 +6668,8 @@
       const badge = InlineRenderer._slot(infoEl);
       if (!badge) return;
       const s = ctx || {};
-      const chain = PricingEngine.deductionChain({ anchor: s.marketFloor });
+      const chain = PricingEngine.deductionChain({ anchor: s.marketFloor,
+        settings: PricingEngine.resolveSettings(MEM.intel) });
       badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-fair';
       badge.textContent = '';
       const cb = Number(s.currentBid);
@@ -6855,6 +6882,10 @@
     },
     _paintCard(badge, drill) {
       const s = badge._rwthCtx || {};
+      // #330 — fold the live Pricing-brain config into the friction settings the
+      // engine reads, once, and thread it into every pricing call below (these
+      // used to pass `undefined`, so the knobs silently did nothing).
+      const resolved = PricingEngine.resolveSettings(MEM.intel);
       const rawComps = Array.isArray(s.comps) ? s.comps : [];
       const filtered = InlineRenderer._applyDrillFilters(rawComps, drill, s);
       const useAutoRef = drill.bonus === 'auto';
@@ -6920,7 +6951,7 @@
       const buy = PricingEngine.buyTarget({
         itemClass: s.itemClass, comps: anchorComps,
         currentBid: s.currentBid, bbFloor: s.bbFloor,
-        marketAnchor: anchorPrice,
+        marketAnchor: anchorPrice, settings: resolved,
       });
       // v0.3.0 slice 19d (#288) — thin-reference fallback. After base-widen,
       // <5 total comps means we cannot anchor a headline buy max — show the
@@ -6931,6 +6962,7 @@
         marketAnchor: anchorPrice,
         marketCheapest: s.marketCheapest,
         buyCost: s.buyCost != null ? s.buyCost : (s.currentBid || 0),
+        settings: resolved,
       });
       const reference = PricingEngine.compReference(filtered, {
         itemClass: s.itemClass,
@@ -6983,7 +7015,7 @@
               : ((reference && reference.comps && reference.comps.length)
                   ? reference.comps : filtered),
             bazaarResale: isAssaultArmor ? armorAnchor : ladder.market,
-            settings: isAssaultArmor ? { tax: 0, mug: 0, margin: 0 } : undefined,
+            settings: isAssaultArmor ? { tax: 0, mug: 0, margin: 0 } : resolved,
           })
         : null;
 
@@ -7278,7 +7310,7 @@
         }
       }
       const chain = (!compPricedArmor && Number.isFinite(chainAnchor) && chainAnchor > 0)
-        ? PricingEngine.deductionChain({ anchor: chainAnchor }) : null;
+        ? PricingEngine.deductionChain({ anchor: chainAnchor, settings: resolved }) : null;
       if (chain) {
         const ded = document.createElement('div');
         ded.className = 'rwth-card-ref rwth-card-ded';
