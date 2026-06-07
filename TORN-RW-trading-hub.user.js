@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.98
+// @version      0.3.99
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.98';
+  const SCRIPT_VERSION = '0.3.99';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -7609,10 +7609,10 @@
 
       // ── drilldown ─────────────────────────────────────────────────────
       if (drill.expanded) {
-        badge.appendChild(InlineRenderer._buildDrilldown(badge, drill, s, filtered, buy, reference));
+        badge.appendChild(InlineRenderer._buildDrilldown(badge, drill, s, filtered, buy, reference, resolved));
       }
     },
-    _buildDrilldown(badge, drill, ctx, filtered, buy, reference) {
+    _buildDrilldown(badge, drill, ctx, filtered, buy, reference, resolved) {
       const wrap = document.createElement('div');
       wrap.className = 'rwth-card-drill';
 
