@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.96
+// @version      0.3.97
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.96';
+  const SCRIPT_VERSION = '0.3.97';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -315,6 +315,9 @@
       open: false,
       maximized: false,
       activeTab: 'ledger', // 'ledger' | 'advertise' | 'settings'
+      // #341 — ledger sort id, persisted under rwth_sort. Newest is the default
+      // so the first open after upgrade does not surprise-reorder the list.
+      sort: 'newest',      // 'newest' | 'oldest' | 'bestRoi' | 'biggestPl'
       // Per-section fold state, persisted under rwth_collapsed. Outputs and the
       // sale-log box start collapsed; the advertised-items list starts open.
       collapsed: {
@@ -489,6 +492,11 @@
     if (collapsed && typeof collapsed === 'object') {
       MEM.ui.collapsed = { ...MEM.ui.collapsed, ...collapsed };
     }
+
+    // #341 — restore the persisted ledger sort, ignoring any stale/unknown id so
+    // a renamed sort falls back to the default rather than rendering nothing.
+    const sort = Store.get('rwth_sort');
+    if (typeof sort === 'string' && SORT_IDS.includes(sort)) MEM.ui.sort = sort;
 
     const bbRate = Store.get('rwth_bb_rate');
     if (bbRate && typeof bbRate === 'object' && typeof bbRate.rate === 'number') {
@@ -820,8 +828,57 @@
       if ((it.status === 'held' || it.status === 'listed') && age != null) {
         agingLevel = age < 14 ? 'ok' : age < 30 ? 'amber' : 'red';
       }
-      return { status: it.status, buy, ask, net, roiPct, roiKind, age, belowCost, agingLevel };
+      // The raw buy stamp travels on the projection so LedgerSort (#341) can key
+      // newest/oldest without re-reading the item; null when non-finite so a
+      // missing stamp sinks deterministically rather than reading as epoch 0.
+      const buyTimestamp = Number.isFinite(it.buyTimestamp) ? it.buyTimestamp : null;
+      return { status: it.status, buy, ask, net, roiPct, roiKind, age, belowCost, agingLevel, buyTimestamp };
     },
+  };
+
+  // ─── LedgerSort (pure, ADR-0002) ────────────────────────────────────────────
+  // #341 — a comparator map over RowModel output, one comparator per sort id the
+  // ledger bar offers. Each returns the usual <0 / 0 / >0; a null key always
+  // sinks to the BOTTOM regardless of direction, so dead stock (held rows have
+  // no ROI/P-L) and stampless rows never crowd the top. Ties return 0 and lean
+  // on Array.prototype.sort being stable (Node 11+, all live browsers), so equal
+  // rows keep their incoming (filtered) order — deterministic without a manual
+  // index. bestRoi reads roiPct straight off the model, which RowModel already
+  // computes as PROJECTED for listed and REALIZED for sold (one scale, mixed);
+  // biggestPl mixes realized P/L (net-buy, sold) with projected (ask-buy, listed).
+  const SORT_OPTIONS = [
+    ['newest',    'Newest'],
+    ['oldest',    'Oldest'],
+    ['bestRoi',   'Best ROI%'],
+    ['biggestPl', 'Biggest P/L'],
+  ];
+  const SORT_IDS = SORT_OPTIONS.map(o => o[0]);
+  const DEFAULT_SORT = 'newest';
+
+  // Realized P/L for a sold row (net-buy), projected P/L for a listed row
+  // (ask-buy); null for held or any row missing the leg it needs.
+  function rowPl(m) {
+    if (!m || m.buy == null) return null;
+    if (m.status === 'sold'   && m.net != null) return m.net - m.buy;
+    if (m.status === 'listed' && m.ask != null) return m.ask - m.buy;
+    return null;
+  }
+
+  // dir = -1 descending, +1 ascending. Null keys always sort last (after both
+  // directions), so the "sink to the bottom" rule holds for oldest as well.
+  function cmpNullsLast(av, bv, dir) {
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (av === bv) return 0;
+    return av < bv ? -dir : dir;
+  }
+
+  const LedgerSort = {
+    newest:    (a, b) => cmpNullsLast(a.buyTimestamp, b.buyTimestamp, -1),
+    oldest:    (a, b) => cmpNullsLast(a.buyTimestamp, b.buyTimestamp,  1),
+    bestRoi:   (a, b) => cmpNullsLast(a.roiPct,       b.roiPct,       -1),
+    biggestPl: (a, b) => cmpNullsLast(rowPl(a),       rowPl(b),       -1),
   };
 
   // Line 2 of a row: the lifecycle strip. A fixed-cell CSS grid (buy / ask /
@@ -1555,9 +1612,24 @@
       priceCheckResults: L.priceCheckResults || {},
       now,
     };
-    const list = filtered.length
-      ? filtered.map(i => buildLedgerRow(i, i.id === L.expandedId, rowCtx)).join('')
+    // #341 — sort the FILTERED list (so "best ROI among my listed" is one move)
+    // before mapping to rows. Decorate each item with its RowModel once so the
+    // comparators read the same projection the rows render; Array.sort is stable,
+    // so equal-key rows keep filtered order. Unknown ids fall back to the default.
+    const sortId = SORT_IDS.includes(mem && mem.ui && mem.ui.sort) ? mem.ui.sort : DEFAULT_SORT;
+    const sorted = filtered
+      .map(i => ({ i, m: RowModel.forItem(i, now) }))
+      .sort((a, b) => LedgerSort[sortId](a.m, b.m))
+      .map(d => d.i);
+    const list = sorted.length
+      ? sorted.map(i => buildLedgerRow(i, i.id === L.expandedId, rowCtx)).join('')
       : `<div class="rwth-placeholder">No ${filter === 'all' ? '' : filter + ' '}items yet.</div>`;
+
+    const sortSel = `<label class="rwth-sort"><span class="rwth-sort-k">sort</span>`
+      + `<select class="rwth-sort-select" data-sort-select aria-label="sort ledger">`
+      + SORT_OPTIONS.map(([id, label]) =>
+          `<option value="${id}"${id === sortId ? ' selected' : ''}>${label}</option>`).join('')
+      + `</select></label>`;
 
     const scanning = !!L.scanning;
     const err = mem && mem.fetchError;
@@ -1567,6 +1639,7 @@
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
         <div class="rwth-ledger-actions">
+          ${sortSel}
           <button class="rwth-btn rwth-btn-ghost" type="button" data-action="scan"${
             scanning ? ' disabled' : ''}>${scanning ? 'Scanning…' : 'Scan'}</button>
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-item">+ add</button>
@@ -3107,7 +3180,7 @@
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
     root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
-    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); });
     // #340 — Enter commits the inline ask edit. A lone text input (not in a form)
     // does not blur on Enter by itself, so force the blur that fires `change`.
     root.addEventListener('keydown', (e) => {
@@ -3443,6 +3516,18 @@
     }
     const next = (key && key !== open) ? key : null;
     setState({ ui: { ...MEM.ui, settingsImgEdit: next } });
+  }
+
+  // #341 — the ledger sort select changed; validate, persist, re-render so the
+  // new order takes hold and survives a reload. Unknown ids are ignored.
+  function syncSortSelect(e) {
+    const sel = e.target && e.target.matches && e.target.matches('[data-sort-select]')
+      ? e.target : null;
+    if (!sel) return;
+    const next = sel.value;
+    if (!SORT_IDS.includes(next) || next === MEM.ui.sort) return;
+    Store.set('rwth_sort', next);
+    setState({ ui: { ...MEM.ui, sort: next } });
   }
 
   // Flip one section's fold state and persist it so it survives a reload.
@@ -4612,6 +4697,16 @@
       .rwth-filter-val { text-transform: none; font-weight: 400; opacity: .8; }
       .rwth-filter-active { color: var(--rwth-bg); background: var(--rwth-accent); border-color: var(--rwth-accent); }
       .rwth-btn-add { padding: 5px 12px; }
+      .rwth-sort { display: inline-flex; align-items: center; gap: 4px; }
+      .rwth-sort-k {
+        color: var(--rwth-muted); font: 600 10px var(--rwth-font-mono);
+        text-transform: uppercase; letter-spacing: .3px;
+      }
+      .rwth-sort-select {
+        background: var(--rwth-fill-faint); border: 1px solid var(--rwth-border);
+        border-radius: 4px; color: var(--rwth-text); cursor: pointer;
+        padding: 4px 6px; font: 600 10px var(--rwth-font-mono);
+      }
 
       .rwth-form {
         display: flex; flex-direction: column; gap: 10px;
@@ -8201,6 +8296,7 @@
     buildLedgerDashboard,
     LedgerStats,
     RowModel,
+    LedgerSort,
     ChartGeom,
     buildAdvertiseTab,
     buildSettingsTab,
