@@ -4,6 +4,15 @@ How engineering skills should consume domain documentation in this repo.
 
 ## Before exploring, read these
 
+For RW Trading Hub (`TORN-RW-trading-hub.user.js`), start with the source-of-truth routing in `AGENTS.md` / `CLAUDE.md`:
+
+1. `TORN-RW-trading-hub.user.js` is implementation truth.
+2. Current GitHub issues are unfinished-work / near-term intent truth.
+3. Executable tests and `auction-db` are supporting context, not substitutes for inspecting the shipped script.
+4. Docs are explanatory/reference only unless a current GitHub issue explicitly says otherwise.
+
+For other scripts:
+
 1. `CONTEXT.md` — points to the relevant per-script doc(s)
 2. `docs/scripts/[name].md` — domain language, architecture, active state for the script being worked on
 3. `docs/adr/` — read ADRs that touch the area you're about to change
