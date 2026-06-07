@@ -16,7 +16,7 @@ Rule break flags:
 
 - Each user input can only trigger a single network request / event on the page the user is viewing. It can NOT initiate multiple events. A user clicking a custom button, which in turn clicks an element on the page is allowed. If the initial click initiates multiple actions (like a loop that makes multiple http requests or clicks multiple buttons on the page), however, it is against the rules.
 
-- No events or network request can be triggered automatically. Any and all events resulting in a network request must be initiated by the user performing an action, ant not a mutation observer, loop or a timed input. Editing text inputs, sliders, checkboxes, highlighting or sorting UI elements etc. is allowed, as long as it doesn't result in a network request. Only exception being making API calls to api.torn.com - these can be automated and triggered by a timer or observer, and multiple calls can be triggered by a single input (see original rules).
+- No events or network request can be triggered automatically. Any and all events resulting in a network request must be initiated by the user performing an action, and not a mutation observer, loop or a timed input. Editing text inputs, sliders, checkboxes, highlighting or sorting UI elements etc. is allowed, as long as it doesn't result in a network request. Only exception being making API calls to api.torn.com - these can be automated and triggered by a timer or observer, and multiple calls can be triggered by a single input (see original rules).
 
 
 Potential concern flags:

@@ -3,7 +3,7 @@
 > **Status:** In Development
 > **File:** `torn-api-monitor.user.js`
 > **Target page:** `https://www.torn.com/*`
-> **Current version:** 1.0.0
+> **Current version:** 1.2.0
 
 ---
 
