@@ -25,7 +25,7 @@ globalThis.document = {};
 
 require('./TORN-RW-trading-hub.user.js');
 
-const { PricingEngine } = globalThis.__RwthPure;
+const { PricingEngine, deductionMath } = globalThis.__RwthPure;
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -158,6 +158,31 @@ console.log('\ndeductionChain — a higher mug cushion lowers the buy max');
   const cautious = PricingEngine.deductionChain({ anchor: 1000,
     settings: PricingEngine.resolveSettings({ mugBuffer: 20, marginTarget: 5 }) });
   assert('higher mug cushion lowers buyMax', cautious.buyMax < base.buyMax);
+}
+
+// ── yellow weapon drilldown uses the same market anchor as buyTarget ──────────
+
+console.log('\nyellow drilldown — math re-anchors on item market and live margins');
+{
+  const settings = PricingEngine.resolveSettings({ mugBuffer: 20, marginTarget: 15 });
+  const buy = PricingEngine.buyTarget({
+    itemClass: 'yellowWeapon',
+    comps: [{ price: 500 }, { price: 700 }, { price: 900 }],
+    marketAnchor: 1000,
+    settings,
+  });
+  const line = deductionMath(
+    { itemClass: 'yellowWeapon', margins: settings },
+    buy,
+    { median: 700 },
+    [{ price: 500 }, { price: 700 }, { price: 900 }],
+  );
+
+  assertEq('buy.max is marketAnchor minus live frictions', buy.max, 600);
+  assert('line starts from item market, not cheapest comp', line.includes('Item market') && !line.includes('cheapest'));
+  assert('line prints live mug and profit percentages',
+    line.includes('20% mug risk') && line.includes('15% your profit'));
+  assert('line reconciles to the same bid max', line.includes('bid up to') && line.includes('600'));
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

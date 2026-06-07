@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.97
+// @version      0.3.98
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.97';
+  const SCRIPT_VERSION = '0.3.98';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3762,6 +3762,7 @@
       ? Math.min(...bazaarAsking.map(c => c.price)) : null;
     const primaryBonus = (item.bonuses || [])[0] || null;
     const targetBonusValue = primaryBonus ? Number(primaryBonus.value) : null;
+    const resolved = PricingEngine.resolveSettings(MEM.intel);
 
     writePriceCheckResult(item.id, {
       ctx: {
@@ -3783,7 +3784,7 @@
         askingMedian,
         askingCount,
         widenedBase: Array.isArray(composite.widenedBase) ? composite.widenedBase.slice() : [],
-        margins: null,
+        margins: resolved,
       },
     });
   }
@@ -7686,7 +7687,7 @@
       // deduction math
       const math = document.createElement('div');
       math.className = 'rwth-card-drill-math';
-      math.textContent = InlineRenderer._deductionMath(ctx, buy, reference, filtered);
+      math.textContent = InlineRenderer._deductionMath({ ...ctx, margins: resolved }, buy, reference, filtered);
       wrap.appendChild(math);
 
       // Unified evidence ladder — one table keyed by bonus % (or quality bucket)
@@ -8037,15 +8038,18 @@
         if (!Array.isArray(buy.range)) return 'not enough sales to work out a range.';
         return `similar sales run ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — too spread out for one buy price`;
       }
-      // yellowWeapon (default) — floor-anchored on min.
-      if (mn == null || buy.max == null) return 'not enough sales to work out a floor.';
+      // yellowWeapon (default) — market-anchored, matching the headline bid math.
+      const marketAnchor = Number(buy && buy.marketAnchor);
+      if (!Number.isFinite(marketAnchor) || marketAnchor <= 0 || buy.max == null) {
+        return 'item market price not loaded yet.';
+      }
       const m = ctx.margins || {};
       const tax    = m.tax    != null ? m.tax    : 0.05;
       const mug    = m.mug    != null ? m.mug    : 0.10;
       const margin = m.margin != null ? m.margin : 0.05;
       const pct = (x) => `${Math.round(x * 100)}%`;
       const medTail = med != null ? ` (typical ${fmtChatPrice(med)})` : '';
-      return `cheapest ${fmtChatPrice(mn)} − ${pct(tax)} tax − ${pct(mug)} mug risk − ${pct(margin)} your profit → bid up to ${fmtChatPrice(buy.max)}${medTail}`;
+      return `Item market ${fmtChatPrice(marketAnchor)} − ${pct(tax)} tax − ${pct(mug)} mug risk − ${pct(margin)} your profit → bid up to ${fmtChatPrice(buy.max)}${medTail}`;
     },
     removeAll() {
       if (typeof document === 'undefined') return;
@@ -8261,7 +8265,7 @@
         askingMedian,
         askingCount,
         widenedBase: Array.isArray(r.widenedBase) ? r.widenedBase.slice() : [],
-        margins: null,
+        margins: PricingEngine.resolveSettings(MEM.intel),
       });
     },
     start() {
@@ -8317,6 +8321,7 @@
     BonusTrashGuard,
     resolveMarketAnchor,
     PricingEngine,
+    deductionMath: InlineRenderer._deductionMath,
     CompWidener,
     BBEngine,
     ItemClassifier,
