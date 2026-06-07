@@ -10,13 +10,6 @@ Context / memory for it lives in **GitHub**, not in docs:
 - Recent commits — what's been done
 - Open issues — what's left
 
-RW Trading Hub source-of-truth routing, for both Codex and Claude agents:
-- Implementation truth: `TORN-RW-trading-hub.user.js`. Inspect the shipped script before trusting historical docs for behavior, state, or architecture.
-- Unfinished-work / near-term intent truth: current GitHub issues. Open issues outrank stale "next up" notes in docs.
-- Behavior checks: executable tests. They support regression checks; they do not replace inspecting the shipped script.
-- Operational support context: `auction-db`. Use it for RWTH auction-history backend context, not as a replacement for the userscript.
-- Docs: explanatory/reference only unless a current GitHub issue explicitly makes a doc the target or source for the slice.
-
 To switch scripts: change the filename on the line above (on my command).
 
 ## Rules
