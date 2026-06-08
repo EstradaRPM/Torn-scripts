@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.99
+// @version      0.3.100
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.99';
+  const SCRIPT_VERSION = '0.3.100';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1740,8 +1740,8 @@
         { type: 'number', path: 'marginTarget', label: 'Profit goal (%)',
           min: 0, max: 200, step: 1,
           help: 'How much profit over what you paid before the hub calls something a good buy.' },
-        { type: 'toggle', path: 'qualityClampDefault', label: 'Match exact quality by default',
-          help: 'Start new items pinned to their exact quality bracket when finding comparable sales.' },
+        { type: 'toggle', path: 'qualityClampDefault', label: 'Use tightest quality gate by default',
+          help: 'Start new price-check cards at ±5 quality points instead of the normal ±10 point window.' },
       ],
     },
     {
@@ -5752,12 +5752,11 @@
   // on quality %. Anchoring the headline on the item-market floor prices a high-
   // quality piece off near-0%-quality junk listings → undervalued + false PASS.
   // Instead we band the auction comps to ±tol around the candidate's quality and
-  // median that band — King's "avg of last 5 at similar quality" hand method. The
-  // tolerance is RELATIVE (a fraction of the candidate's quality), not the integer
-  // percentage-point window bandByBonus uses, because quality spans 0→400%+ and a
-  // fixed point window is meaningless across that range (mirrors the ±10/±25%
-  // drill knobs, which are also relative). Falls back to the full set when the band
-  // is empty so a sparse level never blanks the headline.
+  // median that band — King's "avg of last 5 at similar quality" hand method. This
+  // headline anchor remains a deliberately wide relative band; the per-card
+  // quality drill knobs below use fixed percentage-point windows so their labels
+  // mean exactly what they say. Falls back to the full set when the band is empty
+  // so a sparse level never blanks the headline.
   const ARMOR_QUALITY_BAND_TOL = 0.25;
   function bandByQuality(comps, targetQuality, tol) {
     const list = Array.isArray(comps) ? comps : [];
@@ -6948,7 +6947,7 @@
       badge._rwthCtx = ctx || {};
       let drill = InlineRenderer._drillState.get(badge);
       if (!drill) {
-        const initQ = MEM.intel.qualityClampDefault ? 'exact' : 'auto';
+        const initQ = MEM.intel.qualityClampDefault ? 'pm5' : 'pm10';
         drill = { bonus: 'auto', quality: initQ, expanded: false, axis: 'bonus' };
         InlineRenderer._drillState.set(badge, drill);
       }
@@ -7040,22 +7039,19 @@
         if (drill.bonus === 'strict') {
           tol = Number.isFinite(Number(ctx.strictTolerance)) ? Number(ctx.strictTolerance) : 0;
         } else if (drill.bonus === 'pm1') tol = 1;
-        else if (drill.bonus === 'pm3') tol = 3;
+        else if (drill.bonus === 'pm2') tol = 2;
         if (tol != null) {
           arr = arr.filter(c => c.bonusValue != null && Math.abs(Number(c.bonusValue) - bv) <= tol);
         }
       }
       const lq = Number(ctx.listingQuality);
       const hasQ = Number.isFinite(lq) && lq > 0;
-      if (drill.quality !== 'auto' && drill.quality !== 'all' && hasQ) {
-        if (drill.quality === 'exact') {
-          const bucket = Math.floor(lq / 10) * 10;
-          arr = arr.filter(c => c.quality != null && Math.floor(Number(c.quality) / 10) * 10 === bucket);
-        } else if (drill.quality === 'pm10') {
-          const w = lq * 0.10;
+      if (drill.quality !== 'all' && hasQ) {
+        if (drill.quality === 'auto' || drill.quality === 'pm5') {
+          const w = 5;
           arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
-        } else if (drill.quality === 'pm25') {
-          const w = lq * 0.25;
+        } else if (drill.quality === 'pm10') {
+          const w = 10;
           arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
         }
       }
@@ -7068,8 +7064,17 @@
       // used to pass `undefined`, so the knobs silently did nothing).
       const resolved = PricingEngine.resolveSettings(MEM.intel);
       const rawComps = Array.isArray(s.comps) ? s.comps : [];
-      const filtered = InlineRenderer._applyDrillFilters(rawComps, drill, s);
+      const drillFiltered = InlineRenderer._applyDrillFilters(rawComps, drill, s);
       const useAutoRef = drill.bonus === 'auto';
+      const reference = PricingEngine.compReference(drillFiltered, {
+        itemClass: s.itemClass,
+        targetBonusValue: useAutoRef ? s.primaryBonusValue : null,
+        strictTolerance: useAutoRef ? s.strictTolerance : null,
+        widenTolerances: useAutoRef ? [1, 2] : null,
+        bonusName: s.primaryBonusName,
+      });
+      const filtered = (useAutoRef && reference && Array.isArray(reference.comps))
+        ? reference.comps : drillFiltered;
 
       // v0.3.29 (#298) — anchor the buy max + deduction on the bonus-% bracket
       // the candidate falls into, not the global cheapest listing. Market
@@ -7145,13 +7150,6 @@
         buyCost: s.buyCost != null ? s.buyCost : (s.currentBid || 0),
         settings: resolved,
       });
-      const reference = PricingEngine.compReference(filtered, {
-        itemClass: s.itemClass,
-        targetBonusValue: useAutoRef ? s.primaryBonusValue : null,
-        strictTolerance: useAutoRef ? s.strictTolerance : null,
-        bonusName: s.primaryBonusName,
-      });
-
       // Auction buy decision — one bonus-matched clearing range + a max bid
       // clamped off the item-market anchor (see PricingEngine.auctionPlan).
       // For market-anchored WEAPONS the 20% cut (5% tax + 10% mug + 5% margin) is
@@ -7649,15 +7647,13 @@
         ['auto',   'auto',     true],
         ['strict', 'exact',    hasBonus],
         ['pm1',    '±1%',      hasBonus],
-        ['pm3',    '±3%',      hasBonus],
+        ['pm2',    '±2%',      hasBonus],
         ['all',    'all',      true],
       ];
       const qualOpts = [
-        ['auto',  'auto',  true],
-        ['exact', 'exact', hasQ],
-        ['pm10',  '±10%',  hasQ],
-        ['pm25',  '±25%',  hasQ],
-        ['all',   'all',   true],
+        ['pm5',  '±5%',  hasQ],
+        ['pm10', '±10%', hasQ],
+        ['all',  'all',  true],
       ];
       const makeGroup = (key, label, opts) => {
         const g = document.createElement('div');
@@ -8322,6 +8318,7 @@
     resolveMarketAnchor,
     PricingEngine,
     deductionMath: InlineRenderer._deductionMath,
+    applyDrillFilters: InlineRenderer._applyDrillFilters,
     CompWidener,
     BBEngine,
     ItemClassifier,

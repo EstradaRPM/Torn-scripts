@@ -706,6 +706,75 @@ test('resolveMarketAnchor: no valid listings returns a null anchor', () => {
   assert.strictEqual(resolveMarketAnchor([{ price: 0, bonusValue: 20 }], 20).anchor, null);
 });
 
+// ── auction-card drill filters (#335) ─────────────────────────────────────────
+test('applyDrillFilters: quality ±10 is ten quality points, not ten percent', () => {
+  const { applyDrillFilters } = globalThis.__RwthPure;
+  const comps = [
+    { price: 100, quality: 110 },
+    { price: 111, quality: 111 },
+    { price: 121, quality: 121 },
+    { price: 131, quality: 131 },
+    { price: 132, quality: 132 },
+  ];
+  const out = applyDrillFilters(
+    comps,
+    { bonus: 'all', quality: 'pm10' },
+    { listingQuality: 121 },
+  );
+  assert.deepStrictEqual(out.map(c => c.quality), [111, 121, 131]);
+});
+
+test('applyDrillFilters: quality ±5 is the tightest point window', () => {
+  const { applyDrillFilters } = globalThis.__RwthPure;
+  const comps = [
+    { price: 115, quality: 115 },
+    { price: 116, quality: 116 },
+    { price: 121, quality: 121 },
+    { price: 126, quality: 126 },
+    { price: 127, quality: 127 },
+  ];
+  const out = applyDrillFilters(
+    comps,
+    { bonus: 'all', quality: 'pm5' },
+    { listingQuality: 121 },
+  );
+  assert.deepStrictEqual(out.map(c => c.quality), [116, 121, 126]);
+});
+
+test('applyDrillFilters: bonus ±2 is a point window around the bonus percent', () => {
+  const { applyDrillFilters } = globalThis.__RwthPure;
+  const comps = [
+    { price: 24, bonusValue: 24 },
+    { price: 25, bonusValue: 25 },
+    { price: 27, bonusValue: 27 },
+    { price: 29, bonusValue: 29 },
+    { price: 30, bonusValue: 30 },
+  ];
+  const out = applyDrillFilters(
+    comps,
+    { bonus: 'pm2', quality: 'all' },
+    { primaryBonusValue: 27 },
+  );
+  assert.deepStrictEqual(out.map(c => c.bonusValue), [25, 27, 29]);
+});
+
+test('compReference: card auto bonus can stop at ±2 instead of widening open', () => {
+  const { PricingEngine } = globalThis.__RwthPure;
+  const comps = [
+    { price: 100, bonusValue: 27 },
+    { price: 110, bonusValue: 28 },
+    { price: 120, bonusValue: 29 },
+    { price: 130, bonusValue: 30 },
+  ];
+  const ref = PricingEngine.compReference(comps, {
+    targetBonusValue: 27,
+    strictTolerance: 0,
+    widenTolerances: [1, 2],
+  });
+  assert.strictEqual(ref.widenedTolerance, 2);
+  assert.deepStrictEqual(ref.comps.map(c => c.bonusValue), [27, 28, 29]);
+});
+
 // ── mergeLadder (#302 slice 1) ───────────────────────────────────────────────
 test('mergeLadder: bonus-axis groups by exact bonus %, sorted descending', () => {
   const { mergeLadder } = globalThis.__RwthPure;
