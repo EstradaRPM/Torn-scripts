@@ -1,5 +1,7 @@
 # Documentation Drift Audit
 
+> **ARCHIVE:** Historical audit snapshot. This file explains prior drift, but it is not current implementation authority. Use `docs/doc-authority.md` and `docs/current-rwth.md` for new agent sessions.
+
 Audit date: 2026-06-07
 
 Source of truth used: current source files, tests, package/config files, and CI/config files present in the repo. Claims depending on current Torn/community behavior or GitHub issue state are marked **unverified** unless the repo itself proves them.

@@ -1,5 +1,7 @@
 # RW Auction Advisor — API Reference
 
+> **STALE-NEEDS-UPDATE:** Advisor-era/API reference material. Do not use this as current RW Trading Hub data-flow authority. Check `docs/current-rwth.md` and `docs/doc-authority.md` first.
+
 All API endpoints, response schemas, rate limits, authentication rules,
 and compliance constraints for the RW Auction Advisor.
 Sourced from: TORN V2 API References.txt, TornW3B API (weav3r.dev).txt,

@@ -1,5 +1,7 @@
 # RW Trading Hub
 
+> **STALE-NEEDS-UPDATE:** This document contains old RWTH version and scope claims. For current RW Trading Hub work, use `docs/current-rwth.md`, `TORN-RW-trading-hub.user.js`, and `docs/doc-authority.md` first.
+
 > **Status:** In Development
 > **File:** `TORN-RW-trading-hub.user.js`
 > **Target page:** any page (the launcher injects into Torn's chat-icon row); reads `displaycase.php` / `bazaar.php` only as needed

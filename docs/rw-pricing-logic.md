@@ -1,5 +1,7 @@
 # RW Auction Advisor — Pricing Logic Reference
 
+> **STALE-NEEDS-UPDATE:** Advisor-era pricing reference. Do not use this as current RW Trading Hub pricing authority. Check `docs/current-rwth.md` and `docs/doc-authority.md` first.
+
 All formulas, fee structures, and valuation rules for the RW Auction Advisor.
 Sourced from: King's RW Guide, RW Buyer's Math, Steps 1–2 web research,
 TORN V2 API References, and TornW3B API docs.

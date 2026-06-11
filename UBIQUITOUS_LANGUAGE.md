@@ -1,5 +1,7 @@
 # Ubiquitous Language — RW Auction Advisor
 
+> **STALE-NEEDS-UPDATE:** This glossary was generated for RW Auction Advisor-era material. Do not use it as current RW Trading Hub authority without user confirmation.
+
 _Generated from: CLAUDE.md, .claude/memory.md, docs/rw-pricing-logic.md, docs/rw-armor-guide.md, docs/rw-community-context.md, docs/rw-api-reference.md_
 
 ---

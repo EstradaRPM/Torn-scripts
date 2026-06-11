@@ -1,5 +1,7 @@
 # RW Trading Hub — Salvaged Assets
 
+> **ARCHIVE:** Salvaged historical input. Do not use this as current implementation authority unless the user explicitly asks for historical context.
+
 > **Captured from grilling session 2026-05-21 (abandoned mid-flow).**
 > **Design decisions from that session are NOT locked.** Only the artifacts in this file are trustworthy: things the user produced directly, visual iterations the user explicitly approved, and code/API research findings.
 > Anything else from the session transcript should be re-grilled from scratch.

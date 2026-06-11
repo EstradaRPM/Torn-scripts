@@ -1,6 +1,8 @@
 # PRD — RW Auction Advisor: Steps I–L
 # Dynamic Pricing Algorithm, Manual Ledger Entry, and Ledger UI Overhaul
 
+> **ARCHIVE:** Historical PRD/planning artifact. Do not use this as current RW Trading Hub implementation guidance unless the user explicitly asks for historical context.
+
 ---
 
 ## Problem Statement
