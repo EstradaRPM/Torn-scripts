@@ -41,17 +41,22 @@ test('build* tab functions are exposed and return strings', () => {
 test('buildContent dispatches on activeTab', () => {
   const { buildContent } = globalThis.__RwthPure;
   assert.match(buildContent({ ui: { activeTab: 'ledger' } }), /rwth-ledger/);
-  assert.match(buildContent({ ui: { activeTab: 'advertise' } }), /Advertise/);
+  assert.match(buildContent({ ui: { activeTab: 'advertise' } }), /rwth-advertise/);
   assert.match(buildContent({ ui: { activeTab: 'settings' } }), /data-setting/);
   assert.strictEqual(buildContent({ ui: { activeTab: 'bogus' } }), '');
 });
 
-test('buildSettingsTab renders all six fields', () => {
+// #324 — the content-bearing link and picture fields moved into the Advertise
+// tab; Settings keeps account (playerId/apiKey) + reach (viewCounterUrl).
+test('buildSettingsTab renders the account and reach fields', () => {
   const { buildSettingsTab } = globalThis.__RwthPure;
   const html = buildSettingsTab({ settings: {} });
-  for (const key of ['playerId', 'forumThreadUrl', 'weav3rPricelistUrl',
-                      'bannerImageUrl', 'forumHeaderImageUrl', 'apiKey']) {
+  for (const key of ['playerId', 'viewCounterUrl', 'apiKey']) {
     assert.match(html, new RegExp(`data-setting="${key}"`), `${key} field should render`);
+  }
+  for (const gone of ['forumThreadUrl', 'weav3rPricelistUrl', 'forumHeaderImageUrl']) {
+    assert.doesNotMatch(html, new RegExp(`data-setting="${gone}"`),
+                        `${gone} should no longer live in Settings`);
   }
 });
 
@@ -64,7 +69,7 @@ test('buildSettingsTab pre-fills current values', () => {
 
 test('buildSettingsTab escapes values into the value attribute', () => {
   const { buildSettingsTab } = globalThis.__RwthPure;
-  const html = buildSettingsTab({ settings: { forumThreadUrl: 'a"<b&c' } });
+  const html = buildSettingsTab({ settings: { viewCounterUrl: 'a"<b&c' } });
   assert.match(html, /value="a&quot;&lt;b&amp;c"/);
 });
 
@@ -349,11 +354,16 @@ test('matchSell ignores already-sold rows', () => {
   assert.strictEqual(matchSell({ itemName: 'Riot Body' }, [sold]), null);
 });
 
-test('summarizeSells counts parsed / matched / recent', () => {
+// Every non-duplicate sale posts to Recent Transactions (matched ones also
+// close their ledger row); duplicates are already logged and skipped.
+test('summarizeSells counts parsed / matched / duplicate / recent', () => {
   const { summarizeSells } = globalThis.__RwthPure;
-  const s = summarizeSells([{ matchedId: 'a' }, { matchedId: null }, { matchedId: 'c' }]);
-  assert.deepStrictEqual(s, { parsed: 3, matched: 2, recent: 1 });
-  assert.deepStrictEqual(summarizeSells([]), { parsed: 0, matched: 0, recent: 0 });
+  const s = summarizeSells([
+    { matchedId: 'a' }, { matchedId: null }, { matchedId: 'c', duplicate: true },
+  ]);
+  assert.deepStrictEqual(s, { parsed: 3, matched: 2, duplicate: 1, recent: 2 });
+  assert.deepStrictEqual(summarizeSells([]),
+                         { parsed: 0, matched: 0, duplicate: 0, recent: 0 });
 });
 
 test('buildSellBox renders the paste box by default', () => {
@@ -447,7 +457,9 @@ test('buildAdvertiseTab renders the Recent Transactions editor', () => {
   assert.match(html, /data-action="remove-tx"/);
 });
 
-test('buildAdvertiseTab renders both output boxes with copy buttons', () => {
+// #316/#325 — the forum title is user-configured shop identity (neutral
+// default when blank), so no hard-coded title copy is asserted here.
+test('buildAdvertiseTab renders both quick-copy text boxes with copy buttons', () => {
   const { buildAdvertiseTab } = globalThis.__RwthPure;
   const html = buildAdvertiseTab({
     advertise: { selectedIds: null, transactions: [] },
@@ -456,7 +468,6 @@ test('buildAdvertiseTab renders both output boxes with copy buttons', () => {
   });
   assert.match(html, /data-copy-target="rwth-out-title"/);
   assert.match(html, /data-copy-target="rwth-out-chat"/);
-  assert.match(html, /NC17 Rated/);
 });
 
 test('buildAdvertiseTab tolerates a bare call', () => {
@@ -472,7 +483,7 @@ const advItems = [
 ];
 const advTxs = [{ id: 't1', itemName: 'Riot Body', bonusName: 'Impregnable',
                   buyer: 'Apocolypse_', price: 84150000 }];
-const advSettings = { playerId: '1171127', forumHeaderImageUrl: '',
+const advSettings = { playerId: '1171127',
                       bannerImageUrl: 'https://i.gyazo.com/banner.jpg' };
 
 
@@ -482,11 +493,15 @@ test('toForumHtml injects item screenshots and omits the row when absent', () =>
   assert.strictEqual((html.match(/i\.gyazo\.com\/abc/g) || []).length, 2);
 });
 
-test('toForumHtml uses the forum header image, replacing the NC17 block', () => {
+// #322 — per-surface picture: forumImageUrl wins for the forum, else the
+// shared bannerImageUrl; the image replaces the wordmark/Trading Post header.
+test('toForumHtml uses the forum picture override, replacing the wordmark header', () => {
   const { AdvertiseGenerator } = globalThis.__RwthPure;
-  const html = AdvertiseGenerator.toForumHtml([], [], { forumHeaderImageUrl: 'https://i.gyazo.com/hdr.jpg' });
+  const html = AdvertiseGenerator.toForumHtml([], [], { forumImageUrl: 'https://i.gyazo.com/hdr.jpg' });
   assert.match(html, /src="https:\/\/i\.gyazo\.com\/hdr\.jpg"/);
   assert.doesNotMatch(html, /Trading Post/);
+  const shared = AdvertiseGenerator.toForumHtml([], [], { bannerImageUrl: 'https://i.gyazo.com/shared.jpg' });
+  assert.match(shared, /src="https:\/\/i\.gyazo\.com\/shared\.jpg"/);
 });
 
 test('toForumHtml omits the Recent Transactions section when there are none', () => {
@@ -516,21 +531,30 @@ test('toSignatureHtml is item-driven and condensed with compact prices', () => {
   assert.match(html, /\$78m/);
 });
 
-test('toSignatureHtml reuses the forum header image when set', () => {
+// #322 — same per-surface rule for the signature: signatureImageUrl wins,
+// else the shared bannerImageUrl drives the header.
+test('toSignatureHtml uses the signature override, falling back to the shared banner', () => {
   const { AdvertiseGenerator } = globalThis.__RwthPure;
-  const html = AdvertiseGenerator.toSignatureHtml(advItems, { forumHeaderImageUrl: 'https://i.gyazo.com/hdr.jpg' });
+  const html = AdvertiseGenerator.toSignatureHtml(advItems, { signatureImageUrl: 'https://i.gyazo.com/hdr.jpg' });
   assert.match(html, /src="https:\/\/i\.gyazo\.com\/hdr\.jpg"/);
+  const shared = AdvertiseGenerator.toSignatureHtml(advItems, advSettings);
+  assert.match(shared, /src="https:\/\/i\.gyazo\.com\/banner\.jpg"/);
 });
 
-test('buildAdvertiseTab renders the three HTML output boxes with copy buttons', () => {
+// #325 — the three per-surface boxes were unified into one surface switcher:
+// segmented Forum/Bazaar/Signature buttons over a single rwth-out-surface
+// copy box, plus a Preview/Edit-HTML flip.
+test('buildAdvertiseTab renders the surface switcher with one Copy HTML box', () => {
   const { buildAdvertiseTab } = globalThis.__RwthPure;
   const html = buildAdvertiseTab({
     advertise: { selectedIds: null, transactions: [] },
     ledger: { items: [] }, settings: {},
   });
-  assert.match(html, /data-copy-target="rwth-out-forum"/);
-  assert.match(html, /data-copy-target="rwth-out-bazaar"/);
-  assert.match(html, /data-copy-target="rwth-out-signature"/);
+  for (const surface of ['forum', 'bazaar', 'signature']) {
+    assert.match(html, new RegExp(`data-action="set-adv-surface" data-surface="${surface}"`));
+  }
+  assert.match(html, /data-copy-target="rwth-out-surface"/);
+  assert.match(html, /data-action="toggle-adv-raw"/);
 });
 
 test('buildAdvertiseTab renders a per-item IMG button and opens its popover', () => {
@@ -558,7 +582,7 @@ test('ItemClassifier.classify — Riot Helmet (armor / Riot / yellow / BB-eligib
     'Riot Helmet': { name: 'Riot Helmet', type: 'Defensive', rarity: 'Yellow' },
   };
   const c = ItemClassifier.classify('Riot Helmet', dict);
-  assert.strictEqual(c.category, 'armor');
+  assert.strictEqual(c.type, 'defensive');   // routes on Torn's real type field
   assert.strictEqual(c.armorSet, 'Riot');
   assert.strictEqual(c.rarity, 'yellow');
   assert.strictEqual(c.isBBFloorEligible, true);
@@ -571,7 +595,7 @@ test('ItemClassifier.classify — Jackhammer (weapon / yellow / shotgun)', () =>
     Jackhammer: { name: 'Jackhammer', type: 'Primary', rarity: 'Yellow', weapon_class: 'Shotgun' },
   };
   const c = ItemClassifier.classify('Jackhammer', dict);
-  assert.strictEqual(c.category, 'weapon');
+  assert.strictEqual(c.type, 'primary');
   assert.strictEqual(c.rarity, 'yellow');
   assert.strictEqual(c.weaponBase, 'shotgun');
   assert.strictEqual(c.isTrash, false);
@@ -585,7 +609,7 @@ test('ItemClassifier.classify — trash weapon (Lorcin L380 / yellow / isTrash +
   };
   const trashSet = new Set(['Lorcin L380']);
   const c = ItemClassifier.classify('Lorcin L380', dict, { trashSet });
-  assert.strictEqual(c.category, 'weapon');
+  assert.strictEqual(c.type, 'secondary');
   assert.strictEqual(c.rarity, 'yellow');
   assert.strictEqual(c.isTrash, true);
   assert.strictEqual(c.isBBFloorEligible, true);
@@ -605,13 +629,15 @@ test('ItemClassifier.classify — orange & red weapon samples carry through rari
   assert.strictEqual(r.weaponBase, 'heavy artillery');
 });
 
-test('formatClassTag — armor with set, plain weapon, trash', () => {
+test('formatClassTag — armor with set, plain weapon, trash, double-bonus', () => {
   const { formatClassTag } = globalThis.__RwthPure;
-  assert.strictEqual(formatClassTag({ category: 'armor', armorSet: 'Riot', rarity: 'yellow' }),
+  assert.strictEqual(formatClassTag({ type: 'defensive', armorSet: 'Riot', rarity: 'yellow' }),
                      '[Riot · yellow]');
-  assert.strictEqual(formatClassTag({ category: 'weapon', rarity: 'yellow' }), '[Yellow weapon]');
-  assert.strictEqual(formatClassTag({ category: 'weapon', rarity: 'yellow', isTrash: true }),
+  assert.strictEqual(formatClassTag({ type: 'primary', rarity: 'yellow' }), '[Yellow weapon]');
+  assert.strictEqual(formatClassTag({ type: 'primary', rarity: 'yellow', isTrash: true }),
                      '[trash · yellow]');
+  assert.strictEqual(formatClassTag({ type: 'primary', rarity: 'red' }, 2),
+                     '[Red weapon · 2 bonuses]');
 });
 
 test('WEAPON_CATEGORY constant is removed', () => {
@@ -669,7 +695,10 @@ test('resolveMarketAnchor: a cheap higher-bonus piece cancels the tier (undercut
   ];
   const r = resolveMarketAnchor(listings, 16);
   assert.strictEqual(r.anchor, 200);              // match/undercut the cheap 18%, not 270
-  assert.strictEqual(r.tiers.length, 1);          // the 16% tier never forms
+  // Every bonus bucket keeps its floor tier; the guard caps the anchor instead
+  // of erasing the tier, so the tier list still shows the full ladder.
+  assert.strictEqual(r.tiers.length, 3);
+  assert.strictEqual(r.tier.thresholdBonus, 16);
 });
 
 test('resolveMarketAnchor: sub-threshold scatter within one bracket makes no new tier', () => {
@@ -702,7 +731,8 @@ test('resolveMarketAnchor: target below the first jump anchors on the global flo
 
 test('resolveMarketAnchor: no valid listings returns a null anchor', () => {
   const { resolveMarketAnchor } = globalThis.__RwthPure;
-  assert.deepStrictEqual(resolveMarketAnchor([], 20), { anchor: null, tier: null, tiers: [] });
+  assert.deepStrictEqual(resolveMarketAnchor([], 20),
+                         { anchor: null, tier: null, tiers: [], fallback: null });
   assert.strictEqual(resolveMarketAnchor([{ price: 0, bonusValue: 20 }], 20).anchor, null);
 });
 
