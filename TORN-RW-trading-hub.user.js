@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.100
+// @version      0.3.101
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.100';
+  const SCRIPT_VERSION = '0.3.101';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -361,7 +361,6 @@
       selectedIds: null,      // null = default (all `listed` rows checked); else id[]
       imgEditId: null,        // null | itemId — the row whose [IMG] popover is open
       transactions: [],
-      outputs: { title: '', forumHtml: '', chat: '', bazaarHtml: '', signatureHtml: '' },
     },
     settings: {
       playerId: '',
@@ -537,10 +536,6 @@
   }
 
   // ─── Pure HTML builders (exposed via __RwthPure — ADR-0002) ──────────────────
-  function placeholder(label) {
-    return `<div class="rwth-placeholder">${label} — coming in a later slice.</div>`;
-  }
-
   // A collapsible-section header — a full-width button carrying the section
   // title and a caret. `key` indexes MEM.ui.collapsed; the click is handled by
   // the delegated `toggle-collapse` action.
@@ -1089,8 +1084,9 @@
         <label class="rwth-field rwth-field-grow">
           <span class="rwth-field-label">Buy source</span>
           <select class="rwth-field-input" data-form="buySource">
-            <option value="market"${v.buySource === 'bazaar' ? '' : ' selected'}>Market</option>
-            <option value="bazaar"${v.buySource === 'bazaar' ? ' selected' : ''}>Bazaar</option>
+            ${['market', 'bazaar', 'auction'].map(src =>
+              `<option value="${src}"${(v.buySource || 'market') === src ? ' selected' : ''}>${
+                src[0].toUpperCase() + src.slice(1)}</option>`).join('')}
           </select>
         </label>
       </div>
@@ -1550,8 +1546,10 @@
   // the cockpit "big picture" above the inventory list. Shallow HTML-string glue
   // over LedgerStats; recomputes on every render() since buildLedgerTab calls it
   // fresh.
-  function buildLedgerDashboard(items, now, analyticsCollapsed = true) {
-    const s = LedgerStats.summarize(items, now);
+  function buildLedgerDashboard(items, now, analyticsCollapsed = true, stats) {
+    // `stats` lets buildLedgerTab share one summarize() pass with the filter
+    // chips; standalone callers (tests) omit it and get a fresh computation.
+    const s = stats || LedgerStats.summarize(items, now);
     const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
     const cls    = n => (n >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg');
     const card = (label, value, sub, valCls) =>
@@ -1590,7 +1588,8 @@
     // dashboard. held shows capital cost, listed shows ask value, all shows the
     // total count; sold and all carry no money tail. Compact money (fmtChatPrice)
     // returns empty for non-positive, so a zero/empty bucket shows count only.
-    const bs = LedgerStats.summarize(items, now).byStatus;
+    const stats = LedgerStats.summarize(items, now);
+    const bs = stats.byStatus;
     const chipMeta = {
       all:    { count: items.length },
       held:   { count: bs.held.count,   value: bs.held.cost,       suffix: 'cost' },
@@ -1635,7 +1634,7 @@
     const err = mem && mem.fetchError;
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     return `<div class="rwth-ledger">
-      ${buildLedgerDashboard(items, now, fold.analytics)}
+      ${buildLedgerDashboard(items, now, fold.analytics, stats)}
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
         <div class="rwth-ledger-actions">
@@ -2810,34 +2809,31 @@
       ? transactions.map(buildTxRow).join('')
       : `<div class="rwth-placeholder">No recent transactions yet.</div>`;
 
-    // #325 — live preview for all three HTML surfaces (forum/bazaar/signature),
-    // switched by ui.advSurface. Each is rendered from the same generator its
-    // Copy button feeds, so any identity/theme/copy/toggle/location/markup/image
-    // edit updates it on the next render (the whole tab rebuilds on each edit).
+    // #325 — live preview for the HTML surfaces (forum/bazaar/signature),
+    // switched by ui.advSurface. The preview is rendered from the same generator
+    // its Copy button feeds, so any identity/theme/copy/toggle/location/markup/
+    // image edit updates it on the next render (the whole tab rebuilds on each
+    // edit).
     //
-    // Two renders per surface: the COPY render (surfaceHtml) is the real, paste-
+    // Two renders of the ACTIVE surface: the COPY render is the real, paste-
     // ready output and keeps the view-counter pixel; the PREVIEW render
-    // (surfacePreview) suppresses the pixel via viewCounterUrl: '' so merely
-    // opening the panel never inflates the reach count with self-views. Apart
-    // from the pixel they are byte-identical.
-    const surfaceHtml = {
-      forum:     AdvertiseGenerator.toForumHtml(selectedItems, transactions, settings),
-      bazaar:    AdvertiseGenerator.toBazaarHtml(settings),
-      signature: AdvertiseGenerator.toSignatureHtml(selectedItems, settings),
-    };
-    const noPixel = { ...settings, viewCounterUrl: '' };
-    const surfacePreview = {
-      forum:     AdvertiseGenerator.toForumHtml(selectedItems, transactions, noPixel),
-      bazaar:    AdvertiseGenerator.toBazaarHtml(noPixel),
-      signature: AdvertiseGenerator.toSignatureHtml(selectedItems, noPixel),
-    };
+    // suppresses the pixel via viewCounterUrl: '' so merely opening the panel
+    // never inflates the reach count with self-views. Apart from the pixel they
+    // are byte-identical. Inactive surfaces are not generated at all (switching
+    // surfaces re-renders the tab anyway), and nothing is generated while the
+    // Copy-to-Torn section is folded (see outputsBody below).
     const SURFACES = [
       { key: 'forum', label: 'Forum' },
       { key: 'bazaar', label: 'Bazaar' },
       { key: 'signature', label: 'Signature' },
     ];
-    const activeSurface = surfaceHtml[ui.advSurface] ? ui.advSurface : 'forum';
+    const activeSurface = SURFACES.some(su => su.key === ui.advSurface)
+      ? ui.advSurface : 'forum';
     const showSurfaceRaw = !!ui.advSurfaceRaw;
+    const renderSurface = (st) =>
+      activeSurface === 'bazaar' ? AdvertiseGenerator.toBazaarHtml(st)
+      : activeSurface === 'signature' ? AdvertiseGenerator.toSignatureHtml(selectedItems, st)
+      : AdvertiseGenerator.toForumHtml(selectedItems, transactions, st);
 
     // #324 — section bodies built as locals so the assembled layout below reads
     // as a flat list of collapsible bars. Workflow order: the pivotal items area
@@ -3000,33 +2996,40 @@
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-tx">+ add transaction</button>
         </div>`;
 
-    // #325 — quick-copy text strip on top: the two non-visual outputs (a forum
-    // title and the trade-chat blurb). They have no rendered "look", so they are
-    // plain copy rows, sat above the surface switcher because they are grabbed
-    // first and most often. The chat blurb stays an editable textarea for last-
-    // second wording tweaks before copy.
-    const textStrip = `
+    // The whole Copy-to-Torn body — text strip + surface switcher — is built
+    // only while its section is unfolded, so a folded section costs zero
+    // generator runs per render.
+    let outputsBody = '';
+    if (!fold.advOutputs) {
+      // #325 — quick-copy text strip on top: the two non-visual outputs (a forum
+      // title and the trade-chat blurb). They have no rendered "look", so they are
+      // plain copy rows, sat above the surface switcher because they are grabbed
+      // first and most often. The chat blurb stays an editable textarea for last-
+      // second wording tweaks before copy.
+      const textStrip = `
         ${buildOutputBox('Forum title', 'rwth-out-title',
                          AdvertiseGenerator.toForumTitle(settings), false)}
         ${buildOutputBox('Trade-chat blurb', 'rwth-out-chat',
                          AdvertiseGenerator.toChat(selectedItems, settings), true, 3)}`;
 
-    // #325 — surface switcher. A segmented Forum/Bazaar/Signature control selects
-    // which HTML surface is shown; the body is the rendered preview by default,
-    // or an editable raw-HTML textarea when "Edit HTML" is flipped on. Either
-    // way "Copy HTML" reads the hidden/visible rwth-out-surface textarea, which
-    // always holds the real (pixel-bearing) output — so an in-place edit feeds
-    // the copy, exactly like the old per-surface boxes did.
-    const segBtns = SURFACES.map(su =>
-      `<button class="rwth-filter${su.key === activeSurface ? ' rwth-filter-active' : ''}" type="button"
+      // #325 — surface switcher. A segmented Forum/Bazaar/Signature control selects
+      // which HTML surface is shown; the body is the rendered preview by default,
+      // or an editable raw-HTML textarea when "Edit HTML" is flipped on. Either
+      // way "Copy HTML" reads the hidden/visible rwth-out-surface textarea, which
+      // always holds the real (pixel-bearing) output — so an in-place edit feeds
+      // the copy, exactly like the old per-surface boxes did.
+      const activeHtml = renderSurface(settings);
+      const activePreview = renderSurface({ ...settings, viewCounterUrl: '' });
+      const segBtns = SURFACES.map(su =>
+        `<button class="rwth-filter${su.key === activeSurface ? ' rwth-filter-active' : ''}" type="button"
                data-action="set-adv-surface" data-surface="${su.key}">${su.label}</button>`).join('');
-    const surfaceBody = showSurfaceRaw
-      ? `<textarea class="rwth-field-input rwth-output-box" id="rwth-out-surface" rows="12"
-                   spellcheck="false">${escapeAttr(surfaceHtml[activeSurface])}</textarea>`
-      : `<textarea id="rwth-out-surface" hidden>${escapeAttr(surfaceHtml[activeSurface])}</textarea>
-         <div class="rwth-adv-preview">${surfacePreview[activeSurface]}</div>
+      const surfaceBody = showSurfaceRaw
+        ? `<textarea class="rwth-field-input rwth-output-box" id="rwth-out-surface" rows="12"
+                   spellcheck="false">${escapeAttr(activeHtml)}</textarea>`
+        : `<textarea id="rwth-out-surface" hidden>${escapeAttr(activeHtml)}</textarea>
+         <div class="rwth-adv-preview">${activePreview}</div>
          <span class="rwth-adv-preview-note">Approximate &mdash; final look set by Torn</span>`;
-    const surfaceSwitcher = `
+      const surfaceSwitcher = `
         <div class="rwth-output-head">
           <div class="rwth-filters">${segBtns}</div>
           <div class="rwth-adv-surface-actions">
@@ -3038,8 +3041,9 @@
         </div>
         ${surfaceBody}`;
 
-    const outputsBody = `${textStrip}
+      outputsBody = `${textStrip}
         <div class="rwth-adv-surface">${surfaceSwitcher}</div>`;
+    }
 
     return `<div class="rwth-advertise">
       <div class="rwth-adv-section">
@@ -3061,7 +3065,7 @@
       </div>
       <div class="rwth-adv-section">
         ${collapseHead('Copy to Torn', 'advOutputs', fold.advOutputs)}
-        ${fold.advOutputs ? '' : outputsBody}
+        ${outputsBody}
       </div>
     </div>`;
   }
@@ -3817,6 +3821,18 @@
     }
     const dateStr = get('buyDate');
     const category = get('category') || 'Primary';
+    // Preserve the original stamp (with its time of day) when the date field
+    // still shows the same day — re-parsing would snap it to midnight UTC and
+    // drift the age / days-to-clear figures a little on every edit.
+    const editing = MEM.ledger.editingId !== 'new'
+      ? (MEM.ledger.items || []).find(i => i.id === MEM.ledger.editingId) : null;
+    let buyTimestamp;
+    if (dateStr) {
+      buyTimestamp = (editing && fmtDate(editing.buyTimestamp) === dateStr)
+        ? editing.buyTimestamp : Date.parse(dateStr);
+    } else {
+      buyTimestamp = editing ? editing.buyTimestamp : Date.now();
+    }
     const patch = {
       itemName,
       category,
@@ -3825,7 +3841,7 @@
       quality: numOrNull(get('quality')),
       rarity: get('rarity') || null,
       buyPrice: numOrNull(get('buyPrice')) || 0,
-      buyTimestamp: dateStr ? Date.parse(dateStr) : Date.now(),
+      buyTimestamp,
       buySource: get('buySource') || 'market',
     };
     if (MEM.ledger.editingId === 'new') Ledger.add(patch);
@@ -4087,7 +4103,9 @@
     return {
       ...hit,
       itemName: details.name || hit.itemName,
-      type: /armor/i.test(details.type || '') ? 'armor' : 'weapon',
+      // Torn has returned both "Armor" and "Defensive" for body armor across
+      // endpoints/revisions (see ARMOR_TYPES) — accept either here too.
+      type: /armor|defensive/i.test(details.type || '') ? 'armor' : 'weapon',
       bonuses,
       quality: stats.quality != null ? Number(stats.quality) : hit.quality,
       rarity: details.rarity || hit.rarity,
@@ -4333,6 +4351,10 @@
       timestamp: item.soldTimestamp,
       origin: 'ledger',
     };
+    // Same txKey dedup commitSells uses — double-tapping the button (or
+    // promoting a sale already imported via paste) never double-posts.
+    const seen = new Set((MEM.advertise.transactions || []).map(txKey));
+    if (seen.has(txKey(tx))) return;
     const transactions = [tx, ...MEM.advertise.transactions];
     Store.set('rwth_transactions', transactions);
     setState({ advertise: { ...MEM.advertise, transactions } });
@@ -4821,12 +4843,6 @@
       .rwth-cell-empty .rwth-cell-v { color: var(--rwth-muted); opacity: .55; }
       .rwth-cell-amber .rwth-cell-v { color: var(--rwth-warn); }
       .rwth-cell-red .rwth-cell-v { color: var(--rwth-danger); font-weight: 700; }
-      .rwth-status {
-        font: 700 10px var(--rwth-font-mono); text-transform: uppercase;
-        padding: 2px 6px; border-radius: 3px;
-      }
-      .rwth-status-held   { color: var(--rwth-muted); border: 1px solid #8AA66; }
-      .rwth-status-listed { color: var(--rwth-secondary); border: 1px solid var(--rwth-secondary-strong); }
       .rwth-roi { font: 700 11px var(--rwth-font-mono); }
       .rwth-roi-pos { color: var(--rwth-accent); }
       .rwth-roi-neg { color: var(--rwth-danger); }
@@ -6593,9 +6609,11 @@
         return null;
       }
       try {
-        // Resolve cache item IDs once via the Torn items dictionary.
+        // Resolve cache item IDs once via the Torn items dictionary. Keyed
+        // rwth_bb_cache_ids — NOT under the rwth_cache_ LRU prefix, which would
+        // make Cache eviction/clear silently delete this store.
         const cacheNames = COMBAT_CACHES.map(c => c.name);
-        let cacheIds = Store.get('rwth_cache_item_ids') || {};
+        let cacheIds = Store.get('rwth_bb_cache_ids') || {};
         const missing = cacheNames.filter(n => !cacheIds[n]);
         if (missing.length) {
           const r = await fetch(`${API_BASE}/torn/?selections=items&key=${encodeURIComponent(key)}&comment=rwth-bb`);
@@ -6611,7 +6629,7 @@
             MEM.fetchError = `Cache IDs not found: ${stillMissing.join(', ')}`;
             return null;
           }
-          Store.set('rwth_cache_item_ids', cacheIds);
+          Store.set('rwth_bb_cache_ids', cacheIds);
         }
         const results = await Promise.all(COMBAT_CACHES.map(async ({ name, bb }) => {
           const id = cacheIds[name];
