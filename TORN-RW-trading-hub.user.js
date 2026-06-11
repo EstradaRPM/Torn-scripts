@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.101
+// @version      0.3.102
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.101';
+  const SCRIPT_VERSION = '0.3.102';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4307,9 +4307,6 @@
       ? listedIds.slice() : MEM.advertise.selectedIds.slice();
     const idx = cur.indexOf(id);
     if (idx >= 0) cur.splice(idx, 1); else cur.push(id);
-    if (document.activeElement && document.activeElement.blur) {
-      document.activeElement.blur();
-    }
     setState({ advertise: { ...MEM.advertise, selectedIds: cur } });
   }
 
@@ -4386,10 +4383,18 @@
     // Self-heal: rebuild the shell if Torn (or an SPA re-render) dropped it.
     if (!document.getElementById('rwth-root')) buildShell();
 
-    // Never rewrite content while a form input inside the panel is focused.
+    // Never rewrite content while a text-entry control inside the panel is
+    // focused — replacing innerHTML would destroy in-flight typing. Checkbox,
+    // radio, and color inputs and selects carry no draft state, and they stay
+    // focused after `change` fires, so they must not block: their handlers
+    // re-render immediately and the repaint was being silently swallowed
+    // until the user clicked elsewhere.
     const focused = document.activeElement;
-    if (focused && ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused.tagName)
-        && document.getElementById('rwth-panel').contains(focused)) {
+    const typing = focused
+      && (focused.tagName === 'TEXTAREA'
+          || (focused.tagName === 'INPUT'
+              && !['checkbox', 'radio', 'color'].includes(focused.type)));
+    if (typing && document.getElementById('rwth-panel').contains(focused)) {
       return;
     }
 
