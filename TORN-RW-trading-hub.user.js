@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.103
+// @version      0.3.104
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.103';
+  const SCRIPT_VERSION = '0.3.104';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5320,6 +5320,7 @@
   }
 
   const SupabaseClient = {
+    _inflight: new Map(),
     /**
      * Read cleared auctions from our own `auctions` table over PostgREST.
      * Returns { auctions, total }, cached via Cache.
@@ -5343,38 +5344,46 @@
       const cacheKey = JSON.stringify(q);
       const cached = Cache.get(cacheKey);
       if (cached) return cached;
+      const inflight = SupabaseClient._inflight.get(cacheKey);
+      if (inflight) return inflight;
 
-      const params = new URLSearchParams();
-      params.set('select', 'item_name,price,quality,sold_at_epoch,bonus_id,bonus_title,bonus_value,bonuses,rarity');
-      if (q.item_name) params.set('item_name', `eq.${q.item_name}`);
-      if (q.bonus1_id != null) params.set('bonus_id', `eq.${q.bonus1_id}`);
-      if (q.bonus2_id != null) params.append('bonuses', `cs.[{"id":${q.bonus2_id}}]`);
-      if (q.rarity) params.set('rarity', `eq.${q.rarity}`);
-      const sortCol = q.sort_by === 'price' ? 'price' : 'sold_at_epoch';
-      const dir     = q.sort_order === 'asc' ? 'asc' : 'desc';
-      params.set('order', `${sortCol}.${dir}`);
-      if (q.limit  != null) params.set('limit',  String(q.limit));
-      if (q.offset != null) params.set('offset', String(q.offset));
+      const promise = (async () => {
+        const params = new URLSearchParams();
+        params.set('select', 'item_name,price,quality,sold_at_epoch,bonus_id,bonus_title,bonus_value,bonuses,rarity');
+        if (q.item_name) params.set('item_name', `eq.${q.item_name}`);
+        if (q.bonus1_id != null) params.set('bonus_id', `eq.${q.bonus1_id}`);
+        if (q.bonus2_id != null) params.append('bonuses', `cs.[{"id":${q.bonus2_id}}]`);
+        if (q.rarity) params.set('rarity', `eq.${q.rarity}`);
+        const sortCol = q.sort_by === 'price' ? 'price' : 'sold_at_epoch';
+        const dir     = q.sort_order === 'asc' ? 'asc' : 'desc';
+        params.set('order', `${sortCol}.${dir}`);
+        if (q.limit  != null) params.set('limit',  String(q.limit));
+        if (q.offset != null) params.set('offset', String(q.offset));
 
-      const data = await gmRequest({
-        method: 'GET',
-        url: `${RWTH_API.SUPABASE_URL}/rest/v1/auctions?${params.toString()}`,
-        headers: {
-          'apikey': RWTH_API.SUPABASE_ANON_KEY,
-          'Authorization': 'Bearer ' + RWTH_API.SUPABASE_ANON_KEY,
-        },
-      });
-      const rows = Array.isArray(data) ? data : [];
-      const auctions = rows.map((r) => {
-        const bonuses = Array.isArray(r.bonuses) ? r.bonuses : [];
-        return Object.assign({}, r, {
-          timestamp: r.sold_at_epoch,
-          bonus_values: bonuses.map((b) => ({ bonus_id: b.id, bonus_value: b.value })),
+        const data = await gmRequest({
+          method: 'GET',
+          url: `${RWTH_API.SUPABASE_URL}/rest/v1/auctions?${params.toString()}`,
+          headers: {
+            'apikey': RWTH_API.SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + RWTH_API.SUPABASE_ANON_KEY,
+          },
         });
+        const rows = Array.isArray(data) ? data : [];
+        const auctions = rows.map((r) => {
+          const bonuses = Array.isArray(r.bonuses) ? r.bonuses : [];
+          return Object.assign({}, r, {
+            timestamp: r.sold_at_epoch,
+            bonus_values: bonuses.map((b) => ({ bonus_id: b.id, bonus_value: b.value })),
+          });
+        });
+        const result = { auctions, total: auctions.length };
+        Cache.set(cacheKey, result);
+        return result;
+      })().finally(() => {
+        SupabaseClient._inflight.delete(cacheKey);
       });
-      const result = { auctions, total: auctions.length };
-      Cache.set(cacheKey, result);
-      return result;
+      SupabaseClient._inflight.set(cacheKey, promise);
+      return promise;
     },
   };
 
@@ -5417,6 +5426,7 @@
   const LISTINGS_TTL_MS = 5 * 60 * 1000;
   const ListingsFetcher = {
     _cache: new Map(),
+    _inflight: new Map(),
     _ttl: LISTINGS_TTL_MS,
     // Normalise one Torn item-market listing to the shared comp shape. Bonus %
     // is the first bonus value (matches the Supabase cleared-comp convention
@@ -5521,55 +5531,66 @@
       const now  = Date.now();
       const hit  = ListingsFetcher._cache.get(key);
       if (hit && (now - hit.ts) < ListingsFetcher._ttl) return hit.data;
-      let market = [];
-      try {
-        const apiKey = (MEM.settings && MEM.settings.apiKey || '').trim();
-        // Weapons require a resolved bonus title; armor needs only the item id.
-        const queryable = itemId != null && (isArmor || !!bonus)
-          && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey);
-        if (queryable) {
-          const url = `${API_BASE}/v2/market/${itemId}/itemmarket?`
-            + (isArmor ? '' : `bonus=${encodeURIComponent(bonus)}&`)
-            + `limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
-          const res = await fetch(url);
-          const d   = await res.json();
-          if (d && !d.error && d.itemmarket && Array.isArray(d.itemmarket.listings)) {
-            market = d.itemmarket.listings
-              .map(ListingsFetcher._shapeItemMarket)
-              .filter(Boolean);
-            // Weapons only: keep same-colour comps so a yellow (1-bonus) piece
-            // is not anchored against pricier orange/red pieces that share the
-            // same bonus. Armor is a single RW tier per item id, so its listings
-            // are already like-for-like — no rarity post-filter.
-            if (!isArmor && rarity) {
-              market = market.filter(
-                l => (l.rarity || '').toLowerCase() === rarity);
-            }
-            // Full-loadout match (#327): keep only listings whose complete bonus
-            // set — every name AND the count — equals the candidate's. Drops a
-            // single-bonus piece from a 2-combo candidate's pool (and a 2-combo
-            // from a single-bonus pool), so the deduction can never anchor on a
-            // cheaper, weaker, different piece. When this empties the pool the
-            // candidate has no same-loadout listing to price off — the card
-            // routes to its widened-band / needs-research state rather than
-            // anchoring on a single-bonus listing. Armor is one fixed loadout
-            // per item id, so it is left unfiltered.
-            if (!isArmor && wantLoadout.length) {
-              market = market.filter(l => {
-                const got = Array.isArray(l.bonusNames) ? l.bonusNames : [];
-                return got.length === wantLoadout.length
-                  && wantLoadout.every(n => got.includes(n));
-              });
+      const inflight = ListingsFetcher._inflight.get(key);
+      if (inflight) return inflight;
+      const promise = (async () => {
+        let market = [];
+        try {
+          const apiKey = (MEM.settings && MEM.settings.apiKey || '').trim();
+          // Weapons require a resolved bonus title; armor needs only the item id.
+          const queryable = itemId != null && (isArmor || !!bonus)
+            && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey);
+          if (queryable) {
+            const url = `${API_BASE}/v2/market/${itemId}/itemmarket?`
+              + (isArmor ? '' : `bonus=${encodeURIComponent(bonus)}&`)
+              + `limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
+            const res = await fetch(url);
+            const d   = await res.json();
+            if (d && !d.error && d.itemmarket && Array.isArray(d.itemmarket.listings)) {
+              market = d.itemmarket.listings
+                .map(ListingsFetcher._shapeItemMarket)
+                .filter(Boolean);
+              // Weapons only: keep same-colour comps so a yellow (1-bonus) piece
+              // is not anchored against pricier orange/red pieces that share the
+              // same bonus. Armor is a single RW tier per item id, so its listings
+              // are already like-for-like — no rarity post-filter.
+              if (!isArmor && rarity) {
+                market = market.filter(
+                  l => (l.rarity || '').toLowerCase() === rarity);
+              }
+              // Full-loadout match (#327): keep only listings whose complete bonus
+              // set — every name AND the count — equals the candidate's. Drops a
+              // single-bonus piece from a 2-combo candidate's pool (and a 2-combo
+              // from a single-bonus pool), so the deduction can never anchor on a
+              // cheaper, weaker, different piece. When this empties the pool the
+              // candidate has no same-loadout listing to price off — the card
+              // routes to its widened-band / needs-research state rather than
+              // anchoring on a single-bonus listing. Armor is one fixed loadout
+              // per item id, so it is left unfiltered.
+              if (!isArmor && wantLoadout.length) {
+                market = market.filter(l => {
+                  const got = Array.isArray(l.bonusNames) ? l.bonusNames : [];
+                  return got.length === wantLoadout.length
+                    && wantLoadout.every(n => got.includes(n));
+                });
+              }
             }
           }
-        }
-      } catch { market = []; }
-      const data = { market, bazaar: [] };
-      ListingsFetcher._cache.set(key, { ts: now, data });
-      return data;
+        } catch { market = []; }
+        const data = { market, bazaar: [] };
+        ListingsFetcher._cache.set(key, { ts: now, data });
+        return data;
+      })().finally(() => {
+        ListingsFetcher._inflight.delete(key);
+      });
+      ListingsFetcher._inflight.set(key, promise);
+      return promise;
     },
     /** Test/utility — drop cached entries. */
-    clear() { ListingsFetcher._cache.clear(); },
+    clear() {
+      ListingsFetcher._cache.clear();
+      ListingsFetcher._inflight.clear();
+    },
   };
 
   // ─── Bonus-bracket market anchor (pure, #298 / PRD #296) ─────────────────────
@@ -8203,6 +8224,8 @@
       else AuctionScanner.stop();
     },
   };
+
+  if (TEST) hydrate();
 
   // ─── Test seam (ADR-0002) ────────────────────────────────────────────────────
   // Pure functions exposed for the Node test runner. More are added in later slices.
