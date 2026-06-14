@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.102
+// @version      0.3.103
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.102';
+  const SCRIPT_VERSION = '0.3.103';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -6808,6 +6808,424 @@
     return out;
   }
 
+  // Pure view model for the inline auction/ledger price cards. It owns the
+  // pricing-policy decisions and text; InlineRenderer owns DOM creation.
+  const PriceCardModel = {
+    applyDrillFilters(comps, drill, ctx) {
+      const d = drill || {};
+      const s = ctx || {};
+      let arr = (comps || []).slice();
+      const bv = Number(s.primaryBonusValue);
+      const hasBonus = Number.isFinite(bv);
+      if (d.bonus !== 'auto' && d.bonus !== 'all' && hasBonus) {
+        let tol = null;
+        if (d.bonus === 'strict') {
+          tol = Number.isFinite(Number(s.strictTolerance)) ? Number(s.strictTolerance) : 0;
+        } else if (d.bonus === 'pm1') tol = 1;
+        else if (d.bonus === 'pm2') tol = 2;
+        if (tol != null) {
+          arr = arr.filter(c => c.bonusValue != null && Math.abs(Number(c.bonusValue) - bv) <= tol);
+        }
+      }
+      const lq = Number(s.listingQuality);
+      const hasQ = Number.isFinite(lq) && lq > 0;
+      if (d.quality !== 'all' && hasQ) {
+        if (d.quality === 'auto' || d.quality === 'pm5') {
+          const w = 5;
+          arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
+        } else if (d.quality === 'pm10') {
+          const w = 10;
+          arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
+        }
+      }
+      return arr;
+    },
+    fmtSpreadPct(pct) {
+      const v = Number(pct);
+      if (!Number.isFinite(v)) return '—';
+      const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
+      return `${sign}${Math.abs(Math.round(v * 100))}%`;
+    },
+    deductionMath(ctx, buy, reference, filtered) {
+      const cls = ctx.itemClass;
+      const med = reference && reference.median != null
+        ? reference.median
+        : (function () {
+            const ps = filtered.map(c => Number(c.price)).filter(p => Number.isFinite(p) && p > 0).sort((a, b) => a - b);
+            if (!ps.length) return null;
+            const m = Math.floor(ps.length / 2);
+            return ps.length % 2 ? ps[m] : (ps[m - 1] + ps[m]) / 2;
+          })();
+      if (cls === 'duneRiotArmor') {
+        if (buy.floor == null) return 'Bazaar floor not loaded yet — add your API key and wait for prices.';
+        const tol = buy.tolerance != null ? buy.tolerance : 0;
+        return `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room → bid up to ${fmtChatPrice(buy.max)}`;
+      }
+      if (cls === 'trashBB') {
+        if (buy.floor == null) return 'Bazaar floor not loaded yet.';
+        return `Bazaar floor ${fmtChatPrice(buy.floor)} (firm) → bid up to ${fmtChatPrice(buy.max)}`;
+      }
+      const anchorComps = /Armor$/.test(String(cls || ''))
+        ? bandByBonus(filtered, ctx.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
+        : filtered;
+      const prices = (anchorComps || []).map(c => Number(c && c.price))
+        .filter(p => Number.isFinite(p) && p > 0);
+      const mn = prices.length ? Math.min(...prices) : null;
+      if (cls === 'assaultArmor') {
+        if (mn == null || !Array.isArray(buy.range)) return 'not enough sales to work out a range.';
+        return `cheapest ${fmtChatPrice(mn)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (middle ${fmtChatPrice(buy.max)}; typical ${fmtChatPrice(med)})`;
+      }
+      if (cls === 'orangeWeapon' || cls === 'redWeapon' || cls === 'orangeArmor' || cls === 'redArmor') {
+        if (!Array.isArray(buy.range)) return 'not enough sales to work out a range.';
+        return `similar sales run ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — too spread out for one buy price`;
+      }
+      const marketAnchor = Number(buy && buy.marketAnchor);
+      if (!Number.isFinite(marketAnchor) || marketAnchor <= 0 || buy.max == null) {
+        return 'item market price not loaded yet.';
+      }
+      const m = ctx.margins || {};
+      const tax    = m.tax    != null ? m.tax    : 0.05;
+      const mug    = m.mug    != null ? m.mug    : 0.10;
+      const margin = m.margin != null ? m.margin : 0.05;
+      const pct = (x) => `${Math.round(x * 100)}%`;
+      const medTail = med != null ? ` (typical ${fmtChatPrice(med)})` : '';
+      return `Item market ${fmtChatPrice(marketAnchor)} − ${pct(tax)} tax − ${pct(mug)} mug risk − ${pct(margin)} your profit → bid up to ${fmtChatPrice(buy.max)}${medTail}`;
+    },
+    build(ctx, drill, settings) {
+      const s = ctx || {};
+      const d = drill || {};
+      const resolved = settings || PricingEngine.resolveSettings({});
+      const rawComps = Array.isArray(s.comps) ? s.comps : [];
+      const drillFiltered = PriceCardModel.applyDrillFilters(rawComps, d, s);
+      const useAutoRef = d.bonus === 'auto';
+      const reference = PricingEngine.compReference(drillFiltered, {
+        itemClass: s.itemClass,
+        targetBonusValue: useAutoRef ? s.primaryBonusValue : null,
+        strictTolerance: useAutoRef ? s.strictTolerance : null,
+        widenTolerances: useAutoRef ? [1, 2] : null,
+        bonusName: s.primaryBonusName,
+      });
+      const filtered = (useAutoRef && reference && Array.isArray(reference.comps))
+        ? reference.comps : drillFiltered;
+
+      const marketListings = (Array.isArray(s.askingComps) ? s.askingComps : [])
+        .filter(c => (c.source || 'market') === 'market')
+        .map(c => ({ price: c.price, bonusValue: c.bonusValue }));
+      const bracket = resolveMarketAnchor(marketListings, s.primaryBonusValue);
+      const anchorPrice = (bracket && bracket.anchor != null)
+        ? bracket.anchor : s.marketCheapest;
+
+      let crossMarketFloor, crossBazaarFloor, crossBracketed;
+      if (bracket && bracket.tier && Number.isFinite(Number(s.primaryBonusValue))) {
+        const lo = bracket.tier.thresholdBonus;
+        let hi = Infinity;
+        for (const t of (bracket.tiers || [])) {
+          if (t.thresholdBonus > lo && t.thresholdBonus < hi) hi = t.thresholdBonus;
+        }
+        const bazaarInBracket = (Array.isArray(s.askingComps) ? s.askingComps : [])
+          .filter(c => c.source === 'bazaar')
+          .map(c => ({ price: Number(c.price), bonus: Number(c.bonusValue) }))
+          .filter(c => Number.isFinite(c.price) && c.price > 0
+                       && Number.isFinite(c.bonus) && c.bonus >= lo && c.bonus < hi);
+        crossMarketFloor = anchorPrice;
+        crossBazaarFloor = bazaarInBracket.length
+          ? Math.min(...bazaarInBracket.map(c => c.price)) : null;
+        crossBracketed = true;
+      } else {
+        crossMarketFloor = s.marketCheapest;
+        crossBazaarFloor = s.bazaarCheapest;
+        crossBracketed = false;
+      }
+
+      const isArmorClass = /Armor$/.test(String(s.itemClass || ''));
+      const compPricedArmor = s.itemClass === 'assaultArmor'
+        || s.itemClass === 'orangeArmor' || s.itemClass === 'redArmor';
+      const anchorComps = isArmorClass
+        ? bandByBonus(filtered, s.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
+        : filtered;
+
+      const buy = PricingEngine.buyTarget({
+        itemClass: s.itemClass, comps: anchorComps,
+        currentBid: s.currentBid, bbFloor: s.bbFloor,
+        marketAnchor: anchorPrice, settings: resolved,
+      }) || {};
+      const thinReference = filtered.length > 0 && filtered.length < 5;
+      const ladder = PricingEngine.sellLadder({
+        itemClass: s.itemClass, comps: filtered,
+        marketAnchor: anchorPrice,
+        marketCheapest: s.marketCheapest,
+        buyCost: s.buyCost != null ? s.buyCost : (s.currentBid || 0),
+        settings: resolved,
+      }) || {};
+
+      const armorPoolSource = (reference && reference.comps && reference.comps.length)
+        ? reference.comps : filtered;
+      const armorBandComps = compPricedArmor
+        ? bandByQuality(armorPoolSource, s.listingQuality, ARMOR_QUALITY_BAND_TOL)
+        : null;
+      const armorAnchor = (armorBandComps && armorBandComps.length)
+        ? _median(armorBandComps
+            .map(c => Number(c && c.price)).filter(p => Number.isFinite(p) && p > 0))
+        : null;
+
+      const planClass = !!buy && (
+        buy.anchor === 'market'
+        || s.itemClass === 'assaultArmor'
+      );
+      const isAssaultArmor = s.itemClass === 'assaultArmor';
+      const plan = (planClass && (isAssaultArmor
+            ? armorAnchor != null
+            : (ladder && ladder.market != null)))
+        ? PricingEngine.auctionPlan({
+            comps: isAssaultArmor
+              ? armorBandComps
+              : ((reference && reference.comps && reference.comps.length)
+                  ? reference.comps : filtered),
+            bazaarResale: isAssaultArmor ? armorAnchor : ladder.market,
+            settings: isAssaultArmor ? { tax: 0, mug: 0, margin: 0 } : resolved,
+          })
+        : null;
+
+      const wideClass = s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon'
+        || s.itemClass === 'orangeArmor' || s.itemClass === 'redArmor';
+      const isWeaponWide = s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon';
+      const isDoubleBonus = isWeaponWide && Number(s.bonusCount) >= 2;
+      let band = null;
+      if (wideClass) {
+        const bandSource = (reference && reference.comps && reference.comps.length)
+          ? reference.comps : filtered;
+        const candCount = Number(s.bonusCount);
+        const loadoutComps = isWeaponWide
+          ? ((Number.isFinite(candCount) && candCount > 0)
+              ? bandSource.filter(c => Number(c.bonusCount) === candCount)
+              : bandSource)
+          : ((armorBandComps && armorBandComps.length) ? armorBandComps : bandSource);
+        band = PricingEngine.widenedBand({ comps: loadoutComps });
+      }
+
+      const hasResalePrice = Number.isFinite(Number(anchorPrice)) && Number(anchorPrice) > 0;
+      const resaleAnchored = !wideClass && !compPricedArmor
+        && (buy.anchor === 'market' || s.itemClass === 'assaultArmor');
+      const needsResearch = resaleAnchored && !hasResalePrice;
+
+      const buyClasses = [];
+      let buyText;
+      if (wideClass) {
+        if (band) {
+          const tag = isDoubleBonus
+            ? ' (very unreliable)'
+            : ` (median ${fmtChatPrice(band.median)}, wide)`;
+          buyText = `Bid ${fmtChatPrice(band.lo)} – ${fmtChatPrice(band.hi)}${tag}`;
+        } else {
+          buyText = isDoubleBonus ? 'No reliable price' : 'Bid up to —';
+        }
+      } else if (needsResearch) {
+        buyText = 'No price to go on — research before bidding';
+        buyClasses.push('rwth-card-buymax-pass');
+      } else if (plan) {
+        buyText = plan.verdict === 'pass'
+          ? `PASS — clears above your ${fmtChatPrice(plan.maxBid)} max`
+          : `Bid up to ${fmtChatPrice(plan.maxBid)}${plan.clamped ? ' (capped to comps)' : ''}`;
+        if (plan.verdict === 'pass') buyClasses.push('rwth-card-buymax-pass');
+        if (plan.clamped) buyClasses.push('rwth-card-buymax-clamped');
+      } else if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
+        const tol = buy.tolerance != null ? buy.tolerance : 0;
+        buyText = `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room`;
+      } else if (thinReference && Array.isArray(buy.range)) {
+        buyText = `Bid ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
+      } else if (buy.max == null && Array.isArray(buy.range)) {
+        buyText = `Bid ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
+      } else if (buy.max != null) {
+        buyText = `Bid up to ${fmtChatPrice(buy.max)}`;
+        if (Array.isArray(buy.range)) {
+          buyText += ` (${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])})`;
+        }
+      } else {
+        buyText = 'Bid up to —';
+      }
+
+      const headlineMeta = [];
+      if (plan) {
+        const range = plan.floor === plan.typical
+          ? fmtChatPrice(plan.typical)
+          : `${fmtChatPrice(plan.floor)}–${fmtChatPrice(plan.typical)}`;
+        headlineMeta.push({
+          className: 'rwth-card-buymed',
+          text: `clears ${range} at auction${plan.count < 5 ? ' (few comps)' : ''}`,
+        });
+      } else if (needsResearch) {
+        const refComps = (reference && reference.comps && reference.comps.length)
+          ? reference.comps : filtered;
+        const rp = refComps.map(c => Number(c && c.price)).filter(p => Number.isFinite(p) && p > 0);
+        if (rp.length) {
+          const lo = Math.round(Math.min(...rp));
+          const md = Math.round(_median(rp));
+          headlineMeta.push({
+            className: 'rwth-card-buymed',
+            text: lo === md
+              ? `sold ~${fmtChatPrice(md)} at past auctions`
+              : `sold ${fmtChatPrice(lo)}–${fmtChatPrice(md)} at past auctions`,
+          });
+        }
+      } else {
+        if (buy.medianTarget != null) {
+          headlineMeta.push({ className: 'rwth-card-buymed', text: `typical ${fmtChatPrice(buy.medianTarget)}` });
+        }
+        if (buy.auctionMedian != null) {
+          headlineMeta.push({ className: 'rwth-card-buymed', text: `sells ~${fmtChatPrice(buy.auctionMedian)} at auction` });
+        }
+      }
+      const showsBBFloor = buy.max != null
+        || s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon';
+      if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && showsBBFloor) {
+        headlineMeta.push({ className: 'rwth-card-bbfloor', text: `bazaar floor ${fmtChatPrice(s.bbFloor)}` });
+      }
+      const cbNum = Number(s.currentBid);
+      const bidDelta = needsResearch ? null
+        : (plan
+            ? (Number.isFinite(cbNum) ? plan.maxBid - cbNum : null)
+            : buy.currentBidDelta);
+      if (bidDelta != null) {
+        headlineMeta.push({
+          className: bidDelta >= 0 ? 'rwth-card-room' : 'rwth-card-over',
+          text: bidDelta >= 0
+            ? `${fmtChatPrice(bidDelta)} under your max`
+            : `${fmtChatPrice(-bidDelta)} over your max`,
+        });
+      }
+
+      const notes = [];
+      if (needsResearch) {
+        notes.push({
+          className: 'rwth-card-ref rwth-card-thin',
+          text: "Nothing comparable is listed for sale right now, so there's no resale price to work a safe bid back from. The only figures we have are what similar pieces sold for at past auctions (shown above) — that's what buyers paid, not what you could resell for. Check recent sales yourself and set your own max before bidding.",
+        });
+      }
+      if (wideClass) {
+        notes.push({
+          className: 'rwth-card-ref rwth-card-thin',
+          text: isDoubleBonus
+            ? '⚠ Double-bonus weapons are extremely rare. This range may rest on only 1–2 old sales — research recent auctions yourself before bidding.'
+            : '⚠ Limited sales data — proceed with caution. Treat this as a rough range and check recent auctions before bidding.',
+        });
+      }
+
+      let referenceText = '';
+      if (reference && (reference.count > 0 || reference.widenedBonusCount || reference.suppressedByChange)) {
+        const parts = [];
+        if (reference.widenedBonusCount > 0) {
+          parts.push(`based on ${reference.strictCount} close + ${reference.widenedBonusCount} within ±${reference.widenedTolerance}% bonus of yours`);
+        } else {
+          const n = reference.count;
+          let head = `based on ${n} similar sale${n === 1 ? '' : 's'}`;
+          if (reference.tolerance != null) {
+            head += reference.tolerance === 0
+              ? ' (exact bonus match)'
+              : ` (within ±${reference.tolerance}% bonus of yours)`;
+          }
+          parts.push(head);
+        }
+        const widenedBaseList = Array.isArray(s.widenedBase) ? s.widenedBase : [];
+        if (widenedBaseList.length) {
+          parts.push(`also using ${widenedBaseList.join(', ')}`);
+        }
+        if (reference.recencyDays != null) {
+          parts.push(reference.recencyDays >= 365
+            ? `~${Math.round(reference.recencyDays / 365)}yr old`
+            : `~${Math.round(reference.recencyDays / 30)}mo old`);
+        }
+        if (reference.suppressedByChange > 0) {
+          parts.push(`skipped ${reference.suppressedByChange} (bonus since nerfed)`);
+        }
+        if (d.bonus !== 'auto' || d.quality !== 'auto') parts.push('your filters applied');
+        referenceText = parts.join(' · ');
+      }
+      const thinText = thinReference && !wideClass
+        ? 'few comparable sales — treat this as a rough guess' : '';
+
+      const sens = PricingEngine.deriveSensitivity(filtered, s.primaryBonusValue);
+      let sensitivityText;
+      if (sens.label === 'sloped') {
+        sensitivityText = `each 1% of bonus is worth about ${fmtChatPrice(Math.abs(sens.perPct))} near your bonus level`;
+      } else if (sens.label === 'flat') {
+        sensitivityText = 'bonus % barely changes the price near your bonus level';
+      } else {
+        sensitivityText = 'not enough sales to tell how much bonus is worth';
+      }
+
+      let itemMarketCrosscheckText = '';
+      if (compPricedArmor) {
+        const imf = Number(anchorPrice);
+        if (Number.isFinite(imf) && imf > 0) {
+          itemMarketCrosscheckText = `Item market floor ${fmtChatPrice(imf)} — cross-check only (quality, not the listing floor, sets armor value)`;
+        }
+      }
+      const chainAnchor = plan ? Number(ladder.market) : Number(anchorPrice);
+      const chain = (!compPricedArmor && Number.isFinite(chainAnchor) && chainAnchor > 0)
+        ? PricingEngine.deductionChain({ anchor: chainAnchor, settings: resolved }) : null;
+      let deductionText = '';
+      let verdictText = '';
+      if (chain) {
+        deductionText =
+          `Item market ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
+          + ` − ${Math.round(chain.mug * 100)}% mug risk − ${Math.round(chain.margin * 100)}% your profit`
+          + ` → bid up to ${fmtChatPrice(chain.buyMax)}`;
+        const cb = Number(s.currentBid);
+        if (!plan && Number.isFinite(cb) && cb > 0) {
+          verdictText = cb <= chain.buyMax
+            ? `BUY — current bid ${fmtChatPrice(cb)} is within your max of ${fmtChatPrice(chain.buyMax)}`
+            : `PASS — current bid ${fmtChatPrice(cb)} is over your max of ${fmtChatPrice(chain.buyMax)}`;
+        }
+      }
+
+      const flipBuckets = mergeLadder({
+        soldComps: filtered,
+        listedComps: Array.isArray(s.askingComps) ? s.askingComps : [],
+        axis: 'bonus',
+        ownKey: Number(s.primaryBonusValue),
+        itemClass: s.itemClass,
+      });
+      const ownFlip = flipBuckets.find(b => b.isOwn && b.spread);
+      const flipText = ownFlip
+        ? `Flip margin ${PriceCardModel.fmtSpreadPct(ownFlip.spread.pct)}`
+          + ` — for-sale floor ${fmtChatPrice(ownFlip.listed.cheapest)} vs sold typical ${fmtChatPrice(ownFlip.sold.median)} at your bonus`
+        : '';
+
+      const mktLabel = (bracket && bracket.fallback != null)
+        ? `Item market (nearest ${bracket.fallback}%)`
+        : 'Item market';
+      const ladderRungs = [
+        { label: 'Bazaar / Forum', text: ladder.bazaar != null ? fmtChatPrice(ladder.bazaar) : null },
+        { label: mktLabel,         text: ladder.market != null ? fmtChatPrice(ladder.market) : null },
+        { label: 'Floor',          text: ladder.floor  != null ? fmtChatPrice(ladder.floor)  : null },
+      ];
+      if (s.askingCount && s.askingMedian != null) {
+        ladderRungs.push({ label: `For sale (${s.askingCount})`, text: fmtChatPrice(s.askingMedian) });
+      }
+
+      return {
+        resolved, filtered, buy, reference,
+        badgeTone: 'rwth-tier-good',
+        headline: {
+          classTag: s.classTag || '',
+          buyText,
+          buyClasses,
+          meta: headlineMeta,
+        },
+        notes,
+        referenceText,
+        thinText,
+        sensitivityText,
+        itemMarketCrosscheckText,
+        deductionText,
+        verdictText,
+        flipText,
+        crossCheck: { marketFloor: crossMarketFloor, bazaarFloor: crossBazaarFloor, bracketed: crossBracketed },
+        ladderRungs,
+      };
+    },
+  };
+
   // ─── InlineRenderer (impure) ────────────────────────────────────────────────
   // Idempotent badge slot inside an expanded item-info block. One badge per
   // row; subsequent renders overwrite the existing element.
@@ -7054,350 +7472,36 @@
       return els;
     },
     _applyDrillFilters(comps, drill, ctx) {
-      let arr = (comps || []).slice();
-      const bv = Number(ctx.primaryBonusValue);
-      const hasBonus = Number.isFinite(bv);
-      if (drill.bonus !== 'auto' && drill.bonus !== 'all' && hasBonus) {
-        let tol = null;
-        if (drill.bonus === 'strict') {
-          tol = Number.isFinite(Number(ctx.strictTolerance)) ? Number(ctx.strictTolerance) : 0;
-        } else if (drill.bonus === 'pm1') tol = 1;
-        else if (drill.bonus === 'pm2') tol = 2;
-        if (tol != null) {
-          arr = arr.filter(c => c.bonusValue != null && Math.abs(Number(c.bonusValue) - bv) <= tol);
-        }
-      }
-      const lq = Number(ctx.listingQuality);
-      const hasQ = Number.isFinite(lq) && lq > 0;
-      if (drill.quality !== 'all' && hasQ) {
-        if (drill.quality === 'auto' || drill.quality === 'pm5') {
-          const w = 5;
-          arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
-        } else if (drill.quality === 'pm10') {
-          const w = 10;
-          arr = arr.filter(c => c.quality != null && Math.abs(Number(c.quality) - lq) <= w);
-        }
-      }
-      return arr;
+      return PriceCardModel.applyDrillFilters(comps, drill, ctx);
     },
     _paintCard(badge, drill) {
       const s = badge._rwthCtx || {};
-      // #330 — fold the live Pricing-brain config into the friction settings the
-      // engine reads, once, and thread it into every pricing call below (these
-      // used to pass `undefined`, so the knobs silently did nothing).
       const resolved = PricingEngine.resolveSettings(MEM.intel);
-      const rawComps = Array.isArray(s.comps) ? s.comps : [];
-      const drillFiltered = InlineRenderer._applyDrillFilters(rawComps, drill, s);
-      const useAutoRef = drill.bonus === 'auto';
-      const reference = PricingEngine.compReference(drillFiltered, {
-        itemClass: s.itemClass,
-        targetBonusValue: useAutoRef ? s.primaryBonusValue : null,
-        strictTolerance: useAutoRef ? s.strictTolerance : null,
-        widenTolerances: useAutoRef ? [1, 2] : null,
-        bonusName: s.primaryBonusName,
-      });
-      const filtered = (useAutoRef && reference && Array.isArray(reference.comps))
-        ? reference.comps : drillFiltered;
+      const model = PriceCardModel.build(s, drill, resolved);
+      const filtered = model.filtered;
+      const buy = model.buy;
+      const reference = model.reference;
 
-      // v0.3.29 (#298) — anchor the buy max + deduction on the bonus-% bracket
-      // the candidate falls into, not the global cheapest listing. Market
-      // listings only (bazaar excluded from anchor math — PRD #296). Falls back
-      // to the global cheapest when the resolver can't tier (no listings / no
-      // bonus data). Both the headline and the deduction line read `anchorPrice`
-      // so they agree by construction.
-      const marketListings = (Array.isArray(s.askingComps) ? s.askingComps : [])
-        .filter(c => (c.source || 'market') === 'market')
-        .map(c => ({ price: c.price, bonusValue: c.bonusValue }));
-      const bracket = resolveMarketAnchor(marketListings, s.primaryBonusValue);
-      const anchorPrice = (bracket && bracket.anchor != null)
-        ? bracket.anchor : s.marketCheapest;
-
-      // #300 follow-up — restrict the cross-check floors to the candidate's
-      // bonus bracket so market and bazaar are compared like-for-like (not a
-      // weak low-bonus market piece vs a strong high-bonus bazaar piece). The
-      // market side reuses the bracket anchor already shown as "Item market";
-      // the bazaar side is the cheapest bazaar listing whose bonus falls in the
-      // SAME tier window. Bazaar still never feeds the anchor/tiering math
-      // (#296) — this only filters which bazaar listing we display.
-      let crossMarketFloor, crossBazaarFloor, crossBracketed;
-      if (bracket && bracket.tier && Number.isFinite(Number(s.primaryBonusValue))) {
-        const lo = bracket.tier.thresholdBonus;
-        let hi = Infinity;
-        for (const t of (bracket.tiers || [])) {
-          if (t.thresholdBonus > lo && t.thresholdBonus < hi) hi = t.thresholdBonus;
-        }
-        const bazaarInBracket = (Array.isArray(s.askingComps) ? s.askingComps : [])
-          .filter(c => c.source === 'bazaar')
-          .map(c => ({ price: Number(c.price), bonus: Number(c.bonusValue) }))
-          .filter(c => Number.isFinite(c.price) && c.price > 0
-                       && Number.isFinite(c.bonus) && c.bonus >= lo && c.bonus < hi);
-        crossMarketFloor = anchorPrice;
-        crossBazaarFloor = bazaarInBracket.length
-          ? Math.min(...bazaarInBracket.map(c => c.price)) : null;
-        crossBracketed = true;
-      } else {
-        // No bracket / no bonus data → fall back to raw cheapest each side.
-        crossMarketFloor = s.marketCheapest;
-        crossBazaarFloor = s.bazaarCheapest;
-        crossBracketed = false;
-      }
-
-      // v0.3.76 — armor bids anchor on the candidate's own bonus neighbourhood
-      // (±1%), not the whole sold pool, so a cheaper weaker piece (or a high-
-      // bonus outlier) can't set the floor for a stronger candidate. Weapons are
-      // unaffected: they anchor on the for-sale bracket, not min-of-comps.
-      const isArmorClass = /Armor$/.test(String(s.itemClass || ''));
-      // #326 — comp-priced armor (assault/orange/red) takes its value from QUALITY,
-      // not the item-market floor (set by near-0%-quality junk listings). These
-      // anchor the headline on the quality-banded auction-comp median below; item
-      // market drops to a cross-check. duneRiotArmor/trashBB stay bazaar-floor priced.
-      const compPricedArmor = s.itemClass === 'assaultArmor'
-        || s.itemClass === 'orangeArmor' || s.itemClass === 'redArmor';
-      const anchorComps = isArmorClass
-        ? bandByBonus(filtered, s.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
-        : filtered;
-
-      const buy = PricingEngine.buyTarget({
-        itemClass: s.itemClass, comps: anchorComps,
-        currentBid: s.currentBid, bbFloor: s.bbFloor,
-        marketAnchor: anchorPrice, settings: resolved,
-      });
-      // v0.3.0 slice 19d (#288) — thin-reference fallback. After base-widen,
-      // <5 total comps means we cannot anchor a headline buy max — show the
-      // range only and label the card "judgment call".
-      const thinReference = filtered.length > 0 && filtered.length < 5;
-      const ladder = PricingEngine.sellLadder({
-        itemClass: s.itemClass, comps: filtered,
-        marketAnchor: anchorPrice,
-        marketCheapest: s.marketCheapest,
-        buyCost: s.buyCost != null ? s.buyCost : (s.currentBid || 0),
-        settings: resolved,
-      });
-      // Auction buy decision — one bonus-matched clearing range + a max bid
-      // clamped off the item-market anchor (see PricingEngine.auctionPlan).
-      // For market-anchored WEAPONS the 20% cut (5% tax + 10% mug + 5% margin) is
-      // taken off the bonus-matched item-market price directly — NOT off the
-      // bazaar rung (= market ÷ 1.05), which would shave the same ~5% twice and
-      // push every max bid a tier too low. duneRiotArmor (bonus-less Riot/Dune)
-      // keeps its bazaar-floor headline; trashBB hard-floors.
-      //
-      // #326 — comp-priced armor (assault + orange/red, plus any bonus Riot/Dune,
-      // which now routes to assaultArmor) values on QUALITY, not the item-market
-      // floor that near-0%-quality junk listings set. Build a quality-banded comp
-      // pool around the candidate's quality and anchor the headline on its median
-      // (King's "avg of last 5 at similar quality"). assaultArmor rides the plan
-      // below (no resale cut); the thin orange/red tiers ride the widened band.
-      const armorPoolSource = (reference && reference.comps && reference.comps.length)
-        ? reference.comps : filtered;
-      const armorBandComps = compPricedArmor
-        ? bandByQuality(armorPoolSource, s.listingQuality, ARMOR_QUALITY_BAND_TOL)
-        : null;
-      const armorAnchor = (armorBandComps && armorBandComps.length)
-        ? _median(armorBandComps
-            .map(c => Number(c && c.price)).filter(p => Number.isFinite(p) && p > 0))
-        : null;
-
-      const planClass = !!buy && (
-        buy.anchor === 'market'
-        || s.itemClass === 'assaultArmor'
-      );
-      // assaultArmor now anchors on the quality-banded comp median with NO resale
-      // cut: those comps already ARE auction clears at the candidate's quality, so
-      // the median IS the bid target — re-cutting it would re-introduce the junk-
-      // floor undervaluation this fix removes (and PASS-vs-floor can never fire
-      // when maxBid = median ≥ floor = min). Market weapons keep the item-market ×
-      // (1 − friction) clamp off ladder.market.
-      const isAssaultArmor = s.itemClass === 'assaultArmor';
-      const plan = (planClass && (isAssaultArmor
-            ? armorAnchor != null
-            : (ladder && ladder.market != null)))
-        ? PricingEngine.auctionPlan({
-            comps: isAssaultArmor
-              ? armorBandComps
-              : ((reference && reference.comps && reference.comps.length)
-                  ? reference.comps : filtered),
-            bazaarResale: isAssaultArmor ? armorAnchor : ladder.market,
-            settings: isAssaultArmor ? { tax: 0, mug: 0, margin: 0 } : resolved,
-          })
-        : null;
-
-      // v0.3.80 — widened band for the thin orange/red tiers. A weapon's rarity
-      // is a per-instance loadout, so a single-bonus candidate's pool (queried by
-      // bonus1_id alone) is contaminated by 2-bonus sales; filter to the same
-      // bonus count first. Armor is one tier per item id, so its pool is already
-      // same-loadout (no filter). Double-bonus weapons (≥2 bonuses) get the band
-      // tagged unreliable behind a stronger warning — never a confident point.
-      const wideClass = s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon'
-        || s.itemClass === 'orangeArmor' || s.itemClass === 'redArmor';
-      const isWeaponWide = s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon';
-      const isDoubleBonus = isWeaponWide && Number(s.bonusCount) >= 2;
-      let band = null;
-      if (wideClass) {
-        const bandSource = (reference && reference.comps && reference.comps.length)
-          ? reference.comps : filtered;
-        const candCount = Number(s.bonusCount);
-        // Weapons filter to the same bonus-count loadout; armor (#326) bands by
-        // quality so the wide band centers on the candidate's quality, not the
-        // whole-pool median dragged down by near-0% junk-quality clears.
-        const loadoutComps = isWeaponWide
-          ? ((Number.isFinite(candCount) && candCount > 0)
-              ? bandSource.filter(c => Number(c.bonusCount) === candCount)
-              : bandSource)
-          : ((armorBandComps && armorBandComps.length) ? armorBandComps : bandSource);
-        band = PricingEngine.widenedBand({ comps: loadoutComps });
-      }
-
-      // A friction-deducted bid is only honest when there is a REAL item-market
-      // price to deduct from (the bonus-bracket anchor or the cheapest live
-      // listing). With none, we refuse to invent one out of past auction sales —
-      // those are what winners paid, not a resale price — so the resale-anchored
-      // classes (market-priced weapons + the assault-armor plan) drop to a "go
-      // research it" state rather than a fabricated bid or a false PASS. The
-      // bazaar-floor classes (Dune/Riot/trash) and the orange/red wide-band
-      // tiers price off other signals and keep their own treatment.
-      const hasResalePrice = Number.isFinite(Number(anchorPrice)) && Number(anchorPrice) > 0;
-      // #326 — comp-priced armor no longer anchors on item market, so a missing
-      // item-market price never forces it into the "research it" state; it rides
-      // the quality-banded comp median (assault plan / orange-red wide band).
-      const resaleAnchored = !wideClass && !compPricedArmor
-        && (buy.anchor === 'market' || s.itemClass === 'assaultArmor');
-      const needsResearch = resaleAnchored && !hasResalePrice;
-
-      badge.className = InlineRenderer.BADGE_CLASS + ' rwth-tier-good';
+      badge.className = InlineRenderer.BADGE_CLASS + ' ' + model.badgeTone;
       badge.textContent = '';
 
-      // ── headline ───────────────────────────────────────────────────────
       const head = document.createElement('div');
       head.className = 'rwth-card-headline';
-      if (s.classTag) {
+      if (model.headline.classTag) {
         const tag = document.createElement('span');
         tag.className = 'rwth-card-classtag';
-        tag.textContent = s.classTag;
+        tag.textContent = model.headline.classTag;
         head.appendChild(tag);
       }
       const buyEl = document.createElement('span');
-      buyEl.className = 'rwth-card-buymax';
-      if (wideClass) {
-        // Thin orange/red tier — median-centered wide band, never a single point.
-        if (band) {
-          const tag = isDoubleBonus
-            ? ' (very unreliable)'
-            : ` (median ${fmtChatPrice(band.median)}, wide)`;
-          buyEl.textContent = `Bid ${fmtChatPrice(band.lo)} – ${fmtChatPrice(band.hi)}${tag}`;
-        } else {
-          // No same-loadout comps at all: a double-bonus piece leans entirely on
-          // the warning below; a single-bonus piece shows the dash.
-          buyEl.textContent = isDoubleBonus ? 'No reliable price' : 'Bid up to —';
-        }
-      } else if (needsResearch) {
-        // No live listings → no resale price to base a bid on. Say so plainly
-        // rather than deducting off past auction sales (a buy price, not resale).
-        buyEl.textContent = 'No price to go on — research before bidding';
-        buyEl.className += ' rwth-card-buymax-pass';
-      } else if (plan) {
-        // Market-anchored weapon or RW armor: single decision line. PASS when
-        // the cheapest comparable clear is already above your resale-clamped
-        // ceiling.
-        buyEl.textContent = plan.verdict === 'pass'
-          ? `PASS — clears above your ${fmtChatPrice(plan.maxBid)} max`
-          : `Bid up to ${fmtChatPrice(plan.maxBid)}${plan.clamped ? ' (capped to comps)' : ''}`;
-        if (plan.verdict === 'pass') buyEl.className += ' rwth-card-buymax-pass';
-        if (plan.clamped) buyEl.className += ' rwth-card-buymax-clamped';
-      } else if (s.itemClass === 'duneRiotArmor' && buy.floor != null) {
-        const tol = buy.tolerance != null ? buy.tolerance : 0;
-        buyEl.textContent = `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room`;
-      } else if (thinReference && Array.isArray(buy.range)) {
-        // Slice 19d: suppress headline anchor — range only when comps stay thin.
-        buyEl.textContent = `Bid ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
-      } else if (buy.max == null && Array.isArray(buy.range)) {
-        buyEl.textContent = `Bid ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])}`;
-      } else if (buy.max != null) {
-        buyEl.textContent = `Bid up to ${fmtChatPrice(buy.max)}`;
-        if (Array.isArray(buy.range)) {
-          buyEl.textContent += ` (${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])})`;
-        }
-      } else {
-        buyEl.textContent = 'Bid up to —';
-      }
+      buyEl.className = ['rwth-card-buymax'].concat(model.headline.buyClasses || []).join(' ');
+      buyEl.textContent = model.headline.buyText;
       head.appendChild(buyEl);
-      // Auction-clearing range. For plan classes (market-anchored weapons + RW
-      // armor) this is the single bonus-matched range (floor → typical) the
-      // decision rides on; for other classes the legacy median-target / raw-
-      // median lines below still apply.
-      if (plan) {
-        const acEl = document.createElement('span');
-        acEl.className = 'rwth-card-buymed';
-        const range = plan.floor === plan.typical
-          ? fmtChatPrice(plan.typical)
-          : `${fmtChatPrice(plan.floor)}–${fmtChatPrice(plan.typical)}`;
-        acEl.textContent = `clears ${range} at auction`;
-        if (plan.count < 5) acEl.textContent += ' (few comps)';
-        head.appendChild(acEl);
-      } else if (needsResearch) {
-        // Surface what comparable pieces actually SOLD for at past auctions, as
-        // background — never a bid. The bonus-matched comps if we have them,
-        // else the raw pool.
-        const refComps = (reference && reference.comps && reference.comps.length)
-          ? reference.comps : filtered;
-        const rp = refComps.map(c => Number(c && c.price)).filter(p => Number.isFinite(p) && p > 0);
-        if (rp.length) {
-          const lo = Math.round(Math.min(...rp));
-          const md = Math.round(_median(rp));
-          const acEl = document.createElement('span');
-          acEl.className = 'rwth-card-buymed';
-          acEl.textContent = lo === md
-            ? `sold ~${fmtChatPrice(md)} at past auctions`
-            : `sold ${fmtChatPrice(lo)}–${fmtChatPrice(md)} at past auctions`;
-          head.appendChild(acEl);
-        }
-      } else {
-        if (buy.medianTarget != null) {
-          const medEl = document.createElement('span');
-          medEl.className = 'rwth-card-buymed';
-          medEl.textContent = `typical ${fmtChatPrice(buy.medianTarget)}`;
-          head.appendChild(medEl);
-        }
-        // Auction-clearing reference (what it actually sells for at auction) —
-        // shown raw, NOT deducted. The bid sits against this, not derived from it.
-        if (buy.auctionMedian != null) {
-          const amEl = document.createElement('span');
-          amEl.className = 'rwth-card-buymed';
-          amEl.textContent = `sells ~${fmtChatPrice(buy.auctionMedian)} at auction`;
-          head.appendChild(amEl);
-        }
-      }
-      // Orange/red weapon classes return buy.max === null by design (thin,
-      // illiquid tier — band only, no point max), so the floor would be dropped
-      // for exactly the tier that most needs a sanity anchor. Show it for those
-      // classes too; s.bbFloor already reflects the orange2/red2 multiplier for
-      // 2-bonus pieces (computed via bonusCount upstream). duneRiotArmor stays out.
-      const showsBBFloor = buy.max != null
-        || s.itemClass === 'orangeWeapon' || s.itemClass === 'redWeapon';
-      if (s.itemClass !== 'duneRiotArmor' && s.bbFloor != null && showsBBFloor) {
-        const fl = document.createElement('span');
-        fl.className = 'rwth-card-bbfloor';
-        fl.textContent = `bazaar floor ${fmtChatPrice(s.bbFloor)}`;
-        head.appendChild(fl);
-      }
-      // Room vs the live bid. For plan classes (weapons + RW armor) this
-      // measures against the resale-clamped max (plan.maxBid), so it agrees with
-      // the headline; other classes keep buyTarget's own delta.
-      const cbNum = Number(s.currentBid);
-      const bidDelta = needsResearch ? null
-        : (plan
-            ? (Number.isFinite(cbNum) ? plan.maxBid - cbNum : null)
-            : buy.currentBidDelta);
-      if (bidDelta != null) {
-        const d = bidDelta;
-        const delta = document.createElement('span');
-        if (d >= 0) {
-          delta.className = 'rwth-card-room';
-          delta.textContent = `${fmtChatPrice(d)} under your max`;
-        } else {
-          delta.className = 'rwth-card-over';
-          delta.textContent = `${fmtChatPrice(-d)} over your max`;
-        }
-        head.appendChild(delta);
+      for (const meta of model.headline.meta || []) {
+        const el = document.createElement('span');
+        el.className = meta.className;
+        el.textContent = meta.text;
+        head.appendChild(el);
       }
       const toggleBtn = document.createElement('button');
       toggleBtn.type = 'button';
@@ -7412,167 +7516,28 @@
       head.appendChild(toggleBtn);
       badge.appendChild(head);
 
-      // ── no-resale-price explainer ─────────────────────────────────────
-      // Plain-English: tell the user WHY there's no bid and what to do, instead
-      // of a dash or a number pulled out of thin air.
-      if (needsResearch) {
-        const note = document.createElement('div');
-        note.className = 'rwth-card-ref rwth-card-thin';
-        note.textContent = "Nothing comparable is listed for sale right now, so "
-          + "there's no resale price to work a safe bid back from. The only figures "
-          + "we have are what similar pieces sold for at past auctions (shown above) "
-          + "— that's what buyers paid, not what you could resell for. Check recent "
-          + "sales yourself and set your own max before bidding.";
-        badge.appendChild(note);
-      }
+      const appendLine = (className, text) => {
+        if (!text) return;
+        const el = document.createElement('div');
+        el.className = className;
+        el.textContent = text;
+        badge.appendChild(el);
+      };
 
-      // ── caution flag for the thin orange/red tiers (v0.3.80) ──────────
-      // Neutral, fact-based wording: state the data limitation, make no claim
-      // about market behaviour. Double-bonus weapons get the stronger warning.
-      if (wideClass) {
-        const flagEl = document.createElement('div');
-        flagEl.className = 'rwth-card-ref rwth-card-thin';
-        flagEl.textContent = isDoubleBonus
-          ? '⚠ Double-bonus weapons are extremely rare. This range may rest on only 1–2 old sales — research recent auctions yourself before bidding.'
-          : '⚠ Limited sales data — proceed with caution. Treat this as a rough range and check recent auctions before bidding.';
-        badge.appendChild(flagEl);
-      }
+      for (const note of model.notes || []) appendLine(note.className, note.text);
+      appendLine('rwth-card-ref', model.referenceText);
+      appendLine('rwth-card-ref rwth-card-thin', model.thinText);
+      appendLine('rwth-card-sensitivity', model.sensitivityText);
+      appendLine('rwth-card-ref rwth-card-crosscheck', model.itemMarketCrosscheckText);
+      appendLine('rwth-card-ref rwth-card-ded', model.deductionText);
+      appendLine('rwth-card-ref rwth-card-verdict', model.verdictText);
+      appendLine('rwth-card-ref rwth-card-flip', model.flipText);
 
-      // ── reference summary ─────────────────────────────────────────────
-      if (reference && (reference.count > 0 || reference.widenedBonusCount || reference.suppressedByChange)) {
-        const refEl = document.createElement('div');
-        refEl.className = 'rwth-card-ref';
-        const parts = [];
-        if (reference.widenedBonusCount > 0) {
-          parts.push(`based on ${reference.strictCount} close + ${reference.widenedBonusCount} within ±${reference.widenedTolerance}% bonus of yours`);
-        } else {
-          const n = reference.count;
-          let head2 = `based on ${n} similar sale${n === 1 ? '' : 's'}`;
-          if (reference.tolerance != null) {
-            head2 += reference.tolerance === 0
-              ? ' (exact bonus match)'
-              : ` (within ±${reference.tolerance}% bonus of yours)`;
-          }
-          parts.push(head2);
-        }
-        // v0.3.0 slice 19d (#288) — surface adjacent-base widening when it fired.
-        const widenedBaseList = Array.isArray(s.widenedBase) ? s.widenedBase : [];
-        if (widenedBaseList.length) {
-          parts.push(`also using ${widenedBaseList.join(', ')}`);
-        }
-        if (reference.recencyDays != null) {
-          parts.push(reference.recencyDays >= 365
-            ? `~${Math.round(reference.recencyDays / 365)}yr old`
-            : `~${Math.round(reference.recencyDays / 30)}mo old`);
-        }
-        if (reference.suppressedByChange > 0) {
-          parts.push(`skipped ${reference.suppressedByChange} (bonus since nerfed)`);
-        }
-        if (drill.bonus !== 'auto' || drill.quality !== 'auto') parts.push('your filters applied');
-        refEl.textContent = parts.join(' · ');
-        badge.appendChild(refEl);
-      }
-      // v0.3.0 slice 19d (#288) — thin-reference label. Surfaces below the ref
-      // line whenever the comp set stayed under 5 even after base-widening,
-      // so the user knows the headline range is a judgment call, not a fit.
-      if (thinReference && !wideClass) {
-        const thinEl = document.createElement('div');
-        thinEl.className = 'rwth-card-ref rwth-card-thin';
-        thinEl.textContent = 'few comparable sales — treat this as a rough guess';
-        badge.appendChild(thinEl);
-      }
-
-      // ── derived sensitivity (slice 19b) ───────────────────────────────
-      const sens = PricingEngine.deriveSensitivity(filtered, s.primaryBonusValue);
-      const sensEl = document.createElement('div');
-      sensEl.className = 'rwth-card-sensitivity';
-      if (sens.label === 'sloped') {
-        sensEl.textContent = `each 1% of bonus is worth about ${fmtChatPrice(Math.abs(sens.perPct))} near your bonus level`;
-      } else if (sens.label === 'flat') {
-        sensEl.textContent = 'bonus % barely changes the price near your bonus level';
-      } else {
-        sensEl.textContent = 'not enough sales to tell how much bonus is worth';
-      }
-      badge.appendChild(sensEl);
-
-      // ── deduction chain + verdict (slice 20e, #295) ───────────────────
-      // The tax/mug/margin cut runs off the bonus-matched item-market price for
-      // every class — plan classes (market-anchored weapons + RW armor) and the
-      // rest alike. The ~20% cut already accounts for resale friction; taking it
-      // off the bazaar rung (= market ÷ 1.05) instead would double-count the same
-      // ~5%. Either way the deduction's buyMax matches the headline (plan.maxBid
-      // resp. buy.max) by construction.
-      const chainAnchor = plan ? Number(ladder.market) : Number(anchorPrice);
-      const chainLabel  = 'Item market';
-      // #326 — for comp-priced armor the item-market floor is a CROSS-CHECK, not
-      // the anchor (its floor rides near-0%-quality junk listings). Show the figure
-      // plainly; the headline already rides the quality-banded comp median. No
-      // friction deduction, no "bid up to" off junk, no verdict off junk.
-      if (compPricedArmor) {
-        const imf = Number(anchorPrice);
-        if (Number.isFinite(imf) && imf > 0) {
-          const xc = document.createElement('div');
-          xc.className = 'rwth-card-ref rwth-card-crosscheck';
-          xc.textContent = `Item market floor ${fmtChatPrice(imf)} — cross-check only `
-            + `(quality, not the listing floor, sets armor value)`;
-          badge.appendChild(xc);
-        }
-      }
-      const chain = (!compPricedArmor && Number.isFinite(chainAnchor) && chainAnchor > 0)
-        ? PricingEngine.deductionChain({ anchor: chainAnchor, settings: resolved }) : null;
-      if (chain) {
-        const ded = document.createElement('div');
-        ded.className = 'rwth-card-ref rwth-card-ded';
-        ded.textContent =
-          `${chainLabel} ${fmtChatPrice(chain.anchor)} − ${Math.round(chain.tax * 100)}% tax`
-          + ` − ${Math.round(chain.mug * 100)}% mug risk − ${Math.round(chain.margin * 100)}% your profit`
-          + ` → bid up to ${fmtChatPrice(chain.buyMax)}`;
-        badge.appendChild(ded);
-
-        // For plan classes (weapons + RW armor) the headline + "under/over your
-        // max" delta already carry the decision against the live bid, so skip the
-        // duplicate
-        // sentence here (it also avoids it disagreeing with the headline PASS,
-        // which is about the comp floor, not this auction's current bid).
-        const cb = Number(s.currentBid);
-        if (!plan && Number.isFinite(cb) && cb > 0) {
-          const verd = document.createElement('div');
-          verd.className = 'rwth-card-ref rwth-card-verdict';
-          verd.textContent = cb <= chain.buyMax
-            ? `BUY — current bid ${fmtChatPrice(cb)} is within your max of ${fmtChatPrice(chain.buyMax)}`
-            : `PASS — current bid ${fmtChatPrice(cb)} is over your max of ${fmtChatPrice(chain.buyMax)}`;
-          badge.appendChild(verd);
-        }
-      }
-
-      // ── flip-margin echo (#303) ───────────────────────────────────────
-      // Surface the spread on the candidate's own bonus level (for-sale floor
-      // vs sold typical) right by the verdict, so the go/no-go gap is visible
-      // without opening the drilldown. Read from the same pure mergeLadder the
-      // table uses, on the bonus axis (the candidate's own bonus).
-      const flipBuckets = mergeLadder({
-        soldComps: filtered,
-        listedComps: Array.isArray(s.askingComps) ? s.askingComps : [],
-        axis: 'bonus',
-        ownKey: Number(s.primaryBonusValue),
-        itemClass: s.itemClass,
-      });
-      const ownFlip = flipBuckets.find(b => b.isOwn && b.spread);
-      if (ownFlip) {
-        const flip = document.createElement('div');
-        flip.className = 'rwth-card-ref rwth-card-flip';
-        flip.textContent = `Flip margin ${InlineRenderer._fmtSpreadPct(ownFlip.spread.pct)}`
-          + ` — for-sale floor ${fmtChatPrice(ownFlip.listed.cheapest)} vs sold typical ${fmtChatPrice(ownFlip.sold.median)} at your bonus`;
-        badge.appendChild(flip);
-      }
-
-      // ── bazaar/market floor cross-check + low-margin warning (#300) ────
+      const cross = model.crossCheck || {};
       const crossEls = InlineRenderer._floorCrossCheckEls(
-        crossMarketFloor, crossBazaarFloor, { bracketed: crossBracketed });
+        cross.marketFloor, cross.bazaarFloor, { bracketed: cross.bracketed });
       for (const el of crossEls) badge.appendChild(el);
 
-      // ── typical days-to-clear (slice 10a, #275) ───────────────────────
-      // Hidden until the class has ≥3 logged buy→sold sales; never blocks render.
       const velCls = velocityClass(s.rarity, /Armor$/.test(String(s.itemClass || '')));
       const baselineDays = VelocityTracker.classBaseline(velCls);
       if (baselineDays != null) {
@@ -7583,43 +7548,19 @@
         badge.appendChild(vel);
       }
 
-      // ── ladder ────────────────────────────────────────────────────────
-      // RESALE venues only (corrected model: bazaar = forum < item market). The
-      // auction is where you BUY, not a resale rung — folding it in here is what
-      // made the old "Auction 701–823m" line read like a bid sitting above the
-      // 785m bazaar resale. The auction buy decision now lives in the headline.
       const ladderEl = document.createElement('div');
       ladderEl.className = 'rwth-card-ladder';
-      // Flag when the anchor fell back to a neighbouring bonus bucket (no live
-      // listing at the candidate's own bonus) so the price is never a silent guess.
-      const mktLabel = (bracket && bracket.fallback != null)
-        ? `Item market (nearest ${bracket.fallback}%)`
-        : 'Item market';
-      const rungs = [
-        ['Bazaar / Forum', ladder.bazaar != null ? fmtChatPrice(ladder.bazaar) : null],
-        [mktLabel,         ladder.market != null ? fmtChatPrice(ladder.market) : null],
-        ['Floor',          ladder.floor  != null ? fmtChatPrice(ladder.floor)  : null],
-      ];
-      for (const [label, text] of rungs) {
-        if (text == null) continue;
+      for (const rung of model.ladderRungs || []) {
+        if (rung.text == null) continue;
         const span = document.createElement('span');
         const b = document.createElement('b');
-        b.textContent = label;
+        b.textContent = rung.label;
         span.appendChild(b);
-        span.appendChild(document.createTextNode(text));
-        ladderEl.appendChild(span);
-      }
-      if (s.askingCount && s.askingMedian != null) {
-        const span = document.createElement('span');
-        const b = document.createElement('b');
-        b.textContent = `For sale (${s.askingCount})`;
-        span.appendChild(b);
-        span.appendChild(document.createTextNode(fmtChatPrice(s.askingMedian)));
+        span.appendChild(document.createTextNode(rung.text));
         ladderEl.appendChild(span);
       }
       badge.appendChild(ladderEl);
 
-      // ── asking floor listings with per-listing quality annotation (#294) ──
       const floorEls = InlineRenderer._floorListingEls(s.askingComps, s.listingQuality, 3);
       if (floorEls.length) {
         const askFloor = document.createElement('div');
@@ -7628,10 +7569,10 @@
         badge.appendChild(askFloor);
       }
 
-      // ── drilldown ─────────────────────────────────────────────────────
       if (drill.expanded) {
         badge.appendChild(InlineRenderer._buildDrilldown(badge, drill, s, filtered, buy, reference, resolved));
       }
+      return;
     },
     _buildDrilldown(badge, drill, ctx, filtered, buy, reference, resolved) {
       const wrap = document.createElement('div');
@@ -8008,10 +7949,7 @@
     // #303 — signed, rounded spread %, shared by the unified-table own row and
     // the verdict-zone flip-margin echo so they read identically.
     _fmtSpreadPct(pct) {
-      const v = Number(pct);
-      if (!Number.isFinite(v)) return '—';
-      const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
-      return `${sign}${Math.abs(Math.round(v * 100))}%`;
+      return PriceCardModel.fmtSpreadPct(pct).replace(/^-$/, '—').replace(/^-/, '−');
     },
     _fmtDate(ts) {
       const n = Number(ts);
@@ -8022,53 +7960,7 @@
       return `${mo} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`;
     },
     _deductionMath(ctx, buy, reference, filtered) {
-      const cls = ctx.itemClass;
-      const med = reference && reference.median != null
-        ? reference.median
-        : (function () {
-            const ps = filtered.map(c => Number(c.price)).filter(p => Number.isFinite(p) && p > 0).sort((a, b) => a - b);
-            if (!ps.length) return null;
-            const m = Math.floor(ps.length / 2);
-            return ps.length % 2 ? ps[m] : (ps[m - 1] + ps[m]) / 2;
-          })();
-      if (cls === 'duneRiotArmor') {
-        if (buy.floor == null) return 'Bazaar floor not loaded yet — add your API key and wait for prices.';
-        const tol = buy.tolerance != null ? buy.tolerance : 0;
-        return `Bazaar floor ${fmtChatPrice(buy.floor)} + ${fmtChatPrice(tol)} room → bid up to ${fmtChatPrice(buy.max)}`;
-      }
-      if (cls === 'trashBB') {
-        if (buy.floor == null) return 'Bazaar floor not loaded yet.';
-        return `Bazaar floor ${fmtChatPrice(buy.floor)} (firm) → bid up to ${fmtChatPrice(buy.max)}`;
-      }
-      // v0.3.76 — mirror the headline anchor pool: armor reads the cheapest sale
-      // from the candidate's own bonus band (±1%), not the whole pool, so this
-      // "cheapest …" line agrees with buy.range by construction.
-      const anchorComps = /Armor$/.test(String(cls || ''))
-        ? bandByBonus(filtered, ctx.primaryBonusValue, ARMOR_ANCHOR_BONUS_TOL)
-        : filtered;
-      const prices = (anchorComps || []).map(c => Number(c && c.price))
-        .filter(p => Number.isFinite(p) && p > 0);
-      const mn = prices.length ? Math.min(...prices) : null;
-      if (cls === 'assaultArmor') {
-        if (mn == null || !Array.isArray(buy.range)) return 'not enough sales to work out a range.';
-        return `cheapest ${fmtChatPrice(mn)} − 10–20% → ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} (middle ${fmtChatPrice(buy.max)}; typical ${fmtChatPrice(med)})`;
-      }
-      if (cls === 'orangeWeapon' || cls === 'redWeapon' || cls === 'orangeArmor' || cls === 'redArmor') {
-        if (!Array.isArray(buy.range)) return 'not enough sales to work out a range.';
-        return `similar sales run ${fmtChatPrice(buy.range[0])}–${fmtChatPrice(buy.range[1])} — too spread out for one buy price`;
-      }
-      // yellowWeapon (default) — market-anchored, matching the headline bid math.
-      const marketAnchor = Number(buy && buy.marketAnchor);
-      if (!Number.isFinite(marketAnchor) || marketAnchor <= 0 || buy.max == null) {
-        return 'item market price not loaded yet.';
-      }
-      const m = ctx.margins || {};
-      const tax    = m.tax    != null ? m.tax    : 0.05;
-      const mug    = m.mug    != null ? m.mug    : 0.10;
-      const margin = m.margin != null ? m.margin : 0.05;
-      const pct = (x) => `${Math.round(x * 100)}%`;
-      const medTail = med != null ? ` (typical ${fmtChatPrice(med)})` : '';
-      return `Item market ${fmtChatPrice(marketAnchor)} − ${pct(tax)} tax − ${pct(mug)} mug risk − ${pct(margin)} your profit → bid up to ${fmtChatPrice(buy.max)}${medTail}`;
+      return PriceCardModel.deductionMath(ctx, buy, reference, filtered);
     },
     removeAll() {
       if (typeof document === 'undefined') return;
@@ -8340,8 +8232,9 @@
     BonusTrashGuard,
     resolveMarketAnchor,
     PricingEngine,
-    deductionMath: InlineRenderer._deductionMath,
-    applyDrillFilters: InlineRenderer._applyDrillFilters,
+    PriceCardModel,
+    deductionMath: PriceCardModel.deductionMath,
+    applyDrillFilters: PriceCardModel.applyDrillFilters,
     CompWidener,
     BBEngine,
     ItemClassifier,
