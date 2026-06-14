@@ -6,6 +6,11 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const SCRIPT_PATH = path.join(__dirname, 'TORN-RW-trading-hub.user.js');
+const SCRIPT_SOURCE = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
 // ── Browser-global shim ──────────────────────────────────────────────────────
 function makeMockStorage() {
@@ -641,9 +646,18 @@ test('formatClassTag — armor with set, plain weapon, trash, double-bonus', () 
 });
 
 test('WEAPON_CATEGORY constant is removed', () => {
-  const src = require('fs').readFileSync(
-    require('path').join(__dirname, 'TORN-RW-trading-hub.user.js'), 'utf8');
-  assert.ok(!/\bWEAPON_CATEGORY\b/.test(src), 'WEAPON_CATEGORY references must be gone');
+  assert.ok(!/\bWEAPON_CATEGORY\b/.test(SCRIPT_SOURCE), 'WEAPON_CATEGORY references must be gone');
+});
+
+test('bootstrap does not eagerly warm BB rate or item dictionary', () => {
+  const start = SCRIPT_SOURCE.indexOf('function bootstrap()');
+  const end = SCRIPT_SOURCE.indexOf('if (!TEST)', start);
+  assert.notStrictEqual(start, -1, 'bootstrap function should exist');
+  assert.notStrictEqual(end, -1, 'bootstrap block should precede TEST gate');
+  const bootstrapBlock = SCRIPT_SOURCE.slice(start, end);
+  assert.doesNotMatch(bootstrapBlock, /fetchBBRate\(/);
+  assert.doesNotMatch(bootstrapBlock, /fetchItemsDict\(/);
+  assert.match(SCRIPT_SOURCE, /function ensurePricingWarmups\(\)/);
 });
 
 // ── resolveMarketAnchor (bonus-bracket market anchor, #298 / PRD #296) ────────

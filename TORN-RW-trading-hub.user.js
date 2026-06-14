@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.104
+// @version      0.3.105
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.104';
+  const SCRIPT_VERSION = '0.3.105';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3677,6 +3677,7 @@
       writePriceCheckResult(item.id, { skipped: 'trash', bonusName: trashHit.name });
       return;
     }
+    const warmups = ensurePricingWarmups();
     // v3: ctx-shape result (BadgeRenderer v2). Prefix bump so pre-v0.3.7
     // cached pricecheck:v2 entries (verdict/suggest) are ignored.
     const cacheKey = 'pricecheck:v4:' + JSON.stringify({
@@ -3693,6 +3694,7 @@
         return;
       }
     }
+    await warmups;
     // Action math uses cleared sales only — asking is shown as a spread line.
     const comps        = (composite.cleared || []).map(compShape).filter(Boolean);
     const askingRawL   = composite.asking || [];
@@ -4449,7 +4451,9 @@
   }
 
   function togglePanel() {
-    setState({ ui: { ...MEM.ui, open: !MEM.ui.open } });
+    const opening = !MEM.ui.open;
+    setState({ ui: { ...MEM.ui, open: opening } });
+    if (opening) void ensurePricingWarmups();
   }
 
   // Brand price-tag glyph; inherits the native icon's class so Torn sizes it.
@@ -6683,6 +6687,16 @@
     },
   };
 
+  let pricingWarmups = null;
+  function ensurePricingWarmups() {
+    if (pricingWarmups) return pricingWarmups;
+    pricingWarmups = Promise.all([
+      BBEngine.fetchBBRate().catch(() => null),
+      ItemClassifier.fetchItemsDict().catch(() => null),
+    ]).finally(() => { pricingWarmups = null; });
+    return pricingWarmups;
+  }
+
   // ─── DomScanner — pure parse of an expanded item-info block ────────────────
   // Mirrors the Price Checker's parseAuctionRow + parseItemMarketRow, but
   // normalises bonuses to { name, value } so PricingEngine.fetchComps can
@@ -8066,6 +8080,7 @@
         });
         return;
       }
+      const warmups = ensurePricingWarmups();
       let r;
       try {
         r = await PricingEngine.fetchComps(item);
@@ -8074,6 +8089,7 @@
         InlineRenderer.renderAuctionBadge(info, { error: "couldn't load prices" });
         return;
       }
+      await warmups;
       const clearedRaw = r.cleared || [];
       const askingRaw  = r.asking  || [];
       console.debug('[rwth] auction comps raw',
@@ -8260,6 +8276,7 @@
     applyDrillFilters: PriceCardModel.applyDrillFilters,
     CompWidener,
     BBEngine,
+    ensurePricingWarmups,
     ItemClassifier,
     formatClassTag,
     Cache,
@@ -8293,10 +8310,6 @@
     hydrate();
     render();          // builds the shell (hidden until MEM.ui.open)
     startLauncher();
-    // Warm the BB rate in the background — 1h TTL means at most one fetch per
-    // hour and the cached value drives the badge until then.
-    BBEngine.fetchBBRate().catch(() => {});
-    ItemClassifier.fetchItemsDict().catch(() => {});
     AuctionScanner.refresh();
     // SPA-aware: Torn navigates without full reload, so poll for href changes
     // and reconcile the scanner's attach state with the new URL.
