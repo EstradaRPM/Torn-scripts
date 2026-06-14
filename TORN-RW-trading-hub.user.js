@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.105
+// @version      0.3.106
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.105';
+  const SCRIPT_VERSION = '0.3.106';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -8003,18 +8003,87 @@
     },
   };
 
+  const AUCTION_CANDIDATE_SELECTOR = '.item-cont-wrap, .show-item-info';
+  function isAuctionRowCandidate(li) {
+    return !!(li && String(li.tagName || '').toUpperCase() === 'LI'
+      && li.querySelector && li.querySelector('.item-cont-wrap'));
+  }
+  function auctionCandidateRowsFromNode(node) {
+    const rows = [];
+    const seen = new Set();
+    const enqueue = (li) => {
+      if (!isAuctionRowCandidate(li) || seen.has(li)) return;
+      seen.add(li);
+      rows.push(li);
+    };
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el) return rows;
+    enqueue(el);
+    if (el.closest) enqueue(el.closest('li'));
+    if (el.querySelectorAll) {
+      for (const hit of el.querySelectorAll(AUCTION_CANDIDATE_SELECTOR)) {
+        if (hit && hit.closest) enqueue(hit.closest('li'));
+      }
+    }
+    return rows;
+  }
+  function auctionCandidateRowsFromMutations(records) {
+    const rows = [];
+    const seen = new Set();
+    const enqueueFrom = (node) => {
+      for (const row of auctionCandidateRowsFromNode(node)) {
+        if (seen.has(row)) continue;
+        seen.add(row);
+        rows.push(row);
+      }
+    };
+    for (const rec of records || []) {
+      enqueueFrom(rec && rec.target);
+      if (rec && rec.addedNodes) {
+        for (const node of rec.addedNodes) enqueueFrom(node);
+      }
+    }
+    return rows;
+  }
+
   // ─── AuctionScanner (impure) ────────────────────────────────────────────────
-  // amarket.php only. MutationObserver fires a debounced sweep that walks every
-  // expanded auction row; idempotent via a WeakSet so re-expansion never
+  // amarket.php only. MutationObserver feeds changed auction-row candidates into
+  // a debounced dirty queue; startup does a one-time narrow candidate query.
+  // Badge rendering stays idempotent via a WeakSet so re-expansion never
   // refetches or duplicates a badge. Detaches and clears badges when the intel
   // toggle is off or the user navigates off amarket.
   const AuctionScanner = {
     _observer: null,
     _processed: new WeakSet(),
+    _dirtyRows: new Set(),
     _scheduled: false,
     _onAmarket() {
       try { return /amarket\.php/i.test(location.pathname + location.search); }
       catch { return false; }
+    },
+    _enqueueRows(rows) {
+      let added = false;
+      for (const row of rows || []) {
+        if (!isAuctionRowCandidate(row)) continue;
+        AuctionScanner._dirtyRows.add(row);
+        added = true;
+      }
+      if (added) AuctionScanner._scheduleSweep();
+    },
+    _enqueueFromMutations(records) {
+      AuctionScanner._enqueueRows(auctionCandidateRowsFromMutations(records));
+    },
+    _enqueueCurrentCandidates() {
+      if (typeof document === 'undefined' || !document.querySelectorAll) return;
+      const rows = [];
+      const seen = new Set();
+      for (const hit of document.querySelectorAll(AUCTION_CANDIDATE_SELECTOR)) {
+        const row = hit && hit.closest ? hit.closest('li') : null;
+        if (!isAuctionRowCandidate(row) || seen.has(row)) continue;
+        seen.add(row);
+        rows.push(row);
+      }
+      AuctionScanner._enqueueRows(rows);
     },
     _scheduleSweep() {
       if (AuctionScanner._scheduled) return;
@@ -8039,9 +8108,10 @@
     _sweep() {
       if (!MEM.intel.enabled.auction) return;
       if (!AuctionScanner._onAmarket()) return;
-      const lis = document.querySelectorAll('li');
+      const lis = Array.from(AuctionScanner._dirtyRows);
+      AuctionScanner._dirtyRows.clear();
       for (const li of lis) {
-        if (!li.querySelector || !li.querySelector('.item-cont-wrap')) continue;
+        if (!isAuctionRowCandidate(li)) continue;
         const info = li.querySelector('.show-item-info');
         if (!info) continue;
         if (!AuctionScanner._isExpanded(info)) continue;
@@ -8220,12 +8290,14 @@
       if (!AuctionScanner._onAmarket()) return;
       if (AuctionScanner._observer) return;
       if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
-      AuctionScanner._observer = new MutationObserver(() => AuctionScanner._scheduleSweep());
+      AuctionScanner._observer = new MutationObserver((records) => {
+        AuctionScanner._enqueueFromMutations(records);
+      });
       AuctionScanner._observer.observe(document.body, {
         childList: true, subtree: true,
         attributes: true, attributeFilter: ['style', 'class'],
       });
-      AuctionScanner._scheduleSweep();
+      AuctionScanner._enqueueCurrentCandidates();
     },
     stop() {
       if (AuctionScanner._observer) {
@@ -8233,6 +8305,7 @@
         AuctionScanner._observer = null;
       }
       AuctionScanner._processed = new WeakSet();
+      AuctionScanner._dirtyRows.clear();
       InlineRenderer.removeAll();
     },
     refresh() {
@@ -8285,6 +8358,9 @@
     ListingsFetcher,
     BONUS_DATA,
     BONUS_NAME_TO_ID,
+    auctionCandidateRowsFromNode,
+    auctionCandidateRowsFromMutations,
+    AuctionScanner,
     DomScanner,
     compShape,
     BONUS_CHANGE_DATES_SEED,

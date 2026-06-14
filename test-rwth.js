@@ -29,6 +29,50 @@ globalThis.document = {};                   // stub; bootstrap is skipped, so un
 
 require('./TORN-RW-trading-hub.user.js');
 
+class FakeEl {
+  constructor(tagName, classNames = [], children = []) {
+    this.nodeType = 1;
+    this.tagName = String(tagName || 'div').toUpperCase();
+    this.classList = new Set(classNames);
+    this.parentElement = null;
+    this.children = [];
+    for (const child of children) this.appendChild(child);
+  }
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+  matches(selector) {
+    if (!selector || selector[0] !== '.') return false;
+    return this.classList.has(selector.slice(1));
+  }
+  closest(selector) {
+    if (selector !== 'li') return null;
+    let node = this;
+    while (node) {
+      if (node.tagName === 'LI') return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+  querySelectorAll(selector) {
+    const selectors = String(selector).split(',').map(s => s.trim()).filter(Boolean);
+    const out = [];
+    const visit = (node) => {
+      for (const child of node.children || []) {
+        if (selectors.some(sel => child.matches(sel))) out.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return out;
+  }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 test('__RwthPure seam exists', () => {
   assert.strictEqual(typeof globalThis.__RwthPure, 'object');
@@ -49,6 +93,40 @@ test('buildContent dispatches on activeTab', () => {
   assert.match(buildContent({ ui: { activeTab: 'advertise' } }), /rwth-advertise/);
   assert.match(buildContent({ ui: { activeTab: 'settings' } }), /data-setting/);
   assert.strictEqual(buildContent({ ui: { activeTab: 'bogus' } }), '');
+});
+
+test('auction mutation candidates dedupe the changed auction row', () => {
+  const { auctionCandidateRowsFromMutations } = globalThis.__RwthPure;
+  const row = new FakeEl('li', [], [
+    new FakeEl('div', ['item-cont-wrap']),
+    new FakeEl('div', ['show-item-info']),
+  ]);
+  const outer = new FakeEl('div', [], [row]);
+
+  const rows = auctionCandidateRowsFromMutations([
+    { target: row.children[1], addedNodes: [outer, row.children[0]] },
+  ]);
+
+  assert.deepStrictEqual(rows, [row]);
+});
+
+test('auction mutation candidates ignore unrelated DOM changes', () => {
+  const { auctionCandidateRowsFromMutations } = globalThis.__RwthPure;
+  const chatLine = new FakeEl('div', ['chat-line'], [
+    new FakeEl('span', ['message']),
+  ]);
+
+  assert.deepStrictEqual(
+    auctionCandidateRowsFromMutations([{ target: chatLine, addedNodes: chatLine.children }]),
+    [],
+  );
+});
+
+test('AuctionScanner sweep does not walk every li on the page', () => {
+  assert.doesNotMatch(
+    SCRIPT_SOURCE,
+    /document\.querySelectorAll\(\s*['"]li['"]\s*\)/,
+  );
 });
 
 // #324 — the content-bearing link and picture fields moved into the Advertise
