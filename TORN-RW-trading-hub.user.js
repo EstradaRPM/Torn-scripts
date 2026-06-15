@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.114
+// @version      0.3.115
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.114';
+  const SCRIPT_VERSION = '0.3.115';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1277,15 +1277,6 @@
   const PROJECTION_PERIOD_IDS = PROJECTION_PERIODS.map(p => p.key);
   const DEFAULT_PROJECTION_PERIOD = 'month';
   const PROJECTION_HISTORY_WINDOW_DAYS = 30;
-  const PROJECTION_MIN_HISTORY_SPAN_DAYS = 7;
-  const PROJECTION_CONFIDENCE_SALES = 5;
-  const PROJECTION_CONFIDENCE_LISTINGS = 5;
-
-  function clamp01(n) {
-    const x = Number(n);
-    if (!Number.isFinite(x)) return 0;
-    return Math.max(0, Math.min(1, x));
-  }
 
   function projectionPeriod(key) {
     return PROJECTION_PERIODS.find(p => p.key === key)
@@ -1314,7 +1305,7 @@
           { kind: 'projected', t: baseT + selected.days * DAY_MS,
             cumulative: baseY + profit, profit, period: selected.key },
         ]
-      : [];
+      : null;
     return {
       ...source,
       selectedPeriod: selected.key,
@@ -1336,6 +1327,12 @@
         return Number.isFinite(n) ? n : null;
       };
       const cost = it => fin(it.buyPrice) || 0;
+      const realizedProfit = it => {
+        const saleNet = fin(it.saleNet);
+        if (saleNet == null) return null;
+        const mugLoss = Math.max(0, fin(it.mugLoss) || 0);
+        return saleNet - cost(it) - mugLoss;
+      };
 
       const sold   = list.filter(i => i && i.status === 'sold' && fin(i.saleNet) != null);
       const listed = list.filter(i => i && i.status === 'listed');
@@ -1345,7 +1342,7 @@
       let realized = 0, soldCost = 0, wins = 0, feesPaid = 0;
       let best = null, worst = null;
       for (const it of sold) {
-        const profit = fin(it.saleNet) - cost(it);
+        const profit = realizedProfit(it);
         realized += profit;
         soldCost += cost(it);
         feesPaid += fin(it.saleFees) || 0;
@@ -1382,7 +1379,7 @@
       // time axis, so they're excluded from the curve (still counted in totals).
       const cumulativeProfit = sold
         .filter(it => fin(it.soldTimestamp) != null)
-        .map(it => ({ t: fin(it.soldTimestamp), profit: fin(it.saleNet) - cost(it) }))
+        .map(it => ({ t: fin(it.soldTimestamp), profit: realizedProfit(it) }))
         .sort((a, b) => a.t - b.t)
         .reduce((acc, p) => {
           const prev = acc.length ? acc[acc.length - 1].cumulative : 0;
@@ -1392,10 +1389,11 @@
 
       // Forecast series for the next dashboard slice: realized points remain
       // saleNet-buyPrice; listed projections keep their concrete ask-buy detail,
-      // while the dashboard pace is an operating forecast blended from recent
-      // realized profit/day and current listed pipeline. Invalid price legs are
-      // skipped instead of being coerced into a fake $0 projection, and
-      // stale/unknown timing clamps to a finite floor.
+      // while the dashboard pace is a fixed 30d normalized realized P/L rate.
+      // Current listed asks stay visible as inventory context, but they do not
+      // drive period projections. Invalid price legs are skipped instead of
+      // being coerced into a fake $0 projection, and stale/unknown timing clamps
+      // to a finite floor.
       const lastRealized = cumulativeProfit.length
         ? cumulativeProfit[cumulativeProfit.length - 1].cumulative : 0;
       const lastRealizedT = cumulativeProfit.length
@@ -1440,43 +1438,17 @@
         .map(it => {
           const t = fin(it.soldTimestamp);
           if (t == null || t > forecastFloor || t < recentFloor) return null;
-          return { t, profit: fin(it.saleNet) - cost(it) };
+          return { t, profit: realizedProfit(it) };
         })
         .filter(Boolean)
         .sort((a, b) => a.t - b.t);
       const recentProfit = recentSales.reduce((sum, p) => sum + p.profit, 0);
-      const oldestRecentT = recentSales.length ? recentSales[0].t : null;
       const newestRecentT = recentSales.length ? recentSales[recentSales.length - 1].t : null;
-      const recentSpanDays = recentSales.length
-        ? Math.min(PROJECTION_HISTORY_WINDOW_DAYS,
-            Math.max(PROJECTION_MIN_HISTORY_SPAN_DAYS, (forecastFloor - oldestRecentT) / DAY_MS))
-        : 0;
-      const realizedDailyProfit = recentSpanDays > 0 ? recentProfit / recentSpanDays : 0;
+      const realizedDailyProfit = recentSales.length ? recentProfit / PROJECTION_HISTORY_WINDOW_DAYS : 0;
       const newestSaleAgeDays = newestRecentT != null
         ? Math.max(0, (forecastFloor - newestRecentT) / DAY_MS) : null;
-      const recencyConfidence = newestSaleAgeDays == null ? 0
-        : newestSaleAgeDays <= 7 ? 1
-          : newestSaleAgeDays >= PROJECTION_HISTORY_WINDOW_DAYS ? 0
-            : (PROJECTION_HISTORY_WINDOW_DAYS - newestSaleAgeDays)
-              / (PROJECTION_HISTORY_WINDOW_DAYS - 7);
-      const historyConfidence = clamp01((recentSales.length / PROJECTION_CONFIDENCE_SALES) * recencyConfidence);
-      const pipelineConfidence = clamp01(projectedProfit.length / PROJECTION_CONFIDENCE_LISTINGS);
-      let historyWeight = 0, pipelineWeight = 0, forecastBasis = 'none';
-      if (historyConfidence > 0 && pipelineConfidence > 0) {
-        const weightedHistory = historyConfidence * 2;
-        const totalWeight = weightedHistory + pipelineConfidence;
-        historyWeight = weightedHistory / totalWeight;
-        pipelineWeight = pipelineConfidence / totalWeight;
-        forecastBasis = 'blended';
-      } else if (historyConfidence > 0) {
-        historyWeight = 1;
-        forecastBasis = 'history';
-      } else if (pipelineConfidence > 0) {
-        pipelineWeight = 1;
-        forecastBasis = 'listed';
-      }
-      const projectedDailyProfit =
-        realizedDailyProfit * historyWeight + listedDailyProfit * pipelineWeight;
+      const forecastBasis = recentSales.length ? 'history' : 'none';
+      const projectedDailyProfit = realizedDailyProfit;
       const projectedPace = PROJECTION_PERIODS.map(period => ({
         ...period,
         profit: Math.round(projectedDailyProfit * period.days),
@@ -1490,14 +1462,11 @@
         dailyProfit: projectedDailyProfit,
         listedDailyProfit,
         realizedDailyProfit,
-        historyWeight,
-        pipelineWeight,
-        historyConfidence,
-        pipelineConfidence,
         forecastBasis,
         hasOperatingForecast: forecastBasis !== 'none',
         historyWindowDays: PROJECTION_HISTORY_WINDOW_DAYS,
-        historySpanDays: recentSpanDays ? round1(recentSpanDays) : 0,
+        historySpanDays: recentSales.length ? PROJECTION_HISTORY_WINDOW_DAYS : 0,
+        recentProfit,
         recentSoldCount: recentSales.length,
         newestSaleAgeDays: newestSaleAgeDays == null ? null : round1(newestSaleAgeDays),
         periods: projectedPace,
@@ -1521,7 +1490,7 @@
       // distribution mini-chart.
       const marginVals = sold
         .filter(it => cost(it) > 0)
-        .map(it => ((fin(it.saleNet) - cost(it)) / cost(it)) * 100);
+        .map(it => (realizedProfit(it) / cost(it)) * 100);
       const marginBuckets = [
         { label: 'loss',   count: marginVals.filter(m => m < 0).length },
         { label: '0–25',   count: marginVals.filter(m => m >= 0 && m < 25).length },
@@ -1736,11 +1705,11 @@
     const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
     const selectedLabel = projection && projection.selectedPeriodLabel;
     const basis = projection && projection.forecastBasis;
-    const basisLabel = basis === 'history' ? 'recent pace'
-      : basis === 'listed' ? 'listed floor'
-        : basis === 'blended' ? 'operating pace' : 'projection';
+    const basisLabel = basis === 'history' ? '30d realized pace' : 'listed inventory';
     const label = projectedRaw.length
-      ? `Projected ${selectedLabel ? selectedLabel + ' ' : ''}P/L (${basisLabel})`
+      ? (periodLine
+        ? `Projected ${selectedLabel ? selectedLabel + ' ' : ''}P/L (${basisLabel})`
+        : `Projected P/L (${basisLabel})`)
       : 'Cumulative realized P/L';
     const minDate = new Date(domain.minX).toISOString().slice(5, 10);
     const maxDate = new Date(domain.maxX).toISOString().slice(5, 10);
@@ -1794,23 +1763,15 @@
     const source = projection && projection.clearDaysSource === 'avg-clear'
       ? `${clearDays}d ledger clear average` : `${clearDays}d safe fallback`;
     const basis = projection && projection.forecastBasis;
-    const historyPct = Math.round(clamp01(projection && projection.historyWeight) * 100);
-    const listedPct = Math.round(clamp01(projection && projection.pipelineWeight) * 100);
     const realizedDaily = Number(projection && projection.realizedDailyProfit) || 0;
     const listedDaily = Number(projection && projection.listedDailyProfit) || 0;
     const fmtDaily = v => `${fmtMoney(Math.round(Number(v) || 0))}/d`;
     const recentSold = Number(projection && projection.recentSoldCount) || 0;
-    const historySpan = Number(projection && projection.historySpanDays) || 0;
-    const basisLabel = basis === 'history' ? 'Recent pace forecast'
-      : basis === 'listed' ? 'Listed floor forecast'
-        : basis === 'blended' ? 'Operating forecast' : 'Projection display';
+    const recentProfit = Number(projection && projection.recentProfit) || 0;
+    const basisLabel = basis === 'history' ? '30d realized pace' : 'Projection display';
     const basisDetail = basis === 'history'
-      ? `Recent realized pace: ${fmtDaily(realizedDaily)} across ${recentSold} sale${recentSold === 1 ? '' : 's'} in ${historySpan || PROJECTION_HISTORY_WINDOW_DAYS}d; assumes continued sourcing.`
-      : basis === 'listed'
-        ? `Listed floor only: ${fmtDaily(listedDaily)} from current asks over ${escapeAttr(source)}.`
-        : basis === 'blended'
-          ? `Blend: ${historyPct}% recent pace (${fmtDaily(realizedDaily)}) + ${listedPct}% listed floor (${fmtDaily(listedDaily)}).`
-          : 'No forecast yet; log sales or list priced inventory.';
+      ? `Last 30d realized P/L: ${fmtMoney(Math.round(recentProfit))} across ${recentSold} sale${recentSold === 1 ? '' : 's'} = ${fmtDaily(realizedDaily)}. Current asks are not used as growth.`
+      : `No 30d realized pace yet. Listed floor is ${fmtDaily(listedDaily)} over ${escapeAttr(source)}, but it is not projected as growth.`;
     const buttons = PROJECTION_PERIODS.map(p => {
       const active = p.key === selected.key;
       return `<button class="rwth-proj-btn${active ? ' rwth-proj-btn-active' : ''}" type="button"
@@ -1820,7 +1781,7 @@
       <div class="rwth-projection-pop-head">
         <div>
           <span>${basisLabel}</span>
-          <small>Past profit pace drives the estimate; listed asks are the floor.</small>
+          <small>Projection uses realized P/L normalized over 30 days.</small>
         </div>
         <button class="rwth-icon-btn" type="button" data-action="close-projection-panel" aria-label="Close projection controls" title="Close">×</button>
       </div>
