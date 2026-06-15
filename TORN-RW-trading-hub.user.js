@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.115
+// @version      0.3.116
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.115';
+  const SCRIPT_VERSION = '0.3.116';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -308,6 +308,7 @@
   // /v2/user/log to auction wins only.
   const API_BASE = 'https://api.torn.com';
   const LOG_TYPE_AUCTION_WIN = 4320;
+  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&logIds=88,182,11,94,18&market=auctionhouse,itemmarket';
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const MEM = {
@@ -2022,9 +2023,9 @@
         { type: 'text', key: 'playerId', label: 'Your player ID',
           placeholder: 'e.g. 1234567', lockWhenKey: true,
           help: 'The number in your Torn profile link — used to tag your listings as yours.' },
-        { type: 'password', key: 'apiKey', label: 'Torn API key (full access)',
-          placeholder: 'Paste your full-access key', testable: true,
-          help: 'Needs a full-access key for scanning (stays local on device).' },
+        { type: 'password', key: 'apiKey', label: 'Torn API key',
+          placeholder: 'Paste your RWTH key', testable: true,
+          help: `<a href="${RWTH_API_KEY_URL}" target="_blank" rel="noopener noreferrer">Create RWTH API key</a>. Covers buy/sale/mug scans + comps. Capped by Torn API limits; key stays local.` },
       ],
     },
     {
@@ -2194,10 +2195,10 @@
       .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   }
 
-  // #313 — the hub needs a full-access key, so it never relies on the PDA
-  // auto-injected key (almost always limited). A "real" key is any non-empty
-  // value; the stray ###PDA-APIKEY### token left by older installs is rejected
-  // so it cannot falsely lock the Player ID field.
+  // #313 — the hub needs the RWTH custom key, so it never relies on the PDA
+  // auto-injected key (almost always too limited). A "real" key is any
+  // non-empty value; the stray ###PDA-APIKEY### token left by older installs is
+  // rejected so it cannot falsely lock the Player ID field.
   function hasRealApiKey(key) {
     const k = String(key == null ? '' : key).trim();
     return Boolean(k) && k !== '###PDA-APIKEY###';
