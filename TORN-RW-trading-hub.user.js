@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.121
+// @version      0.3.122
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,10 +15,20 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.121';
+  const SCRIPT_VERSION = '0.3.122';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
+  const SCAN_DEBUG_ENABLED = !TEST;
+  const SCAN_DEBUG_PREFIX = '[RWTH-SCAN-DEBUG]';
+
+  function scanDebug(label, payload) {
+    if (!SCAN_DEBUG_ENABLED || typeof console === 'undefined') return;
+    const fn = console.debug || console.log;
+    if (typeof fn !== 'function') return;
+    try { fn.call(console, `${SCAN_DEBUG_PREFIX} ${label}`, payload); }
+    catch { /* debug output must never break scanning */ }
+  }
 
   // ─── Advertise identity config (#316) ────────────────────────────────────────
   // Shipped neutral defaults for the shop-identity strings every Advertise output
@@ -885,6 +895,58 @@
     return (cats && cats[String(itemName || '').toLowerCase()]) || null;
   }
 
+  function scanDebugItemLookup(entry, itemNames, cats) {
+    const item = itemFromLogEntry(entry, itemNames);
+    const itemNameKey = String(item.itemName || '').toLowerCase();
+    return {
+      itemId: item.itemId,
+      uid: item.uid,
+      itemName: item.itemName,
+      itemNameKey,
+      nameFromItemMap: item.itemId != null ? itemNames[String(item.itemId)] || null : null,
+      categoryFromCats: scanCategory(item.itemName, cats),
+      rawDataItem: entry && entry.data ? entry.data.item || entry.data.items || null : null,
+    };
+  }
+
+  function scanDebugHit(hit, cats) {
+    if (!hit) return null;
+    const renderedCategory = itemCategory(hit, cats);
+    return {
+      key: hit.key,
+      eventKey: hit.eventKey,
+      eventKeys: hit.eventKeys,
+      logType: hit.logType,
+      logId: hit.logId,
+      itemId: hit.itemId,
+      uid: hit.uid,
+      itemName: hit.itemName,
+      itemNameKey: String(hit.itemName || '').toLowerCase(),
+      storedCategory: hit.category,
+      categoryFromCats: scanCategory(hit.itemName, cats),
+      renderedCategory,
+      pickerSelected: PICK_CATEGORIES.indexOf(renderedCategory) !== -1 ? renderedCategory : 'Primary',
+      type: hit.type,
+      buySource: hit.buySource,
+      buyPrice: hit.buyPrice,
+      buyTimestamp: hit.buyTimestamp,
+      bonuses: hit.bonuses,
+      quality: hit.quality,
+      rarity: hit.rarity,
+      checked: hit.checked,
+      stagedId: hit.stagedId,
+    };
+  }
+
+  function scanDebugClassified(row, cats) {
+    if (!row) return null;
+    if (row.type === 'buy') return { type: row.type, hit: scanDebugHit(row.hit, cats) };
+    if (row.type === 'sale') return { type: row.type, eventKey: row.eventKey, eventKeys: row.eventKeys, sell: row.sell };
+    if (row.type === 'mug') return { type: row.type, eventKey: row.eventKey, eventKeys: row.eventKeys, mug: row.mug };
+    if (row.type === 'trade') return { type: row.type, leg: row.leg };
+    return row;
+  }
+
   function isRwCategory(category) {
     return category === 'Armor' || category === 'Primary'
       || category === 'Secondary' || category === 'Melee';
@@ -1537,6 +1599,9 @@
     const bonuses = hit.bonuses || [];
     const b1 = bonuses[0] || {}, b2 = bonuses[1] || {};
     const checked = hit.checked === false ? '' : ' checked';
+    const cats = ItemDict.categories();
+    const resolvedCategory = itemCategory(hit, cats);
+    scanDebug('render scan row', scanDebugHit(hit, cats));
     return `<div class="rwth-scan-row" data-scan-row="${k}">
       <label class="rwth-scan-check">
         <input type="checkbox" data-scan-check${checked}>
@@ -1554,7 +1619,7 @@
         <label class="rwth-field rwth-field-sm">
           <span class="rwth-field-label">Category</span>
           <select class="rwth-field-input" data-scan-field="category">
-            ${categoryOptions(itemCategory(hit, ItemDict.categories()))}
+            ${categoryOptions(resolvedCategory)}
           </select>
         </label>
       </div>
@@ -5024,10 +5089,25 @@
       }
       const cutoffUnix = scanCutoffUnix(MEM.settings.scanBackTo);
       const types = selectedScanLogTypes(MEM.settings.scanSources);
+      scanDebug('scan start', {
+        version: SCRIPT_VERSION,
+        scanBackTo: MEM.settings.scanBackTo || '',
+        cutoffUnix,
+        selectedTypes: types,
+        itemNameCount: Object.keys(itemNames || {}).length,
+        categoryCount: Object.keys(cats || {}).length,
+        scanSources: MEM.settings.scanSources,
+        seenCount: seen.size,
+      });
       const classified = [];
       try {
         for (const type of types) {
           const log = await fetchLogType(type, key, cutoffUnix);
+          scanDebug('fetched log type', {
+            logType: type,
+            entryCount: logPairs(log).length,
+            entryKeys: logPairs(log).map(([entryKey]) => String(entryKey)).slice(0, 25),
+          });
           for (const [entryKey, entry] of logPairs(log)) {
             const eventKey = scanEventKey(type, entryKey);
             if (seen.has(eventKey)) {
@@ -5036,7 +5116,20 @@
             }
             const ts = logTimestampMs(entry);
             if (cutoffUnix != null && ts != null && ts < cutoffUnix * 1000) continue;
-            classified.push(classifyLogEvent(entry, type, entryKey, itemNames, cats));
+            const classifiedRow = classifyLogEvent(entry, type, entryKey, itemNames, cats);
+            scanDebug('classified event', {
+              logType: type,
+              entryKey: String(entryKey),
+              eventKey,
+              timestampRaw: entry && entry.timestamp,
+              timestampMs: ts,
+              cutoffUnix,
+              lookup: scanDebugItemLookup(entry, itemNames, cats),
+              parsedAuctionWin: type === SCAN_LOG_TYPES.auctionBuy ? parseAuctionWin(entry, itemNames) : null,
+              classified: scanDebugClassified(classifiedRow, cats),
+              rawEntry: entry,
+            });
+            classified.push(classifiedRow);
           }
         }
       } catch (err) {
@@ -5051,17 +5144,53 @@
         items: MEM.ledger.items,
         transactions: MEM.advertise.transactions,
       });
+      scanDebug('preview built', {
+        summary: preview.summary,
+        buyCount: (preview.buys || []).length,
+        buys: (preview.buys || []).map(h => scanDebugHit(h, cats)),
+        sales: preview.sales,
+        mugs: preview.mugs,
+        review: preview.review,
+        ignored: preview.ignored,
+        already: preview.already,
+        eventKeys: preview.eventKeys,
+      });
       const hits = preview.buys || [];
 
       // Auto-fill each win from itemdetails (uid → real stats/bonuses/rarity).
       // A per-item failure just leaves that row's fields as the user can edit.
       const enriched = await Promise.all(hits.map(async (h) => {
-        if (h.uid == null) return h;
-        try { return applyItemDetails(h, await ItemDetails.fetch(h.uid, key)); }
-        catch { return h; }
+        if (h.uid == null) {
+          scanDebug('enrich skipped missing uid', scanDebugHit(h, cats));
+          return h;
+        }
+        try {
+          const details = await ItemDetails.fetch(h.uid, key);
+          const after = applyItemDetails(h, details);
+          scanDebug('enriched itemdetails', {
+            before: scanDebugHit(h, cats),
+            rawDetails: details,
+            after: scanDebugHit(after, cats),
+          });
+          return after;
+        } catch (err) {
+          scanDebug('enrich failed', {
+            before: scanDebugHit(h, cats),
+            error: err && err.message ? err.message : String(err),
+          });
+          return h;
+        }
       }));
 
       const staged = { ...preview, buys: [] };
+      scanDebug('scan stored results', {
+        enriched: enriched.map(h => scanDebugHit(h, cats)),
+        stagedSummary: staged.summary,
+        stagedSales: staged.sales,
+        stagedMugs: staged.mugs,
+        stagedReview: staged.review,
+        stagedIgnored: staged.ignored,
+      });
       Store.set('rwth_scan', enriched);
       Store.set('rwth_scan_preview', staged);
       setState({
