@@ -110,6 +110,69 @@ test('buildScanPreview matches RW sales and skips already-imported event ids', (
   assert.strictEqual(preview.already.length, 1);
 });
 
+test('buildScanPreview reconciles same-scan backloaded buy, sale, and mug', () => {
+  const boughtAt = 1779280000;
+  const soldAt = 1779372185;
+  const buy = P.classifyLogEvent({
+    id: 'buy-1',
+    timestamp: boughtAt,
+    data: {
+      item: { id: 614, uid: 19121539308, name: 'Diamond Bladed Knife' },
+      final_price: 75_000_000,
+    },
+  }, P.SCAN_LOG_TYPES.auctionBuy, 'buy-1', {}, {});
+  const sale = P.classifyLogEvent({
+    id: 'sale-1',
+    timestamp: soldAt,
+    data: {
+      item: { id: 614, name: 'Diamond Bladed Knife' },
+      net: 120_000_000,
+      buyer: 'BuyerName',
+    },
+  }, P.SCAN_LOG_TYPES.bazaarSale, 'sale-1', {}, {});
+  const mug = P.classifyLogEvent({
+    id: 'mug-1',
+    timestamp: soldAt + 120,
+    data: { cash: 8_000_000, attacker: 'Mugger' },
+  }, P.SCAN_LOG_TYPES.mugged, 'mug-1', {}, {});
+
+  const preview = P.buildScanPreview([buy, sale, mug], {
+    cats: {},
+    items: [],
+    transactions: [],
+  });
+
+  assert.strictEqual(preview.buys.length, 1);
+  assert.strictEqual(preview.ignored.length, 0);
+  assert.strictEqual(preview.sales.length, 1);
+  assert.match(preview.sales[0].matchedId, /^scan-buy:/);
+  assert.strictEqual(preview.mugs.length, 1);
+  assert.strictEqual(preview.mugs[0].matchedId, preview.sales[0].matchedId);
+  assert.strictEqual(preview.mugs[0].mug.amount, 8_000_000);
+});
+
+test('applyItemDetails stamps category from itemdetails when the item cache is stale', () => {
+  const hit = P.applyItemDetails({
+    itemName: 'Benelli M4 Super',
+    category: null,
+    type: 'weapon',
+    bonuses: [],
+    quality: null,
+    rarity: null,
+  }, {
+    name: 'Benelli M4 Super',
+    type: 'Secondary',
+    rarity: 'yellow',
+    stats: { quality: 64.5 },
+    bonuses: [{ title: 'Fury', value: 42 }],
+  });
+
+  assert.strictEqual(hit.category, 'Secondary');
+  assert.strictEqual(hit.type, 'weapon');
+  assert.strictEqual(hit.quality, 64.5);
+  assert.deepStrictEqual(hit.bonuses, [{ name: 'Fury', value: 42 }]);
+});
+
 test('simple RW trade becomes a buy; mixed trade stays review', () => {
   const simple = P.reconcileTradeGroup([
     {

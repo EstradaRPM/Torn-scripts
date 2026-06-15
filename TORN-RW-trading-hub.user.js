@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.120
+// @version      0.3.121
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.120';
+  const SCRIPT_VERSION = '0.3.121';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -733,16 +733,11 @@
   // name is resolved from the item dictionary; the bonus is user-entered.
   function parseAuctionWin(entry, itemNames) {
     const data = (entry && entry.data) || {};
-    const rec = Array.isArray(data.item) ? (data.item[0] || {}) : {};
-    const itemId = rec.id != null ? Number(rec.id) : null;
-    const uid = rec.uid != null ? Number(rec.uid) : null;
-    const names = itemNames || {};
-    let itemName = '';
-    if (itemId != null) itemName = names[itemId] || `Item #${itemId}`;
+    const item = itemFromLogEntry(entry, itemNames);
     return {
-      itemId,
-      uid,
-      itemName,
+      itemId: item.itemId,
+      uid: item.uid,
+      itemName: item.itemName,
       buyPrice: firstNum(data.final_price, data.cost, data.price),
     };
   }
@@ -792,6 +787,12 @@
 
   function scanEventKey(logType, key) {
     return `${logType}:${String(key == null ? '' : key)}`;
+  }
+
+  function scanBuyMatchId(hit) {
+    if (!hit) return null;
+    const k = hit.eventKey || hit.key || ((hit.eventKeys || [])[0]);
+    return k ? `scan-buy:${k}` : null;
   }
 
   function scanSeenSet(raw) {
@@ -872,7 +873,9 @@
   function logMoney(entry) {
     const data = (entry && entry.data) || {};
     const n = firstNum(data.net, data.total, data.total_price, data.price,
-      data.sale_price, data.final_price, data.cost, data.amount, data.money);
+      data.sale_price, data.final_price, data.cost, data.amount, data.money,
+      data.cash, data.cash_amount, data.mugged, data.mugged_amount,
+      data.amount_mugged, data.stolen, data.stolen_amount);
     if (n) return n;
     const m = logText(entry).match(/\$([\d,]+)/);
     return m ? parseMoney(m[1]) : 0;
@@ -1061,6 +1064,7 @@
     const items = (ctx && ctx.items) || [];
     const txs = (ctx && ctx.transactions) || [];
     const open = items.filter(i => i.status === 'held' || i.status === 'listed');
+    const saleMatchItems = open.slice();
     const mugMatchItems = items.slice();
     const txSeen = new Set(txs.map(txKey));
     const preview = {
@@ -1092,16 +1096,27 @@
         if (!isRwCategory(cat) && hit.buySource !== 'auction') {
           preview.ignored.push({ type: 'ignored', reason: 'non-RW item', eventKeys, itemName: hit.itemName });
         } else {
-          preview.buys.push({ ...hit, category: cat, eventKeys });
+          const stagedId = scanBuyMatchId({ ...hit, eventKeys });
+          const stagedHit = { ...hit, category: cat, eventKeys, stagedId };
+          preview.buys.push(stagedHit);
+          if (stagedId) {
+            saleMatchItems.push({
+              id: stagedId,
+              itemName: stagedHit.itemName,
+              status: 'held',
+              bonuses: stagedHit.bonuses || [],
+              buyTimestamp: stagedHit.buyTimestamp,
+            });
+          }
         }
         addEventKeys(eventKeys);
       } else if (row.type === 'sale') {
         const sell = row.sell || {};
         const cat = scanCategory(sell.itemName, cats);
-        if (!isRwCategory(cat)) {
+        const matched = matchSell(sell, saleMatchItems);
+        if (!isRwCategory(cat) && !matched) {
           preview.ignored.push({ type: 'ignored', reason: 'non-RW sale', eventKeys, itemName: sell.itemName });
         } else {
-          const matched = matchSell(sell, open);
           const duplicate = txSeen.has(txKey(sell));
           if (!duplicate) txSeen.add(txKey(sell));
           preview.sales.push({ sell, matchedId: matched ? matched.id : null, duplicate, eventKeys });
@@ -4940,12 +4955,16 @@
         })).filter(b => b.name)
       : hit.bonuses;
     const stats = details.stats || {};
+    const category = normCategory(details.category || details.item_category
+      || details.itemCategory || details.item_type || details.itemType
+      || details.sub_type || details.subType || details.type) || hit.category || null;
     return {
       ...hit,
       itemName: details.name || hit.itemName,
       // Torn has returned both "Armor" and "Defensive" for body armor across
       // endpoints/revisions (see ARMOR_TYPES) — accept either here too.
-      type: /armor|defensive/i.test(details.type || '') ? 'armor' : 'weapon',
+      category,
+      type: category === 'Armor' || /armor|defensive/i.test(details.type || '') ? 'armor' : 'weapon',
       bonuses,
       quality: stats.quality != null ? Number(stats.quality) : hit.quality,
       rarity: details.rarity || hit.rarity,
@@ -5066,10 +5085,14 @@
     if (!results.length && !preview) return;
 
     const newItems = [];
+    const stagedBuyIds = {};
     for (const hit of results) {
       if (hit.checked === false) continue;
+      const id = makeId();
+      const stagedId = scanBuyMatchId(hit);
+      if (stagedId) stagedBuyIds[stagedId] = id;
       newItems.push({
-        id: makeId(),
+        id,
         itemId: hit.itemId != null ? hit.itemId : null,
         itemName: hit.itemName || `Item #${hit.itemId}`,
         type: hit.type || 'weapon',
@@ -5094,11 +5117,12 @@
     if (preview) {
       for (const row of (preview.sales || [])) {
         const sell = row.sell || {};
-        if (row.matchedId) {
+        const matchedId = stagedBuyIds[row.matchedId] || row.matchedId;
+        if (matchedId) {
           const soldAt = sell.timestamp || Date.now();
-          const sold = items.find(i => i.id === row.matchedId);
+          const sold = items.find(i => i.id === matchedId);
           if (sold) VelocityTracker.recordSale(sold, sold.buyTimestamp, soldAt);
-          items = items.map(i => (i.id === row.matchedId ? {
+          items = items.map(i => (i.id === matchedId ? {
             ...i, status: 'sold',
             saleGross: sell.saleGross, saleFees: sell.saleFees, saleNet: sell.saleNet,
             soldTimestamp: soldAt,
@@ -5114,8 +5138,9 @@
       for (const row of (preview.mugs || [])) {
         const amount = Number(row && row.mug && row.mug.amount) || 0;
         if (row.checked === false) continue;
-        if (!row.matchedId || amount <= 0) continue;
-        items = items.map(i => (i.id === row.matchedId
+        const matchedId = stagedBuyIds[row.matchedId] || row.matchedId;
+        if (!matchedId || amount <= 0) continue;
+        items = items.map(i => (i.id === matchedId
           ? { ...i, mugLoss: Math.max(0, Number(i.mugLoss) || 0) + amount }
           : i));
       }
