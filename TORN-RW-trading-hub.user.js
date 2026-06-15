@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.110
+// @version      0.3.111
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.110';
+  const SCRIPT_VERSION = '0.3.111';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -318,6 +318,9 @@
       // #341 — ledger sort id, persisted under rwth_sort. Newest is the default
       // so the first open after upgrade does not surprise-reorder the list.
       sort: 'newest',      // 'newest' | 'oldest' | 'bestRoi' | 'biggestPl'
+      // #361 — selected period for the projection popup/chart display.
+      projectionPeriod: 'month', // 'day' | 'week' | 'month' | 'quarter' | 'year'
+      projectionPanelOpen: false,
       // Per-section fold state, persisted under rwth_collapsed. Outputs and the
       // sale-log box start collapsed; the advertised-items list starts open.
       collapsed: {
@@ -496,6 +499,11 @@
     // a renamed sort falls back to the default rather than rendering nothing.
     const sort = Store.get('rwth_sort');
     if (typeof sort === 'string' && SORT_IDS.includes(sort)) MEM.ui.sort = sort;
+
+    const projectionPeriod = Store.get('rwth_projection_period');
+    if (typeof projectionPeriod === 'string' && PROJECTION_PERIOD_IDS.includes(projectionPeriod)) {
+      MEM.ui.projectionPeriod = projectionPeriod;
+    }
 
     const bbRate = Store.get('rwth_bb_rate');
     if (bbRate && typeof bbRate === 'object' && typeof bbRate.rate === 'number') {
@@ -1266,6 +1274,46 @@
     { key: 'quarter', label: 'Quarter', days: 90 },
     { key: 'year',    label: 'Year',    days: 365 },
   ];
+  const PROJECTION_PERIOD_IDS = PROJECTION_PERIODS.map(p => p.key);
+  const DEFAULT_PROJECTION_PERIOD = 'month';
+
+  function projectionPeriod(key) {
+    return PROJECTION_PERIODS.find(p => p.key === key)
+      || PROJECTION_PERIODS.find(p => p.key === DEFAULT_PROJECTION_PERIOD)
+      || PROJECTION_PERIODS[0];
+  }
+
+  function buildProjectionView(projection, selectedKey, now) {
+    const source = projection && typeof projection === 'object' ? projection : {};
+    const selected = projectionPeriod(selectedKey);
+    const periods = Array.isArray(source.periods) ? source.periods : [];
+    const selectedPace = periods.find(p => p && p.key === selected.key)
+      || { ...selected, profit: 0 };
+    const realized = Array.isArray(source.realized) ? source.realized : [];
+    const projected = Array.isArray(source.projected) ? source.projected : [];
+    const lastRealized = realized.length ? realized[realized.length - 1] : null;
+    const safeNow = Number.isFinite(Number(now)) ? Number(now) : 0;
+    const lastT = lastRealized && Number.isFinite(Number(lastRealized.t)) ? Number(lastRealized.t) : 0;
+    const baseT = Math.max(0, safeNow, lastT);
+    const baseY = lastRealized && Number.isFinite(Number(lastRealized.cumulative))
+      ? Number(lastRealized.cumulative) : 0;
+    const profit = Number.isFinite(Number(selectedPace.profit)) ? Number(selectedPace.profit) : 0;
+    const periodLine = projected.length
+      ? [
+          { kind: 'projected', t: baseT, cumulative: baseY, period: selected.key },
+          { kind: 'projected', t: baseT + selected.days * DAY_MS,
+            cumulative: baseY + profit, profit, period: selected.key },
+        ]
+      : [];
+    return {
+      ...source,
+      selectedPeriod: selected.key,
+      selectedPeriodLabel: selected.label,
+      selectedPeriodDays: selected.days,
+      selectedPeriodProfit: profit,
+      periodLine,
+    };
+  }
 
   const LedgerStats = {
     summarize(items, now) {
@@ -1584,20 +1632,22 @@
   // inline SVG (#309/#359). The realized path is solid banked P/L; projected is
   // dashed and begins from the last realized point, or from a zero baseline when
   // no sale has cleared yet.
-  function buildLedgerHeroChart(projection) {
+  function buildLedgerHeroChart(projection, opts = {}) {
     const realized = Array.isArray(projection)
       ? projection
       : (projection && Array.isArray(projection.realized) ? projection.realized : []);
     const fullSeries = projection && Array.isArray(projection.series) ? projection.series : realized;
     const realizedPts = realized.map(p => ({ x: p.t, y: p.cumulative }));
-    const projectedRaw = fullSeries
-      .filter(p => p && p.kind === 'projected')
+    const periodLine = projection && Array.isArray(projection.periodLine) ? projection.periodLine : null;
+    const projectedRaw = (periodLine || fullSeries.filter(p => p && p.kind === 'projected'))
       .map(p => ({ x: p.t, y: p.cumulative }));
-    const projectedPts = projectedRaw.length
-      ? (realizedPts.length
-        ? [realizedPts[realizedPts.length - 1], ...projectedRaw]
-        : [{ x: projectedRaw[0].x, y: 0 }, ...projectedRaw])
-      : [];
+    const projectedPts = periodLine
+      ? projectedRaw
+      : (projectedRaw.length
+        ? (realizedPts.length
+          ? [realizedPts[realizedPts.length - 1], ...projectedRaw]
+          : [{ x: projectedRaw[0].x, y: 0 }, ...projectedRaw])
+        : []);
     const allPts = realizedPts.concat(projectedPts);
     if (!allPts.length) {
       return `<div class="rwth-hero-empty">No realized or projected profit yet — log a sale or list an item with an ask.</div>`;
@@ -1617,7 +1667,10 @@
       ? projectedRaw[projectedRaw.length - 1].y
       : realized[realized.length - 1].cumulative;
     const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-    const label = projectedRaw.length ? 'Projected P/L (listed asks, not banked)' : 'Cumulative realized P/L';
+    const selectedLabel = projection && projection.selectedPeriodLabel;
+    const label = projectedRaw.length
+      ? `Projected ${selectedLabel ? selectedLabel + ' ' : ''}P/L (listed asks, not banked)`
+      : 'Cumulative realized P/L';
     const minDate = new Date(domain.minX).toISOString().slice(5, 10);
     const maxDate = new Date(domain.maxX).toISOString().slice(5, 10);
     const yTicks = Array.from(new Set([domain.minY, 0, domain.maxY]
@@ -1635,7 +1688,10 @@
       + (projectedRaw.length
         ? `<span><i class="rwth-legend-line rwth-legend-projected"></i>projected</span>` : '')
       + `</div>`;
-    return `<div class="rwth-hero">
+    const attrs = opts.interactive
+      ? ` data-action="open-projection-panel" data-projection-trigger role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="${opts.open ? 'true' : 'false'}"`
+      : '';
+    return `<div class="rwth-hero"${attrs}>
       <div class="rwth-hero-head">
         <span class="rwth-hero-label">${label}</span>
         <span class="rwth-hero-val ${cls}">${last >= 0 ? '+' : ''}${fmtMoney(last)}</span>
@@ -1659,6 +1715,7 @@
 
   function buildProjectionPace(projection) {
     const periods = projection && Array.isArray(projection.periods) ? projection.periods : [];
+    const selected = projectionPeriod(projection && projection.selectedPeriod);
     const clearDays = projection && Number.isFinite(Number(projection.clearDays))
       ? round1(Number(projection.clearDays)) : PROJECTION_FALLBACK_CLEAR_DAYS;
     const source = projection && projection.clearDaysSource === 'avg-clear'
@@ -1667,7 +1724,8 @@
     const cells = periods.map(p => {
       const profit = Number(p.profit) || 0;
       const cls = profit >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-      return `<span class="rwth-pace-cell">
+      const active = p.key === selected.key;
+      return `<span class="rwth-pace-cell${active ? ' rwth-pace-cell-active' : ''}">
         <b class="${cls}">${fmtMoney(profit)}</b><small>${escapeAttr(p.label)}</small>
       </span>`;
     }).join('');
@@ -1677,6 +1735,37 @@
         <small>listed asks minus buy price · ${escapeAttr(source)}</small>
       </div>
       <div class="rwth-pace-grid">${cells}</div>
+    </div>`;
+  }
+
+  function buildProjectionPopup(projection, open) {
+    if (!open) return '';
+    const selected = projectionPeriod(projection && projection.selectedPeriod);
+    const selectedProfit = Number(projection && projection.selectedPeriodProfit) || 0;
+    const cls = selectedProfit >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+    const clearDays = projection && Number.isFinite(Number(projection.clearDays))
+      ? round1(Number(projection.clearDays)) : PROJECTION_FALLBACK_CLEAR_DAYS;
+    const source = projection && projection.clearDaysSource === 'avg-clear'
+      ? `${clearDays}d ledger clear average` : `${clearDays}d safe fallback`;
+    const buttons = PROJECTION_PERIODS.map(p => {
+      const active = p.key === selected.key;
+      return `<button class="rwth-proj-btn${active ? ' rwth-proj-btn-active' : ''}" type="button"
+        data-action="set-projection-period" data-period="${p.key}" aria-pressed="${active ? 'true' : 'false'}">${p.label}</button>`;
+    }).join('');
+    return `<div class="rwth-projection-pop" role="dialog" aria-label="Projection controls">
+      <div class="rwth-projection-pop-head">
+        <div>
+          <span>Projection display</span>
+          <small>Ask-derived pace; not banked profit.</small>
+        </div>
+        <button class="rwth-icon-btn" type="button" data-action="close-projection-panel" aria-label="Close projection controls" title="Close">×</button>
+      </div>
+      <div class="rwth-proj-controls" role="group" aria-label="Projection period">${buttons}</div>
+      <div class="rwth-proj-readout">
+        <b class="${cls}">${selectedProfit >= 0 ? '+' : ''}${fmtMoney(selectedProfit)}</b>
+        <span>${escapeAttr(selected.label)} projected profit from currently listed asks.</span>
+        <small>Uses ${escapeAttr(source)} and never rewrites ledger rows or realized P/L.</small>
+      </div>
     </div>`;
   }
 
@@ -1733,7 +1822,7 @@
   // the cockpit "big picture" above the inventory list. Shallow HTML-string glue
   // over LedgerStats; recomputes on every render() since buildLedgerTab calls it
   // fresh.
-  function buildLedgerDashboard(items, now, analyticsCollapsed = true, stats) {
+  function buildLedgerDashboard(items, now, analyticsCollapsed = true, stats, ui = {}) {
     // `stats` lets buildLedgerTab share one summarize() pass with the filter
     // chips; standalone callers (tests) omit it and get a fresh computation.
     const s = stats || LedgerStats.summarize(items, now);
@@ -1752,14 +1841,18 @@
         + ` · ${s.winRate}% win · ${s.avgDaysToClear}d clear`
       : 'no sales yet';
 
+    const projectionView = buildProjectionView(s.profitProjection, ui.projectionPeriod, now);
+    const projectionOpen = !!ui.projectionPanelOpen;
+
     return `<div class="rwth-dash">
       <div class="rwth-stats">
         ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
         ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
         ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
       </div>
-      ${buildLedgerHeroChart(s.profitProjection)}
-      ${buildProjectionPace(s.profitProjection)}
+      ${buildLedgerHeroChart(projectionView, { interactive: true, open: projectionOpen })}
+      ${buildProjectionPopup(projectionView, projectionOpen)}
+      ${buildProjectionPace(projectionView)}
       ${buildLedgerAnalytics(s, analyticsCollapsed)}
     </div>`;
   }
@@ -1821,7 +1914,7 @@
     const err = mem && mem.fetchError;
     const fold = (mem && mem.ui && mem.ui.collapsed) || {};
     return `<div class="rwth-ledger">
-      ${buildLedgerDashboard(items, now, fold.analytics, stats)}
+      ${buildLedgerDashboard(items, now, fold.analytics, stats, mem && mem.ui)}
       <div class="rwth-ledger-bar">
         <div class="rwth-filters">${filterBtns}</div>
         <div class="rwth-ledger-actions">
@@ -3351,6 +3444,15 @@
         case 'cancel-sells':  setState({ ledger: { ...MEM.ledger, sellPreview: null, sellMessage: '' } }); break;
         case 'mark-listed':   Ledger.markListed(id); break;
         case 'price-check':   togglePriceCheck(id); break;
+        case 'open-projection-panel':
+          setState({ ui: { ...MEM.ui, projectionPanelOpen: true } });
+          break;
+        case 'close-projection-panel':
+          setState({ ui: { ...MEM.ui, projectionPanelOpen: false } });
+          break;
+        case 'set-projection-period':
+          setProjectionPeriod(actionEl.dataset.period);
+          break;
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
         case 'add-tx':        addTransaction(); break;
         case 'reset-colours': resetColourOverrides(); break;
@@ -3377,6 +3479,16 @@
     // #340 — Enter commits the inline ask edit. A lone text input (not in a form)
     // does not blur on Enter by itself, so force the blur that fires `change`.
     root.addEventListener('keydown', (e) => {
+      const projectionTrigger = e.target && e.target.closest && e.target.closest('[data-projection-trigger]');
+      if (projectionTrigger && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        setState({ ui: { ...MEM.ui, projectionPanelOpen: true } });
+        return;
+      }
+      if (e.key === 'Escape' && MEM.ui.projectionPanelOpen) {
+        setState({ ui: { ...MEM.ui, projectionPanelOpen: false } });
+        return;
+      }
       if (e.key === 'Enter' && e.target.matches && e.target.matches('[data-ask-edit]')) {
         e.preventDefault();
         e.target.blur();
@@ -3721,6 +3833,14 @@
     if (!SORT_IDS.includes(next) || next === MEM.ui.sort) return;
     Store.set('rwth_sort', next);
     setState({ ui: { ...MEM.ui, sort: next } });
+  }
+
+  // #361 — Persist only the selected projection period. Opening/closing the
+  // popup is transient UI state, and projection controls never mutate rows.
+  function setProjectionPeriod(key) {
+    if (!PROJECTION_PERIOD_IDS.includes(key)) return;
+    Store.set('rwth_projection_period', key);
+    setState({ ui: { ...MEM.ui, projectionPeriod: key, projectionPanelOpen: true } });
   }
 
   // Flip one section's fold state and persist it so it survives a reload.
@@ -4974,6 +5094,10 @@
         border: 1px solid var(--rwth-border); border-radius: 6px; padding: 10px 11px;
         background: var(--rwth-fill-faint);
       }
+      .rwth-hero[data-projection-trigger] { cursor: pointer; }
+      .rwth-hero[data-projection-trigger]:focus {
+        outline: 2px solid var(--rwth-secondary); outline-offset: 2px;
+      }
       .rwth-hero-head {
         display: flex; align-items: baseline; justify-content: space-between;
       }
@@ -5036,6 +5160,7 @@
         padding: 6px 5px; background: var(--rwth-fill);
         display: flex; flex-direction: column; align-items: center; gap: 2px;
       }
+      .rwth-pace-cell-active { border-color: var(--rwth-secondary); box-shadow: 0 0 0 1px var(--rwth-secondary); }
       .rwth-pace-cell b {
         max-width: 100%; overflow-wrap: anywhere;
         font: 700 12px var(--rwth-font-mono); color: var(--rwth-text);
@@ -5044,6 +5169,48 @@
         font: 700 8px var(--rwth-font-mono); text-transform: uppercase;
         color: var(--rwth-muted);
       }
+
+      .rwth-projection-pop {
+        display: flex; flex-direction: column; gap: 9px;
+        border: 1px solid var(--rwth-secondary); border-radius: 6px; padding: 10px 11px;
+        background: var(--rwth-fill); box-shadow: 0 0 10px rgba(0, 255, 255, .12);
+      }
+      .rwth-projection-pop-head {
+        display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+      }
+      .rwth-projection-pop-head span {
+        display: block; font: 700 10px var(--rwth-font-mono); text-transform: uppercase;
+        letter-spacing: .5px; color: var(--rwth-text);
+      }
+      .rwth-projection-pop-head small,
+      .rwth-proj-readout small {
+        display: block; font: 10px var(--rwth-font-mono); color: var(--rwth-muted);
+      }
+      .rwth-icon-btn {
+        width: 24px; height: 24px; flex: 0 0 24px; border-radius: 4px;
+        border: 1px solid var(--rwth-border); background: var(--rwth-bg); color: var(--rwth-muted);
+        cursor: pointer; font: 700 16px var(--rwth-font-ui); line-height: 20px;
+      }
+      .rwth-icon-btn:hover, .rwth-icon-btn:focus { color: var(--rwth-text); border-color: var(--rwth-secondary); }
+      .rwth-proj-controls {
+        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px;
+      }
+      .rwth-proj-btn {
+        min-width: 0; border: 1px solid var(--rwth-border-soft); border-radius: 4px;
+        padding: 6px 3px; background: var(--rwth-fill-faint); color: var(--rwth-muted);
+        font: 700 9px var(--rwth-font-mono); text-transform: uppercase; cursor: pointer;
+      }
+      .rwth-proj-btn-active,
+      .rwth-proj-btn:hover,
+      .rwth-proj-btn:focus {
+        border-color: var(--rwth-secondary); color: var(--rwth-text); background: rgba(0, 255, 255, .08);
+      }
+      .rwth-proj-readout {
+        display: grid; grid-template-columns: minmax(72px, auto) 1fr; gap: 3px 9px;
+        align-items: baseline; font: 11px var(--rwth-font-mono); color: var(--rwth-text);
+      }
+      .rwth-proj-readout b { font: 700 16px var(--rwth-font-mono); }
+      .rwth-proj-readout small { grid-column: 1 / -1; }
 
       .rwth-analytics {
         display: flex; flex-direction: column; gap: 8px;

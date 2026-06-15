@@ -240,7 +240,7 @@ test('buildLedgerDashboard renders solid realized and dashed projected chart lin
   assert.match(html, /class="rwth-hero-line rwth-hero-line-projected"/);
   assert.match(html, /rwth-legend-realized/);
   assert.match(html, /rwth-legend-projected/);
-  assert.match(html, /Projected P\/L \(listed asks, not banked\)/);
+  assert.match(html, /Projected Month P\/L \(listed asks, not banked\)/);
   assert.match(html, /rwth-hero-axis/);
   assert.match(html, /rwth-hero-axis-tick/);
   assert.match(html, /Projected profit pace/);
@@ -251,6 +251,40 @@ test('buildLedgerDashboard renders solid realized and dashed projected chart lin
   assert.match(html, />Quarter</);
   assert.match(html, />Year</);
   assert.doesNotMatch(html, />Win rate</);
+});
+
+test('buildLedgerDashboard opens projection popup with safe period controls', () => {
+  const { buildLedgerDashboard } = globalThis.__RwthPure;
+  const day = 86_400_000;
+  const t0 = Date.UTC(2026, 4, 1);
+  const rows = [
+    {
+      ...soldItem, id: 'sold-popup', buyPrice: 1000, saleNet: 1600,
+      buyTimestamp: t0, soldTimestamp: t0 + 2 * day,
+    },
+    {
+      ...heldItem, id: 'listed-popup', status: 'listed',
+      buyPrice: 1000, listPrice: 1400, buyTimestamp: t0 + day,
+    },
+  ];
+  const before = JSON.stringify(rows);
+  const html = buildLedgerDashboard(rows, t0 + 4 * day, true, undefined, {
+    projectionPanelOpen: true,
+    projectionPeriod: 'week',
+  });
+
+  assert.strictEqual(JSON.stringify(rows), before);
+  assert.match(html, /data-projection-trigger role="button" tabindex="0"/);
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /role="dialog" aria-label="Projection controls"/);
+  assert.match(html, /Projected Week P\/L \(listed asks, not banked\)/);
+  assert.match(html, /data-action="set-projection-period" data-period="day"/);
+  assert.match(html, /data-action="set-projection-period" data-period="week" aria-pressed="true"/);
+  assert.match(html, /data-action="set-projection-period" data-period="month"/);
+  assert.match(html, /data-action="set-projection-period" data-period="quarter"/);
+  assert.match(html, /data-action="set-projection-period" data-period="year"/);
+  assert.match(html, /Week projected profit from currently listed asks/);
+  assert.match(html, /never rewrites ledger rows or realized P\/L/);
 });
 
 test('buildLedgerDashboard renders projected-only chart without faking realized line', () => {
