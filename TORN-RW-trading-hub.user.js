@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.112
+// @version      0.3.114
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.112';
+  const SCRIPT_VERSION = '0.3.114';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1276,6 +1276,16 @@
   ];
   const PROJECTION_PERIOD_IDS = PROJECTION_PERIODS.map(p => p.key);
   const DEFAULT_PROJECTION_PERIOD = 'month';
+  const PROJECTION_HISTORY_WINDOW_DAYS = 30;
+  const PROJECTION_MIN_HISTORY_SPAN_DAYS = 7;
+  const PROJECTION_CONFIDENCE_SALES = 5;
+  const PROJECTION_CONFIDENCE_LISTINGS = 5;
+
+  function clamp01(n) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return 0;
+    return Math.max(0, Math.min(1, x));
+  }
 
   function projectionPeriod(key) {
     return PROJECTION_PERIODS.find(p => p.key === key)
@@ -1290,7 +1300,6 @@
     const selectedPace = periods.find(p => p && p.key === selected.key)
       || { ...selected, profit: 0 };
     const realized = Array.isArray(source.realized) ? source.realized : [];
-    const projected = Array.isArray(source.projected) ? source.projected : [];
     const lastRealized = realized.length ? realized[realized.length - 1] : null;
     const safeNow = Number.isFinite(Number(now)) ? Number(now) : 0;
     const lastT = lastRealized && Number.isFinite(Number(lastRealized.t)) ? Number(lastRealized.t) : 0;
@@ -1298,7 +1307,8 @@
     const baseY = lastRealized && Number.isFinite(Number(lastRealized.cumulative))
       ? Number(lastRealized.cumulative) : 0;
     const profit = Number.isFinite(Number(selectedPace.profit)) ? Number(selectedPace.profit) : 0;
-    const periodLine = projected.length
+    const hasForecast = !!source.hasOperatingForecast;
+    const periodLine = hasForecast
       ? [
           { kind: 'projected', t: baseT, cumulative: baseY, period: selected.key },
           { kind: 'projected', t: baseT + selected.days * DAY_MS,
@@ -1381,9 +1391,11 @@
         }, []);
 
       // Forecast series for the next dashboard slice: realized points remain
-      // saleNet-buyPrice; listed projections add ask-buy at the expected clear
-      // time. Invalid price legs are skipped instead of being coerced into a
-      // fake $0 projection, and stale/unknown timing clamps to a finite floor.
+      // saleNet-buyPrice; listed projections keep their concrete ask-buy detail,
+      // while the dashboard pace is an operating forecast blended from recent
+      // realized profit/day and current listed pipeline. Invalid price legs are
+      // skipped instead of being coerced into a fake $0 projection, and
+      // stale/unknown timing clamps to a finite floor.
       const lastRealized = cumulativeProfit.length
         ? cumulativeProfit[cumulativeProfit.length - 1].cumulative : 0;
       const lastRealizedT = cumulativeProfit.length
@@ -1420,8 +1432,51 @@
         .sort((a, b) => a.t - b.t);
       const projectionClearDays = avgDaysToClear > 0
         ? avgDaysToClear : PROJECTION_FALLBACK_CLEAR_DAYS;
-      const projectedDailyProfit = projectedProfit.reduce((sum, p) =>
+
+      const listedDailyProfit = projectedProfit.reduce((sum, p) =>
         sum + (p.profit / projectionClearDays), 0);
+      const recentFloor = forecastFloor - PROJECTION_HISTORY_WINDOW_DAYS * DAY_MS;
+      const recentSales = sold
+        .map(it => {
+          const t = fin(it.soldTimestamp);
+          if (t == null || t > forecastFloor || t < recentFloor) return null;
+          return { t, profit: fin(it.saleNet) - cost(it) };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.t - b.t);
+      const recentProfit = recentSales.reduce((sum, p) => sum + p.profit, 0);
+      const oldestRecentT = recentSales.length ? recentSales[0].t : null;
+      const newestRecentT = recentSales.length ? recentSales[recentSales.length - 1].t : null;
+      const recentSpanDays = recentSales.length
+        ? Math.min(PROJECTION_HISTORY_WINDOW_DAYS,
+            Math.max(PROJECTION_MIN_HISTORY_SPAN_DAYS, (forecastFloor - oldestRecentT) / DAY_MS))
+        : 0;
+      const realizedDailyProfit = recentSpanDays > 0 ? recentProfit / recentSpanDays : 0;
+      const newestSaleAgeDays = newestRecentT != null
+        ? Math.max(0, (forecastFloor - newestRecentT) / DAY_MS) : null;
+      const recencyConfidence = newestSaleAgeDays == null ? 0
+        : newestSaleAgeDays <= 7 ? 1
+          : newestSaleAgeDays >= PROJECTION_HISTORY_WINDOW_DAYS ? 0
+            : (PROJECTION_HISTORY_WINDOW_DAYS - newestSaleAgeDays)
+              / (PROJECTION_HISTORY_WINDOW_DAYS - 7);
+      const historyConfidence = clamp01((recentSales.length / PROJECTION_CONFIDENCE_SALES) * recencyConfidence);
+      const pipelineConfidence = clamp01(projectedProfit.length / PROJECTION_CONFIDENCE_LISTINGS);
+      let historyWeight = 0, pipelineWeight = 0, forecastBasis = 'none';
+      if (historyConfidence > 0 && pipelineConfidence > 0) {
+        const weightedHistory = historyConfidence * 2;
+        const totalWeight = weightedHistory + pipelineConfidence;
+        historyWeight = weightedHistory / totalWeight;
+        pipelineWeight = pipelineConfidence / totalWeight;
+        forecastBasis = 'blended';
+      } else if (historyConfidence > 0) {
+        historyWeight = 1;
+        forecastBasis = 'history';
+      } else if (pipelineConfidence > 0) {
+        pipelineWeight = 1;
+        forecastBasis = 'listed';
+      }
+      const projectedDailyProfit =
+        realizedDailyProfit * historyWeight + listedDailyProfit * pipelineWeight;
       const projectedPace = PROJECTION_PERIODS.map(period => ({
         ...period,
         profit: Math.round(projectedDailyProfit * period.days),
@@ -1433,6 +1488,18 @@
         clearDays: projectionClearDays,
         clearDaysSource: avgDaysToClear > 0 ? 'avg-clear' : 'fallback',
         dailyProfit: projectedDailyProfit,
+        listedDailyProfit,
+        realizedDailyProfit,
+        historyWeight,
+        pipelineWeight,
+        historyConfidence,
+        pipelineConfidence,
+        forecastBasis,
+        hasOperatingForecast: forecastBasis !== 'none',
+        historyWindowDays: PROJECTION_HISTORY_WINDOW_DAYS,
+        historySpanDays: recentSpanDays ? round1(recentSpanDays) : 0,
+        recentSoldCount: recentSales.length,
+        newestSaleAgeDays: newestSaleAgeDays == null ? null : round1(newestSaleAgeDays),
         periods: projectedPace,
         series: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative }))
           .concat(projectedProfit.map(p => {
@@ -1668,8 +1735,12 @@
       : realized[realized.length - 1].cumulative;
     const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
     const selectedLabel = projection && projection.selectedPeriodLabel;
+    const basis = projection && projection.forecastBasis;
+    const basisLabel = basis === 'history' ? 'recent pace'
+      : basis === 'listed' ? 'listed floor'
+        : basis === 'blended' ? 'operating pace' : 'projection';
     const label = projectedRaw.length
-      ? `Projected ${selectedLabel ? selectedLabel + ' ' : ''}P/L (listed asks, not banked)`
+      ? `Projected ${selectedLabel ? selectedLabel + ' ' : ''}P/L (${basisLabel})`
       : 'Cumulative realized P/L';
     const minDate = new Date(domain.minX).toISOString().slice(5, 10);
     const maxDate = new Date(domain.maxX).toISOString().slice(5, 10);
@@ -1713,31 +1784,6 @@
     </div>`;
   }
 
-  function buildProjectionPace(projection) {
-    const periods = projection && Array.isArray(projection.periods) ? projection.periods : [];
-    const selected = projectionPeriod(projection && projection.selectedPeriod);
-    const clearDays = projection && Number.isFinite(Number(projection.clearDays))
-      ? round1(Number(projection.clearDays)) : PROJECTION_FALLBACK_CLEAR_DAYS;
-    const source = projection && projection.clearDaysSource === 'avg-clear'
-      ? `${clearDays}d clear avg` : `${clearDays}d fallback`;
-    if (!periods.length) return '';
-    const cells = periods.map(p => {
-      const profit = Number(p.profit) || 0;
-      const cls = profit >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-      const active = p.key === selected.key;
-      return `<span class="rwth-pace-cell${active ? ' rwth-pace-cell-active' : ''}">
-        <b class="${cls}">${fmtMoney(profit)}</b><small>${escapeAttr(p.label)}</small>
-      </span>`;
-    }).join('');
-    return `<div class="rwth-pace">
-      <div class="rwth-pace-head">
-        <span>Projected profit pace</span>
-        <small>listed asks minus buy price · ${escapeAttr(source)}</small>
-      </div>
-      <div class="rwth-pace-grid">${cells}</div>
-    </div>`;
-  }
-
   function buildProjectionPopup(projection, open) {
     if (!open) return '';
     const selected = projectionPeriod(projection && projection.selectedPeriod);
@@ -1747,6 +1793,24 @@
       ? round1(Number(projection.clearDays)) : PROJECTION_FALLBACK_CLEAR_DAYS;
     const source = projection && projection.clearDaysSource === 'avg-clear'
       ? `${clearDays}d ledger clear average` : `${clearDays}d safe fallback`;
+    const basis = projection && projection.forecastBasis;
+    const historyPct = Math.round(clamp01(projection && projection.historyWeight) * 100);
+    const listedPct = Math.round(clamp01(projection && projection.pipelineWeight) * 100);
+    const realizedDaily = Number(projection && projection.realizedDailyProfit) || 0;
+    const listedDaily = Number(projection && projection.listedDailyProfit) || 0;
+    const fmtDaily = v => `${fmtMoney(Math.round(Number(v) || 0))}/d`;
+    const recentSold = Number(projection && projection.recentSoldCount) || 0;
+    const historySpan = Number(projection && projection.historySpanDays) || 0;
+    const basisLabel = basis === 'history' ? 'Recent pace forecast'
+      : basis === 'listed' ? 'Listed floor forecast'
+        : basis === 'blended' ? 'Operating forecast' : 'Projection display';
+    const basisDetail = basis === 'history'
+      ? `Recent realized pace: ${fmtDaily(realizedDaily)} across ${recentSold} sale${recentSold === 1 ? '' : 's'} in ${historySpan || PROJECTION_HISTORY_WINDOW_DAYS}d; assumes continued sourcing.`
+      : basis === 'listed'
+        ? `Listed floor only: ${fmtDaily(listedDaily)} from current asks over ${escapeAttr(source)}.`
+        : basis === 'blended'
+          ? `Blend: ${historyPct}% recent pace (${fmtDaily(realizedDaily)}) + ${listedPct}% listed floor (${fmtDaily(listedDaily)}).`
+          : 'No forecast yet; log sales or list priced inventory.';
     const buttons = PROJECTION_PERIODS.map(p => {
       const active = p.key === selected.key;
       return `<button class="rwth-proj-btn${active ? ' rwth-proj-btn-active' : ''}" type="button"
@@ -1755,16 +1819,16 @@
     return `<div class="rwth-projection-pop" role="dialog" aria-label="Projection controls">
       <div class="rwth-projection-pop-head">
         <div>
-          <span>Projection display</span>
-          <small>Ask-derived pace; not banked profit.</small>
+          <span>${basisLabel}</span>
+          <small>Past profit pace drives the estimate; listed asks are the floor.</small>
         </div>
         <button class="rwth-icon-btn" type="button" data-action="close-projection-panel" aria-label="Close projection controls" title="Close">×</button>
       </div>
       <div class="rwth-proj-controls" role="group" aria-label="Projection period">${buttons}</div>
       <div class="rwth-proj-readout">
         <b class="${cls}">${selectedProfit >= 0 ? '+' : ''}${fmtMoney(selectedProfit)}</b>
-        <span>${escapeAttr(selected.label)} projected profit from currently listed asks.</span>
-        <small>Uses ${escapeAttr(source)} and never rewrites ledger rows or realized P/L.</small>
+        <span>${escapeAttr(selected.label)} projected operating profit.</span>
+        <small>${escapeAttr(basisDetail)}</small>
       </div>
     </div>`;
   }
@@ -1852,7 +1916,6 @@
       </div>
       ${buildLedgerHeroChart(projectionView, { interactive: true, open: projectionOpen })}
       ${buildProjectionPopup(projectionView, projectionOpen)}
-      ${buildProjectionPace(projectionView)}
       ${buildLedgerAnalytics(s, analyticsCollapsed)}
     </div>`;
   }
@@ -5160,38 +5223,6 @@
       .rwth-hero-empty {
         border: 1px solid var(--rwth-border-soft); border-radius: 6px; padding: 16px 11px;
         font: 11px var(--rwth-font-mono); color: var(--rwth-muted); font-style: italic; text-align: center;
-      }
-
-      .rwth-pace {
-        display: flex; flex-direction: column; gap: 7px;
-        border: 1px solid var(--rwth-border-soft); border-radius: 6px; padding: 9px 11px;
-        background: var(--rwth-fill-faint);
-      }
-      .rwth-pace-head {
-        display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
-        font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
-        letter-spacing: .5px; color: var(--rwth-muted);
-      }
-      .rwth-pace-head small {
-        font: 10px var(--rwth-font-mono); text-transform: none; letter-spacing: 0;
-        text-align: right; color: var(--rwth-muted);
-      }
-      .rwth-pace-grid {
-        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px;
-      }
-      .rwth-pace-cell {
-        min-width: 0; border: 1px solid var(--rwth-border-soft); border-radius: 4px;
-        padding: 6px 5px; background: var(--rwth-fill);
-        display: flex; flex-direction: column; align-items: center; gap: 2px;
-      }
-      .rwth-pace-cell-active { border-color: var(--rwth-secondary); box-shadow: 0 0 0 1px var(--rwth-secondary); }
-      .rwth-pace-cell b {
-        max-width: 100%; overflow-wrap: anywhere;
-        font: 700 12px var(--rwth-font-mono); color: var(--rwth-text);
-      }
-      .rwth-pace-cell small {
-        font: 700 8px var(--rwth-font-mono); text-transform: uppercase;
-        color: var(--rwth-muted);
       }
 
       .rwth-projection-pop {

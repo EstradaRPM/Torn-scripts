@@ -295,11 +295,33 @@ console.log('\nprofitProjection — listed ask-derived points');
   assertEq('final forecast adds projected profits to realized baseline',
     s.profitProjection.series[s.profitProjection.series.length - 1].cumulative,
     s.realized + 300 + 600);
-  assertEq('projection pace uses avg clear time for per-day profit', s.profitProjection.periods.find(p => p.key === 'day').profit, 225);
-  assertEq('projection pace shows weekly profit', s.profitProjection.periods.find(p => p.key === 'week').profit, 1575);
-  assertEq('projection pace shows monthly profit', s.profitProjection.periods.find(p => p.key === 'month').profit, 6750);
-  assertEq('projection pace shows quarterly profit', s.profitProjection.periods.find(p => p.key === 'quarter').profit, 20250);
-  assertEq('projection pace shows yearly profit', s.profitProjection.periods.find(p => p.key === 'year').profit, 82125);
+  assertEq('listed floor keeps ask profit over avg clear time', Math.round(s.profitProjection.listedDailyProfit), 225);
+  assertEq('realized pace uses recent sold profit over a guarded span', Math.round(s.profitProjection.realizedDailyProfit), 186);
+  assertEq('forecast basis blends history and listed floor', s.profitProjection.forecastBasis, 'blended');
+  assertEq('projection pace uses blended operating daily profit', s.profitProjection.periods.find(p => p.key === 'day').profit, 199);
+  assertEq('projection pace shows weekly operating profit', s.profitProjection.periods.find(p => p.key === 'week').profit, 1392);
+  assertEq('projection pace shows monthly operating profit', s.profitProjection.periods.find(p => p.key === 'month').profit, 5964);
+  assertEq('projection pace shows quarterly operating profit', s.profitProjection.periods.find(p => p.key === 'quarter').profit, 17893);
+  assertEq('projection pace shows yearly operating profit', s.profitProjection.periods.find(p => p.key === 'year').profit, 72565);
+}
+
+console.log('\nprofitProjection — recent realized pace can lift a thin listed floor');
+{
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, saleNet: 2500, soldTimestamp: NOW - 6 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2400, soldTimestamp: NOW - 5 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2300, soldTimestamp: NOW - 4 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2200, soldTimestamp: NOW - 3 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 1900, soldTimestamp: NOW - 2 * DAY }),
+    listed({ id: 'thin', buyPrice: 1000, listPrice: 1700, buyTimestamp: NOW - DAY }),
+  ], NOW);
+  assertEq('listed floor is low with one current ask', Math.round(s.profitProjection.listedDailyProfit), 100);
+  assertEq('recent realized pace reflects actual sold profit rate', Math.round(s.profitProjection.realizedDailyProfit), 900);
+  assertEq('basis is blended when history and listed pipeline both exist', s.profitProjection.forecastBasis, 'blended');
+  assert('history weight dominates a thin current pipeline', s.profitProjection.historyWeight > 0.9);
+  assert('operating daily forecast is above the listed floor',
+    s.profitProjection.dailyProfit > s.profitProjection.listedDailyProfit);
+  assertEq('monthly forecast follows operating pace, not just pending gross', s.profitProjection.periods.find(p => p.key === 'month').profit, 24818);
 }
 
 console.log('\nprofitProjection — invalid input stays finite');
