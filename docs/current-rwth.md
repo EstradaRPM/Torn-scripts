@@ -5,7 +5,7 @@ This is the current handoff for `TORN-RW-trading-hub.user.js`.
 ## Status
 
 - Active script: `TORN-RW-trading-hub.user.js`
-- Current version in source: `0.3.107`
+- Current version in source: `0.3.109`
 - Current development goal: finish the RW Trading Hub script without stale docs, old audits, or broad test runs hijacking the work.
 - Current implementation authority: the shipped userscript, then focused tests that import the shipped userscript through `globalThis.__RwthPure`.
 

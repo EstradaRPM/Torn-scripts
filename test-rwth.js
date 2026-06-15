@@ -221,6 +221,51 @@ test('buildLedgerTab status filter narrows the visible rows', () => {
   assert.match(html, /data-row-toggle="b2"/);
 });
 
+test('buildLedgerDashboard renders solid realized and dashed projected chart lines', () => {
+  const { buildLedgerDashboard } = globalThis.__RwthPure;
+  const day = 86_400_000;
+  const t0 = Date.UTC(2026, 4, 1);
+  const html = buildLedgerDashboard([
+    {
+      ...soldItem, id: 'sold-chart', buyPrice: 1000, saleNet: 1600,
+      buyTimestamp: t0, soldTimestamp: t0 + 2 * day,
+    },
+    {
+      ...heldItem, id: 'listed-chart', status: 'listed',
+      buyPrice: 1000, listPrice: 1400, buyTimestamp: t0 + day,
+    },
+  ], t0 + 4 * day);
+
+  assert.match(html, /class="rwth-hero-line rwth-hero-line-realized"/);
+  assert.match(html, /class="rwth-hero-line rwth-hero-line-projected"/);
+  assert.match(html, /rwth-legend-realized/);
+  assert.match(html, /rwth-legend-projected/);
+  assert.match(html, /Projected cumulative P\/L/);
+  assert.doesNotMatch(html, />Win rate</);
+});
+
+test('buildLedgerDashboard renders projected-only chart without faking realized line', () => {
+  const { buildLedgerDashboard } = globalThis.__RwthPure;
+  const html = buildLedgerDashboard([
+    { ...heldItem, id: 'listed-only', status: 'listed', buyPrice: 1000, listPrice: 1400 },
+  ], Date.UTC(2026, 4, 4));
+
+  assert.match(html, /class="rwth-hero-line rwth-hero-line-projected"/);
+  assert.match(html, /rwth-legend-projected/);
+  assert.doesNotMatch(html, /rwth-hero-line-realized/);
+  assert.doesNotMatch(html, /rwth-hero-area/);
+});
+
+test('buildLedgerDashboard empty state emits no fake chart paths', () => {
+  const { buildLedgerDashboard } = globalThis.__RwthPure;
+  const html = buildLedgerDashboard([], Date.UTC(2026, 4, 4));
+
+  assert.match(html, /No realized or projected profit yet/);
+  assert.doesNotMatch(html, /rwth-hero-svg/);
+  assert.doesNotMatch(html, /rwth-hero-line-realized/);
+  assert.doesNotMatch(html, /rwth-hero-line-projected/);
+});
+
 test('buildLedgerTab shows ROI in a sold row collapsed line', () => {
   const { buildLedgerTab } = globalThis.__RwthPure;
   const html = buildLedgerTab({ ledger: { items: [soldItem], statusFilter: 'all' } });

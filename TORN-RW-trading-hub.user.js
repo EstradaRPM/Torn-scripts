@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.108
+// @version      0.3.109
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.108';
+  const SCRIPT_VERSION = '0.3.109';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1476,17 +1476,30 @@
       }
 
       const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const minY = Math.min(0, ...ys), maxY = Math.max(0, ...ys);
+      const domain = opts.domain || {};
+      const domainNum = key => {
+        const n = Number(domain[key]);
+        return Number.isFinite(n) ? n : null;
+      };
+      const minX = domainNum('minX') != null ? domainNum('minX') : Math.min(...xs);
+      const maxX = domainNum('maxX') != null ? domainNum('maxX') : Math.max(...xs);
+      const minY = domainNum('minY') != null ? domainNum('minY') : Math.min(0, ...ys);
+      const maxY = domainNum('maxY') != null ? domainNum('maxY') : Math.max(0, ...ys);
       const spanX = (maxX - minX) || 1;
       const spanY = (maxY - minY) || 1;
       const sx = x => pad + ((x - minX) / spanX) * innerW;
       const sy = y => pad + innerH - ((y - minY) / spanY) * innerH;
 
       const coords = pts.map(p => ({ x: round2(sx(p.x)), y: round2(sy(p.y)) }));
-      // One point → draw a flat segment across the full width so the line shows.
+      // One point -> draw a flat segment across the full width so the line shows,
+      // unless a caller needs a short point marker inside a multi-series chart.
       const draw = coords.length === 1
-        ? [{ x: round2(pad), y: coords[0].y }, { x: round2(pad + innerW), y: coords[0].y }]
+        ? (opts.spanSingle === false
+          ? [
+              { x: round2(Math.max(pad, coords[0].x - 4)), y: coords[0].y },
+              { x: round2(Math.min(pad + innerW, coords[0].x + 4)), y: coords[0].y },
+            ]
+          : [{ x: round2(pad), y: coords[0].y }, { x: round2(pad + innerW), y: coords[0].y }])
         : coords;
       const line = draw.map((c, i) => `${i ? 'L' : 'M'}${c.x} ${c.y}`).join(' ');
       const baselineY = round2(sy(0));
@@ -1523,30 +1536,62 @@
     },
   };
 
-  // Hero chart: cumulative realized profit over time as hand-rolled inline SVG
-  // (#309). No external library — Torn PDA's CSP must not be a factor. A
-  // non-scaling stroke keeps line width even though the viewBox stretches to the
-  // container width. Empty (no realized sales) shows a muted prompt; a single
-  // sale renders ChartGeom's flat segment.
-  function buildLedgerHeroChart(series) {
-    const pts = (Array.isArray(series) ? series : []).map(p => ({ x: p.t, y: p.cumulative }));
-    if (!pts.length) {
-      return `<div class="rwth-hero-empty">No realized profit yet — log a sale to start the curve.</div>`;
+  // Hero chart: realized + projected cumulative profit over time as hand-rolled
+  // inline SVG (#309/#359). The realized path is solid banked P/L; projected is
+  // dashed and begins from the last realized point, or from a zero baseline when
+  // no sale has cleared yet.
+  function buildLedgerHeroChart(projection) {
+    const realized = Array.isArray(projection)
+      ? projection
+      : (projection && Array.isArray(projection.realized) ? projection.realized : []);
+    const fullSeries = projection && Array.isArray(projection.series) ? projection.series : realized;
+    const realizedPts = realized.map(p => ({ x: p.t, y: p.cumulative }));
+    const projectedRaw = fullSeries
+      .filter(p => p && p.kind === 'projected')
+      .map(p => ({ x: p.t, y: p.cumulative }));
+    const projectedPts = projectedRaw.length
+      ? (realizedPts.length
+        ? [realizedPts[realizedPts.length - 1], ...projectedRaw]
+        : [{ x: projectedRaw[0].x, y: 0 }, ...projectedRaw])
+      : [];
+    const allPts = realizedPts.concat(projectedPts);
+    if (!allPts.length) {
+      return `<div class="rwth-hero-empty">No realized or projected profit yet — log a sale or list an item with an ask.</div>`;
     }
     const W = 300, H = 80;
-    const g = ChartGeom.project(pts, W, H, { pad: 6 });
-    const last = series[series.length - 1].cumulative;
+    const xs = allPts.map(p => p.x), ys = allPts.map(p => p.y);
+    const domain = {
+      minX: Math.min(...xs), maxX: Math.max(...xs),
+      minY: Math.min(0, ...ys), maxY: Math.max(0, ...ys),
+    };
+    const allG = ChartGeom.project(allPts, W, H, { pad: 6, domain });
+    const realizedG = ChartGeom.project(realizedPts, W, H, {
+      pad: 6, domain, spanSingle: !projectedRaw.length,
+    });
+    const projectedG = ChartGeom.project(projectedPts, W, H, { pad: 6, domain });
+    const last = projectedRaw.length
+      ? projectedRaw[projectedRaw.length - 1].y
+      : realized[realized.length - 1].cumulative;
     const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+    const label = projectedRaw.length ? 'Projected cumulative P/L' : 'Cumulative realized P/L';
+    const legend = `<div class="rwth-hero-legend">`
+      + (realizedPts.length
+        ? `<span><i class="rwth-legend-line rwth-legend-realized"></i>realized</span>` : '')
+      + (projectedRaw.length
+        ? `<span><i class="rwth-legend-line rwth-legend-projected"></i>projected</span>` : '')
+      + `</div>`;
     return `<div class="rwth-hero">
       <div class="rwth-hero-head">
-        <span class="rwth-hero-label">Cumulative realized P/L</span>
+        <span class="rwth-hero-label">${label}</span>
         <span class="rwth-hero-val ${cls}">${last >= 0 ? '+' : ''}${fmtMoney(last)}</span>
       </div>
       <svg class="rwth-hero-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <line class="rwth-hero-base" x1="0" y1="${g.baselineY}" x2="${W}" y2="${g.baselineY}" vector-effect="non-scaling-stroke"></line>
-        <path class="rwth-hero-area" d="${g.area}"></path>
-        <path class="rwth-hero-line" d="${g.line}" vector-effect="non-scaling-stroke"></path>
+        <line class="rwth-hero-base" x1="0" y1="${allG.baselineY}" x2="${W}" y2="${allG.baselineY}" vector-effect="non-scaling-stroke"></line>
+        ${realizedG.area ? `<path class="rwth-hero-area" d="${realizedG.area}"></path>` : ''}
+        ${realizedG.line ? `<path class="rwth-hero-line rwth-hero-line-realized" d="${realizedG.line}" vector-effect="non-scaling-stroke"></path>` : ''}
+        ${projectedG.line ? `<path class="rwth-hero-line rwth-hero-line-projected" d="${projectedG.line}" vector-effect="non-scaling-stroke"></path>` : ''}
       </svg>
+      ${legend}
     </div>`;
   }
 
@@ -1616,10 +1661,10 @@
          ${sub ? `<span class="rwth-stat-sub">${sub}</span>` : ''}
        </div>`;
 
-    const roiSub = `${s.realizedRoiPct >= 0 ? '+' : ''}${s.realizedRoiPct}% ROI`
-      + (s.feesPaid ? ` · ${fmtMoney(s.feesPaid)} fees` : '');
-    const velSub = s.soldCount
-      ? `${s.winRate}% win · ${s.avgDaysToClear}d to clear`
+    const roiSub = s.soldCount
+      ? `${s.realizedRoiPct >= 0 ? '+' : ''}${s.realizedRoiPct}% ROI`
+        + (s.feesPaid ? ` · ${fmtMoney(s.feesPaid)} fees` : '')
+        + ` · ${s.winRate}% win · ${s.avgDaysToClear}d clear`
       : 'no sales yet';
 
     return `<div class="rwth-dash">
@@ -1627,9 +1672,8 @@
         ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
         ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
         ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
-        ${card('Win rate', s.soldCount ? s.winRate + '%' : '—', velSub)}
       </div>
-      ${buildLedgerHeroChart(s.cumulativeProfit)}
+      ${buildLedgerHeroChart(s.profitProjection)}
       ${buildLedgerAnalytics(s, analyticsCollapsed)}
     </div>`;
   }
@@ -4857,8 +4901,20 @@
         fill: none; stroke: var(--rwth-accent); stroke-width: 2;
         stroke-linejoin: round; stroke-linecap: round;
       }
+      .rwth-hero-line-realized { stroke: var(--rwth-accent); }
+      .rwth-hero-line-projected {
+        stroke: var(--rwth-secondary); stroke-dasharray: 5 4; opacity: .95;
+      }
       .rwth-hero-area { fill: var(--rwth-accent-fill); stroke: none; }
       .rwth-hero-base { stroke: var(--rwth-border); stroke-width: 1; stroke-dasharray: 3 3; }
+      .rwth-hero-legend {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+        font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
+        letter-spacing: .5px; color: var(--rwth-muted);
+      }
+      .rwth-hero-legend span { display: inline-flex; align-items: center; gap: 5px; }
+      .rwth-legend-line { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--rwth-accent); }
+      .rwth-legend-projected { border-top-color: var(--rwth-secondary); border-top-style: dashed; }
       .rwth-hero-empty {
         border: 1px solid var(--rwth-border-soft); border-radius: 6px; padding: 16px 11px;
         font: 11px var(--rwth-font-mono); color: var(--rwth-muted); font-style: italic; text-align: center;
