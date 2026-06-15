@@ -41,6 +41,18 @@ function assertEq(label, a, b) {
   else { console.error(`  ✗ ${label}  (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`); failed++; }
 }
 
+function assertFiniteDeep(label, value) {
+  const seen = new Set();
+  function walk(v) {
+    if (typeof v === 'number') return Number.isFinite(v);
+    if (!v || typeof v !== 'object') return true;
+    if (seen.has(v)) return true;
+    seen.add(v);
+    return Object.values(v).every(walk);
+  }
+  assert(label, walk(value));
+}
+
 const DAY = 86_400_000;
 const NOW = 1_700_000_000_000;
 
@@ -249,6 +261,65 @@ console.log('\ncumulativeProfit — drops rows missing soldTimestamp');
   ], NOW);
   assertEq('only the stamped sale plots', s.cumulativeProfit.length, 1);
   assertEq('but both still count as sold', s.soldCount, 2);
+}
+
+// ── profit projection forecast (#358) ────────────────────────────────────────
+
+console.log('\nprofitProjection — sold rows stay authoritative');
+{
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, listPrice: 999999, saleNet: 1400, soldTimestamp: NOW }),
+    sold({ buyPrice: 2000, listPrice: 1, saleNet: 1500, soldTimestamp: NOW + DAY }),
+  ], NOW + DAY);
+  assertEq('realized cumulative point 1 uses saleNet - buyPrice', s.profitProjection.realized[0].cumulative, 400);
+  assertEq('realized cumulative point 2 uses saleNet - buyPrice', s.profitProjection.realized[1].cumulative, 400 - 500);
+  assertEq('forecast series includes the realized points', s.profitProjection.series.length, 2);
+  assertEq('no listed rows -> no projections', s.profitProjection.projected.length, 0);
+}
+
+console.log('\nprofitProjection — listed ask-derived points');
+{
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, saleNet: 1500, buyTimestamp: NOW - 2 * DAY, soldTimestamp: NOW }),
+    sold({ buyPrice: 1000, saleNet: 1800, buyTimestamp: NOW - 6 * DAY, soldTimestamp: NOW }),
+    listed({ id: 'future', itemName: 'Future ask', buyPrice: 2000, listPrice: 2600, buyTimestamp: NOW - DAY }),
+    listed({ id: 'stale', itemName: 'Stale ask', buyPrice: 3000, listPrice: 3300, buyTimestamp: NOW - 20 * DAY }),
+  ], NOW);
+  const projected = s.profitProjection.projected;
+  assertEq('avg clear time comes from sold rows', s.avgDaysToClear, 4);
+  assertEq('two finite listed rows project', projected.length, 2);
+  assertEq('future listed profit is ask - buy', projected.find(p => p.id === 'future').profit, 600);
+  assertEq('future listed expected sell date is buy + avg clear', projected.find(p => p.id === 'future').t, NOW + 3 * DAY);
+  assertEq('stale expected sell date clamps to now', projected.find(p => p.id === 'stale').t, NOW);
+  assertEq('stale projection records the clamp basis', projected.find(p => p.id === 'stale').timing, 'avg-clear-clamped');
+  assertEq('final forecast adds projected profits to realized baseline',
+    s.profitProjection.series[s.profitProjection.series.length - 1].cumulative,
+    s.realized + 300 + 600);
+}
+
+console.log('\nprofitProjection — invalid input stays finite');
+{
+  const s = LedgerStats.summarize([
+    listed({ id: 'missing-ask', buyPrice: 1000, listPrice: null }),
+    listed({ id: 'missing-buy', buyPrice: null, listPrice: 1500 }),
+    listed({ id: 'bad-ask', buyPrice: 1000, listPrice: Infinity }),
+    listed({ id: 'bad-buy', buyPrice: NaN, listPrice: 1500 }),
+    listed({ id: 'valid-no-stamp', buyPrice: 1000, listPrice: 1300, buyTimestamp: undefined }),
+  ], NOW);
+  assertEq('invalid price legs do not create fake zero-profit projections', s.profitProjection.projected.length, 1);
+  assertEq('valid no-stamp projection keeps ask-derived profit', s.profitProjection.projected[0].profit, 300);
+  assertEq('missing timing falls back to now', s.profitProjection.projected[0].t, NOW);
+  assertFiniteDeep('forecast contains no NaN/Infinity', s.profitProjection);
+}
+
+console.log('\nprofitProjection — invalid now still safe');
+{
+  const s = LedgerStats.summarize([
+    listed({ id: 'no-clock', buyPrice: 1000, listPrice: 1500, buyTimestamp: undefined }),
+  ], NaN);
+  assertEq('projection still exists for finite prices', s.profitProjection.projected.length, 1);
+  assertEq('fallback timestamp is finite zero when no time source exists', s.profitProjection.projected[0].t, 0);
+  assertFiniteDeep('invalid now does not leak NaN', s.profitProjection);
 }
 
 // ── margin spread buckets (#310) ─────────────────────────────────────────────

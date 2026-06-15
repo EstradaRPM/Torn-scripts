@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.107
+// @version      0.3.108
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.107';
+  const SCRIPT_VERSION = '0.3.108';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1315,6 +1315,63 @@
           return acc;
         }, []);
 
+      // Forecast series for the next dashboard slice: realized points remain
+      // saleNet-buyPrice; listed projections add ask-buy at the expected clear
+      // time. Invalid price legs are skipped instead of being coerced into a
+      // fake $0 projection, and stale/unknown timing clamps to a finite floor.
+      const lastRealized = cumulativeProfit.length
+        ? cumulativeProfit[cumulativeProfit.length - 1].cumulative : 0;
+      const lastRealizedT = cumulativeProfit.length
+        ? cumulativeProfit[cumulativeProfit.length - 1].t : null;
+      const safeNow = fin(now);
+      const forecastFloor = Math.max(0, ...[safeNow, lastRealizedT].filter(v => v != null));
+      const projectedProfit = listed
+        .map(it => {
+          const buy = fin(it.buyPrice), ask = fin(it.listPrice);
+          if (buy == null || ask == null) return null;
+          const boughtAt = fin(it.buyTimestamp);
+          let t = boughtAt != null && avgDaysToClear > 0
+            ? boughtAt + avgDaysToClear * DAY_MS
+            : forecastFloor;
+          let timing = boughtAt != null && avgDaysToClear > 0 ? 'avg-clear' : 'fallback';
+          if (!Number.isFinite(t)) {
+            t = forecastFloor;
+            timing = 'fallback';
+          }
+          if (t < forecastFloor) {
+            t = forecastFloor;
+            timing = timing === 'avg-clear' ? 'avg-clear-clamped' : timing;
+          }
+          return {
+            kind: 'projected',
+            id: it.id || null,
+            name: it.itemName || '',
+            t,
+            profit: ask - buy,
+            timing,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.t - b.t);
+      let forecastTotal = lastRealized;
+      const profitProjection = {
+        realized: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative })),
+        projected: projectedProfit,
+        series: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative }))
+          .concat(projectedProfit.map(p => {
+            forecastTotal += p.profit;
+            return {
+              kind: 'projected',
+              id: p.id,
+              name: p.name,
+              t: p.t,
+              profit: p.profit,
+              cumulative: forecastTotal,
+              timing: p.timing,
+            };
+          })),
+      };
+
       // Margin spread — per-item ROI% on sold rows with a positive cost basis
       // (a zero/absent buy price has no defined margin), bucketed for the
       // distribution mini-chart.
@@ -1387,7 +1444,7 @@
         realized, realizedRoiPct, pending, capitalDeployed,
         winRate, avgDaysToClear, feesPaid,
         soldCount: sold.length, listedCount: listed.length,
-        best, worst, cumulativeProfit,
+        best, worst, cumulativeProfit, profitProjection,
         marginBuckets, agingBuckets, venueSplit, byStatus,
       };
     },
