@@ -536,6 +536,40 @@ const openListed = {
   bonuses: [{ name: 'Impenetrable', value: 8 }], buyPrice: 70000000,
 };
 
+test('buildScanPreview links a same-scan mug to its matched sale', () => {
+  const { buildScanPreview, scanEventKey, SCAN_LOG_TYPES } = globalThis.__RwthPure;
+  const soldAt = Date.UTC(2026, 4, 20, 12, 0, 0);
+  const preview = buildScanPreview([
+    {
+      type: 'sale',
+      eventKey: scanEventKey(SCAN_LOG_TYPES.bazaarSale, 'sale-1'),
+      sell: {
+        itemName: 'Riot Body',
+        bonusName: 'Impregnable',
+        saleNet: 84150000,
+        timestamp: soldAt,
+      },
+    },
+    {
+      type: 'mug',
+      eventKey: scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-1'),
+      mug: {
+        amount: 1200000,
+        timestamp: soldAt + 2 * 60 * 1000,
+      },
+    },
+  ], {
+    items: [openHeld],
+    cats: { 'riot body': 'Armor' },
+    transactions: [],
+  });
+
+  assert.strictEqual(preview.sales[0].matchedId, 'h1');
+  assert.strictEqual(preview.mugs.length, 1);
+  assert.strictEqual(preview.mugs[0].matchedId, 'h1');
+  assert.strictEqual(preview.review.length, 0);
+});
+
 test('matchSell matches an open row by item name', () => {
   const { matchSell } = globalThis.__RwthPure;
   const sell = { itemName: 'Riot Body', bonusName: null };

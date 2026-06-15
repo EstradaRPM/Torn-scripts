@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.118
+// @version      0.3.119
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.118';
+  const SCRIPT_VERSION = '0.3.119';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1061,6 +1061,7 @@
     const items = (ctx && ctx.items) || [];
     const txs = (ctx && ctx.transactions) || [];
     const open = items.filter(i => i.status === 'held' || i.status === 'listed');
+    const mugMatchItems = items.slice();
     const txSeen = new Set(txs.map(txKey));
     const preview = {
       buys: [], sales: [], mugs: [], review: [], ignored: [], already: [],
@@ -1104,11 +1105,14 @@
           const duplicate = txSeen.has(txKey(sell));
           if (!duplicate) txSeen.add(txKey(sell));
           preview.sales.push({ sell, matchedId: matched ? matched.id : null, duplicate, eventKeys });
+          if (!duplicate && matched && Number.isFinite(Number(sell.timestamp))) {
+            mugMatchItems.push({ ...matched, status: 'sold', soldTimestamp: Number(sell.timestamp) });
+          }
         }
         addEventKeys(eventKeys);
       } else if (row.type === 'mug') {
         const mug = row.mug || {};
-        const match = matchMug(mug, items);
+        const match = matchMug(mug, mugMatchItems);
         if (match) preview.mugs.push({ mug, matchedId: match.id, eventKeys });
         else preview.review.push({ type: 'mug', reason: 'no clear sale match', mug, eventKeys });
         addEventKeys(eventKeys);
