@@ -221,6 +221,26 @@ test('buildLedgerTab status filter narrows the visible rows', () => {
   assert.match(html, /data-row-toggle="b2"/);
 });
 
+test('buildLedgerTab keeps status filters separate from ledger actions', () => {
+  const { buildLedgerTab } = globalThis.__RwthPure;
+  const listed = { ...heldItem, id: 'c3', status: 'listed', listPrice: 118000000 };
+  const html = buildLedgerTab({
+    ledger: { items: [heldItem, listed, soldItem], statusFilter: 'all' },
+    ui: { sort: 'bestRoi' },
+  });
+
+  assert.match(html, /class="rwth-ledger-status"/);
+  assert.match(html, /aria-label="Ledger status filters"/);
+  assert.match(html, /data-filter="all" aria-pressed="true"/);
+  assert.match(html, /<span class="rwth-filter-count">\(3\)<\/span><\/button>/);
+  assert.match(html, /<div class="rwth-filter-summary">/);
+  assert.match(html, /held: \$600k cost/);
+  assert.match(html, /listed: \$118m at ask/);
+  assert.match(html, /data-sort-select aria-label="sort ledger"/);
+  assert.match(html, /data-action="scan"/);
+  assert.match(html, /data-action="add-item"/);
+});
+
 test('buildLedgerDashboard renders solid realized and dashed projected chart lines', () => {
   const { buildLedgerDashboard } = globalThis.__RwthPure;
   const day = 86_400_000;

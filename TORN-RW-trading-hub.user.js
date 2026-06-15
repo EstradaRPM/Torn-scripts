@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.111
+// @version      0.3.112
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.111';
+  const SCRIPT_VERSION = '0.3.112';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1864,10 +1864,9 @@
     const now = Date.now();
     const filtered = filter === 'all' ? items : items.filter(i => i.status === filter);
 
-    // Per-chip count + value rollup (#337) so each filter ties back to the
-    // dashboard. held shows capital cost, listed shows ask value, all shows the
-    // total count; sold and all carry no money tail. Compact money (fmtChatPrice)
-    // returns empty for non-positive, so a zero/empty bucket shows count only.
+    // Per-filter count + value rollup (#337/#362). Counts stay in the tap targets;
+    // large money tails move to a separate summary line so the four status filters
+    // do not fight sort/scan/add at the 360px docked panel width.
     const stats = LedgerStats.summarize(items, now);
     const bs = stats.byStatus;
     const chipMeta = {
@@ -1878,11 +1877,17 @@
     };
     const filterBtns = STATUS_FILTERS.map(f => {
       const m = chipMeta[f] || { count: 0 };
-      const money = m.value ? fmtChatPrice(m.value) : '';
-      const tail = money ? ` <span class="rwth-filter-val">${money} ${m.suffix}</span>` : '';
       return `<button class="rwth-filter${f === filter ? ' rwth-filter-active' : ''}" type="button"
-               data-filter="${f}"><span class="rwth-filter-name">${f}</span> <span class="rwth-filter-count">(${m.count})</span>${tail}</button>`;
+               data-filter="${f}" aria-pressed="${f === filter ? 'true' : 'false'}"><span class="rwth-filter-name">${f}</span> <span class="rwth-filter-count">(${m.count})</span></button>`;
     }).join('');
+    const filterSummary = STATUS_FILTERS
+      .map(f => {
+        const m = chipMeta[f] || {};
+        const money = m.value ? fmtChatPrice(m.value) : '';
+        return money ? `<span class="rwth-filter-val">${f}: ${money} ${m.suffix}</span>` : '';
+      })
+      .filter(Boolean)
+      .join('');
 
     const intel = (mem && mem.intel) || MEM.intel;
     const rowCtx = {
@@ -1916,7 +1921,10 @@
     return `<div class="rwth-ledger">
       ${buildLedgerDashboard(items, now, fold.analytics, stats, mem && mem.ui)}
       <div class="rwth-ledger-bar">
-        <div class="rwth-filters">${filterBtns}</div>
+        <div class="rwth-ledger-status">
+          <div class="rwth-filters" role="group" aria-label="Ledger status filters">${filterBtns}</div>
+          ${filterSummary ? `<div class="rwth-filter-summary">${filterSummary}</div>` : ''}
+        </div>
         <div class="rwth-ledger-actions">
           ${sortSel}
           <button class="rwth-btn rwth-btn-ghost" type="button" data-action="scan"${
@@ -4994,9 +5002,10 @@
       .rwth-intel-add-row .rwth-field-input { width: auto; flex: 1; min-width: 120px; }
       #rwth-intel-add-tol { width: 70px; flex: none; }
 
-      .rwth-ledger { display: flex; flex-direction: column; gap: 10px; }
-      .rwth-ledger-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .rwth-ledger-actions { display: flex; align-items: center; gap: 6px; }
+      .rwth-ledger { display: flex; flex-direction: column; gap: 10px; container-type: inline-size; }
+      .rwth-ledger-bar { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+      .rwth-ledger-status { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+      .rwth-ledger-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
       .rwth-btn:disabled { opacity: .5; cursor: default; box-shadow: none; }
       .rwth-banner {
         border: 1px solid var(--rwth-danger-border-strong); border-radius: 4px;
@@ -5030,15 +5039,20 @@
       .rwth-filters { display: flex; gap: 4px; flex-wrap: wrap; }
       .rwth-filter {
         background: none; border: 1px solid var(--rwth-border); border-radius: 4px;
-        color: var(--rwth-muted); cursor: pointer; padding: 4px 8px;
+        color: var(--rwth-muted); cursor: pointer; padding: 6px 8px;
+        min-height: 30px; flex: 1 1 72px;
         font: 600 10px var(--rwth-font-mono); text-transform: uppercase; letter-spacing: .3px;
       }
       .rwth-filter:hover { color: var(--rwth-text); }
       .rwth-filter-count { font-weight: 400; opacity: .75; }
-      .rwth-filter-val { text-transform: none; font-weight: 400; opacity: .8; }
+      .rwth-filter-summary {
+        display: flex; flex-wrap: wrap; gap: 2px 8px;
+        font: 10px var(--rwth-font-mono); color: var(--rwth-muted);
+      }
+      .rwth-filter-val { white-space: nowrap; }
       .rwth-filter-active { color: var(--rwth-bg); background: var(--rwth-accent); border-color: var(--rwth-accent); }
       .rwth-btn-add { padding: 5px 12px; }
-      .rwth-sort { display: inline-flex; align-items: center; gap: 4px; }
+      .rwth-sort { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
       .rwth-sort-k {
         color: var(--rwth-muted); font: 600 10px var(--rwth-font-mono);
         text-transform: uppercase; letter-spacing: .3px;
@@ -5047,6 +5061,16 @@
         background: var(--rwth-fill-faint); border: 1px solid var(--rwth-border);
         border-radius: 4px; color: var(--rwth-text); cursor: pointer;
         padding: 4px 6px; font: 600 10px var(--rwth-font-mono);
+        max-width: 126px;
+      }
+
+      @container (min-width: 520px) {
+        .rwth-ledger-bar {
+          flex-direction: row; align-items: flex-start; justify-content: space-between;
+        }
+        .rwth-ledger-status { flex: 1 1 auto; }
+        .rwth-ledger-actions { flex: 0 0 auto; justify-content: flex-end; }
+        .rwth-filter { flex: 0 0 auto; }
       }
 
       .rwth-form {
