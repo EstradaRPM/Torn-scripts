@@ -5,7 +5,7 @@ This is the current handoff for `TORN-RW-trading-hub.user.js`.
 ## Status
 
 - Active script: `TORN-RW-trading-hub.user.js`
-- Current version in source: `0.3.115`
+- Current version in source: `0.3.118`
 - Current development goal: finish the RW Trading Hub script without stale docs, old audits, or broad test runs hijacking the work.
 - Current implementation authority: the shipped userscript, then focused tests that import the shipped userscript through `globalThis.__RwthPure`.
 
@@ -14,7 +14,7 @@ This is the current handoff for `TORN-RW-trading-hub.user.js`.
 RW Trading Hub is a standalone Tampermonkey/Torn PDA userscript for ranked-war trading work:
 
 - Ledger for held/listed/sold items.
-- Auction-win scanning and manual/manual-entry ledger intake.
+- RW-only log scanning for auction wins, sales, simple trades, and clear mug events, plus manual/manual-entry ledger intake.
 - Pricing intelligence using current in-script data flows.
 - Advertising outputs and configurable shop identity/copy/theme.
 

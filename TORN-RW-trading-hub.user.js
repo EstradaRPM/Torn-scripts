@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.117
+// @version      0.3.118
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.117';
+  const SCRIPT_VERSION = '0.3.118';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -304,10 +304,22 @@
     'Rocket-Propelled Grenade Launcher': 'RPG',
   };
 
-  // Torn v2 API. Log type 4320 ("Auction house item win") filters
-  // /v2/user/log to auction wins only.
+  // Torn v2 API. Log IDs are kept explicit so RWTH can request only the log
+  // categories its scan setup needs.
   const API_BASE = 'https://api.torn.com';
-  const LOG_TYPE_AUCTION_WIN = 4320;
+  const SCAN_LOG_TYPES = {
+    auctionBuy: 4320,
+    auctionSale: 4322,
+    itemMarketSale: 1113,
+    bazaarSale: 1226,
+    mugged: 8156,
+    tradeItemA: 4440,
+    tradeItemB: 4441,
+    tradeMoneyA: 4445,
+    tradeMoneyB: 4446,
+  };
+  const LOG_TYPE_AUCTION_WIN = SCAN_LOG_TYPES.auctionBuy;
+  const DEFAULT_SCAN_SOURCES = { buys: true, sales: true, trades: true, mugs: true };
   const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&logIds=88,182,11,94,18&market=auctionhouse,itemmarket';
 
   // ─── State ───────────────────────────────────────────────────────────────────
@@ -353,6 +365,8 @@
       editingId: null,        // null | 'new' | itemId — drives the add/edit form
       expandedId: null,       // null | itemId — the tap-expanded row
       scanResults: [],        // ScanHit[] from the last scan, awaiting confirm
+      scanPreview: null,      // null | staged non-editable sale/mug/review import summary
+      scanSetupOpen: false,   // whether the compact scan setup panel is open
       scanMessage: '',        // transient scan feedback (e.g. "No new auction wins found.")
       scanning: false,        // a scan request is in flight
       lastScan: 0,            // epoch ms of the last completed scan
@@ -413,6 +427,8 @@
       // a possible mug on the cash after the sale, using intel.mugBuffer. Default
       // off so current item-market prices are unchanged until opted in.
       mugMarkup: false,
+      scanSources: { ...DEFAULT_SCAN_SOURCES },
+      scanBackTo: '',
     },
     // Intel feature state — persisted to rwth_intel_settings.
     intel: {
@@ -454,6 +470,8 @@
     // Pending scan checklist — survives panel close/reopen and page reload.
     const scan = Store.get('rwth_scan');
     if (Array.isArray(scan)) MEM.ledger.scanResults = scan;
+    const scanPreview = Store.get('rwth_scan_preview');
+    if (scanPreview && typeof scanPreview === 'object') MEM.ledger.scanPreview = scanPreview;
 
     const transactions = Store.get('rwth_transactions');
     if (Array.isArray(transactions)) MEM.advertise.transactions = transactions;
@@ -461,6 +479,7 @@
     const settings = Store.get('rwth_settings');
     if (settings && typeof settings === 'object') {
       MEM.settings = { ...MEM.settings, ...settings };
+      MEM.settings.scanSources = { ...DEFAULT_SCAN_SOURCES, ...(settings.scanSources || {}) };
     }
 
     // #322 — consolidate the retired forumHeaderImageUrl onto the new per-surface
@@ -763,6 +782,368 @@
     }
     out.sort((a, b) => b.buyTimestamp - a.buyTimestamp);
     return out;
+  }
+
+  function logPairs(log) {
+    return Array.isArray(log)
+      ? log.map((e, i) => [e && e.id != null ? String(e.id) : String(i), e])
+      : Object.entries(log || {});
+  }
+
+  function scanEventKey(logType, key) {
+    return `${logType}:${String(key == null ? '' : key)}`;
+  }
+
+  function scanSeenSet(raw) {
+    if (Array.isArray(raw)) return new Set(raw.map(String));
+    if (!raw || typeof raw !== 'object') return new Set();
+    const out = new Set();
+    for (const type of Object.keys(raw)) {
+      const rows = raw[type];
+      if (!Array.isArray(rows)) continue;
+      for (const id of rows) out.add(scanEventKey(type, id));
+    }
+    return out;
+  }
+
+  function scanSeenStoreFromKeys(keys) {
+    const out = {};
+    for (const key of keys || []) {
+      const m = String(key).match(/^(\d+):(.*)$/);
+      if (!m) continue;
+      if (!out[m[1]]) out[m[1]] = [];
+      if (!out[m[1]].includes(m[2])) out[m[1]].push(m[2]);
+    }
+    return out;
+  }
+
+  function logTimestampMs(entry) {
+    const n = Number(entry && entry.timestamp);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n < 1e12 ? n * 1000 : n;
+  }
+
+  function logText(entry) {
+    const parts = [];
+    const add = (v) => { if (v != null && typeof v !== 'object') parts.push(String(v)); };
+    add(entry && entry.title);
+    add(entry && entry.description);
+    add(entry && entry.message);
+    add(entry && entry.event);
+    add(entry && entry.details && entry.details.title);
+    const data = (entry && entry.data) || {};
+    for (const k of ['title', 'description', 'message', 'text', 'event', 'name', 'buyer', 'seller', 'user']) add(data[k]);
+    return parts.join(' ');
+  }
+
+  function firstText(...vals) {
+    for (const v of vals) {
+      if (v == null) continue;
+      const s = String(v).trim();
+      if (s) return s;
+    }
+    return '';
+  }
+
+  function itemFromLogEntry(entry, itemNames) {
+    const data = (entry && entry.data) || {};
+    let rec = null;
+    if (Array.isArray(data.item)) rec = data.item[0] || null;
+    else if (Array.isArray(data.items)) rec = data.items[0] || null;
+    else if (data.item && typeof data.item === 'object') rec = data.item;
+    else if (data.items && typeof data.items === 'object') {
+      const vals = Object.values(data.items);
+      rec = vals[0] || null;
+    }
+    rec = rec || {};
+    const itemId = firstNum(rec.id, rec.item_id, data.item_id, data.itemId);
+    const uid = firstNum(rec.uid, rec.item_uid, data.uid, data.item_uid);
+    const names = itemNames || {};
+    const name = firstText(rec.name, rec.item_name, data.item_name, data.itemName,
+      itemId ? names[itemId] : '');
+    return {
+      itemId: itemId || null,
+      uid: uid || null,
+      itemName: name || (itemId ? `Item #${itemId}` : ''),
+      quantity: firstNum(rec.qty, rec.quantity, data.qty, data.quantity) || 1,
+    };
+  }
+
+  function logMoney(entry) {
+    const data = (entry && entry.data) || {};
+    const n = firstNum(data.net, data.total, data.total_price, data.price,
+      data.sale_price, data.final_price, data.cost, data.amount, data.money);
+    if (n) return n;
+    const m = logText(entry).match(/\$([\d,]+)/);
+    return m ? parseMoney(m[1]) : 0;
+  }
+
+  function scanCategory(itemName, cats) {
+    return (cats && cats[String(itemName || '').toLowerCase()]) || null;
+  }
+
+  function isRwCategory(category) {
+    return category === 'Armor' || category === 'Primary'
+      || category === 'Secondary' || category === 'Melee';
+  }
+
+  function scanHitFromBuy(entry, key, source, itemNames, cats, logType) {
+    const item = source === 'auction' ? parseAuctionWin(entry, itemNames) : itemFromLogEntry(entry, itemNames);
+    const itemName = item.itemName || '';
+    const category = scanCategory(itemName, cats);
+    return {
+      key: scanEventKey(logType, key),
+      eventKey: scanEventKey(logType, key),
+      logType,
+      logId: String(key),
+      itemId: item.itemId,
+      uid: item.uid,
+      itemName,
+      category,
+      type: category === 'Armor' ? 'armor' : 'weapon',
+      bonuses: [],
+      quality: null,
+      rarity: null,
+      checked: true,
+      buyPrice: source === 'auction' ? item.buyPrice : logMoney(entry),
+      buyTimestamp: logTimestampMs(entry) || Date.now(),
+      buySource: source,
+    };
+  }
+
+  function saleFromLogEntry(entry, logType, itemNames) {
+    const parsed = SellParser.parse(logText(entry))[0];
+    if (parsed) return parsed;
+    const item = itemFromLogEntry(entry, itemNames);
+    const data = (entry && entry.data) || {};
+    const text = logText(entry);
+    const venue = logType === SCAN_LOG_TYPES.bazaarSale ? 'bazaar'
+      : logType === SCAN_LOG_TYPES.itemMarketSale ? 'market'
+        : logType === SCAN_LOG_TYPES.auctionSale ? 'auction' : null;
+    const gross = firstNum(data.gross, data.sale_gross, data.price, data.sale_price, data.amount);
+    const net = firstNum(data.net, data.total, data.total_price, data.proceeds) || gross;
+    const fees = firstNum(data.fees, data.fee, data.tax) || 0;
+    const buyerM = text.match(/\bto\s+(\S+?)\s+(?:at\s+\$|for a total|\$)/i);
+    return {
+      itemName: item.itemName,
+      bonusName: data.bonus || data.bonus_name || null,
+      venue,
+      buyer: firstText(data.buyer, data.buyer_name, buyerM && buyerM[1]) || null,
+      saleGross: gross || net,
+      saleFees: fees,
+      saleNet: net,
+      timestamp: logTimestampMs(entry),
+      anonymous: /\banonymously\b/i.test(text),
+    };
+  }
+
+  function mugFromLogEntry(entry) {
+    const data = (entry && entry.data) || {};
+    return {
+      amount: logMoney(entry),
+      timestamp: logTimestampMs(entry),
+      attacker: firstText(data.attacker, data.attacker_name, data.user, data.name) || null,
+      text: logText(entry),
+    };
+  }
+
+  function tradeLegFromLogEntry(entry, key, logType, itemNames, cats) {
+    const text = logText(entry).toLowerCase();
+    const isMoneyType = logType === SCAN_LOG_TYPES.tradeMoneyA || logType === SCAN_LOG_TYPES.tradeMoneyB;
+    const dir = /\b(received|income|incoming|gained|got)\b/.test(text) ? 'in'
+      : /\b(sent|gave|given|outgoing|lost|paid)\b/.test(text) ? 'out' : null;
+    const data = (entry && entry.data) || {};
+    const group = firstText(data.trade_id, data.tradeId, data.trade, data.user_id,
+      data.user, data.name, logTimestampMs(entry));
+    if (isMoneyType) {
+      return {
+        eventKey: scanEventKey(logType, key),
+        logType, logId: String(key), kind: 'tradeMoney', direction: dir,
+        amount: logMoney(entry), timestamp: logTimestampMs(entry), group,
+      };
+    }
+    const item = itemFromLogEntry(entry, itemNames);
+    const category = scanCategory(item.itemName, cats);
+    return {
+      eventKey: scanEventKey(logType, key),
+      logType, logId: String(key), kind: 'tradeItem', direction: dir,
+      item, category, isRw: isRwCategory(category), timestamp: logTimestampMs(entry), group,
+    };
+  }
+
+  function classifyLogEvent(entry, logType, key, itemNames, cats) {
+    if (logType === SCAN_LOG_TYPES.auctionBuy) {
+      return { type: 'buy', hit: scanHitFromBuy(entry, key, 'auction', itemNames, cats, logType) };
+    }
+    if (logType === SCAN_LOG_TYPES.auctionSale
+        || logType === SCAN_LOG_TYPES.itemMarketSale
+        || logType === SCAN_LOG_TYPES.bazaarSale) {
+      return { type: 'sale', eventKey: scanEventKey(logType, key),
+        sell: saleFromLogEntry(entry, logType, itemNames) };
+    }
+    if (logType === SCAN_LOG_TYPES.mugged) {
+      return { type: 'mug', eventKey: scanEventKey(logType, key), mug: mugFromLogEntry(entry) };
+    }
+    if (logType === SCAN_LOG_TYPES.tradeItemA || logType === SCAN_LOG_TYPES.tradeItemB
+        || logType === SCAN_LOG_TYPES.tradeMoneyA || logType === SCAN_LOG_TYPES.tradeMoneyB) {
+      return { type: 'trade', leg: tradeLegFromLogEntry(entry, key, logType, itemNames, cats) };
+    }
+    return { type: 'ignored', eventKey: scanEventKey(logType, key), reason: 'unsupported log type' };
+  }
+
+  function matchMug(mug, items) {
+    if (!mug || !Array.isArray(items)) return null;
+    const t = Number(mug.timestamp);
+    if (!Number.isFinite(t)) return null;
+    const windowMs = 10 * 60 * 1000;
+    const candidates = items.filter(i => i && i.status === 'sold'
+      && Number.isFinite(Number(i.soldTimestamp))
+      && Number(i.soldTimestamp) <= t
+      && t - Number(i.soldTimestamp) <= windowMs);
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function reconcileTradeGroup(legs, itemNames, cats) {
+    const list = Array.isArray(legs) ? legs : [];
+    const itemLegs = list.filter(l => l && l.kind === 'tradeItem');
+    const moneyLegs = list.filter(l => l && l.kind === 'tradeMoney');
+    const rwItems = itemLegs.filter(l => l.isRw);
+    const nonRwItems = itemLegs.filter(l => !l.isRw);
+    const eventKeys = list.map(l => l.eventKey).filter(Boolean);
+    if (!rwItems.length) {
+      return { type: 'ignored', reason: 'non-RW trade items', eventKeys, legs: list };
+    }
+    if (rwItems.length !== 1 || moneyLegs.length !== 1 || nonRwItems.length) {
+      return { type: 'review', reason: 'bundled or ambiguous trade', eventKeys, legs: list };
+    }
+    const itemLeg = rwItems[0];
+    const moneyLeg = moneyLegs[0];
+    if (!itemLeg.direction || !moneyLeg.direction || itemLeg.direction === moneyLeg.direction) {
+      return { type: 'review', reason: 'unclear trade direction', eventKeys, legs: list };
+    }
+    const item = itemLeg.item || {};
+    if (itemLeg.direction === 'in' && moneyLeg.direction === 'out') {
+      return {
+        type: 'buy',
+        hit: {
+          key: eventKeys.join('+'),
+          eventKey: eventKeys.join('+'),
+          eventKeys,
+          itemId: item.itemId, uid: item.uid, itemName: item.itemName,
+          category: itemLeg.category, type: itemLeg.category === 'Armor' ? 'armor' : 'weapon',
+          bonuses: [], quality: null, rarity: null, checked: true,
+          buyPrice: moneyLeg.amount || 0,
+          buyTimestamp: itemLeg.timestamp || moneyLeg.timestamp || Date.now(),
+          buySource: 'trade',
+        },
+      };
+    }
+    return {
+      type: 'sale',
+      eventKeys,
+      sell: {
+        itemName: item.itemName,
+        bonusName: null,
+        venue: 'trade',
+        buyer: null,
+        saleGross: moneyLeg.amount || 0,
+        saleFees: 0,
+        saleNet: moneyLeg.amount || 0,
+        timestamp: itemLeg.timestamp || moneyLeg.timestamp || Date.now(),
+      },
+    };
+  }
+
+  function buildScanPreview(classified, ctx) {
+    const rows = Array.isArray(classified) ? classified : [];
+    const seen = scanSeenSet(ctx && ctx.seen);
+    const cats = (ctx && ctx.cats) || {};
+    const items = (ctx && ctx.items) || [];
+    const txs = (ctx && ctx.transactions) || [];
+    const open = items.filter(i => i.status === 'held' || i.status === 'listed');
+    const txSeen = new Set(txs.map(txKey));
+    const preview = {
+      buys: [], sales: [], mugs: [], review: [], ignored: [], already: [],
+      eventKeys: [],
+    };
+    const tradeGroups = new Map();
+    const addEventKeys = (keys) => {
+      for (const k of keys || []) if (k && !preview.eventKeys.includes(k)) preview.eventKeys.push(k);
+    };
+    for (const row of rows) {
+      if (!row) continue;
+      if (row.type === 'trade') {
+        const leg = row.leg;
+        const g = leg && leg.group ? String(leg.group) : (leg && leg.eventKey);
+        if (!tradeGroups.has(g)) tradeGroups.set(g, []);
+        tradeGroups.get(g).push(leg);
+        continue;
+      }
+      const eventKeys = row.hit && row.hit.eventKeys ? row.hit.eventKeys
+        : row.eventKeys || [row.eventKey || (row.hit && row.hit.eventKey)];
+      if (eventKeys.some(k => seen.has(k))) {
+        preview.already.push({ ...row, eventKeys });
+        continue;
+      }
+      if (row.type === 'buy') {
+        const hit = row.hit || {};
+        const cat = hit.category || scanCategory(hit.itemName, cats);
+        if (!isRwCategory(cat) && hit.buySource !== 'auction') {
+          preview.ignored.push({ type: 'ignored', reason: 'non-RW item', eventKeys, itemName: hit.itemName });
+        } else {
+          preview.buys.push({ ...hit, category: cat, eventKeys });
+        }
+        addEventKeys(eventKeys);
+      } else if (row.type === 'sale') {
+        const sell = row.sell || {};
+        const cat = scanCategory(sell.itemName, cats);
+        if (!isRwCategory(cat)) {
+          preview.ignored.push({ type: 'ignored', reason: 'non-RW sale', eventKeys, itemName: sell.itemName });
+        } else {
+          const matched = matchSell(sell, open);
+          const duplicate = txSeen.has(txKey(sell));
+          if (!duplicate) txSeen.add(txKey(sell));
+          preview.sales.push({ sell, matchedId: matched ? matched.id : null, duplicate, eventKeys });
+        }
+        addEventKeys(eventKeys);
+      } else if (row.type === 'mug') {
+        const mug = row.mug || {};
+        const match = matchMug(mug, items);
+        if (match) preview.mugs.push({ mug, matchedId: match.id, eventKeys });
+        else preview.review.push({ type: 'mug', reason: 'no clear sale match', mug, eventKeys });
+        addEventKeys(eventKeys);
+      } else if (row.type === 'ignored') {
+        preview.ignored.push(row);
+        addEventKeys(eventKeys);
+      }
+    }
+    for (const legs of tradeGroups.values()) {
+      const trade = reconcileTradeGroup(legs, ctx && ctx.itemNames, cats);
+      const eventKeys = trade.eventKeys || [];
+      if (eventKeys.some(k => seen.has(k))) {
+        preview.already.push({ type: 'trade', eventKeys });
+        continue;
+      }
+      if (trade.type === 'buy') preview.buys.push(trade.hit);
+      else if (trade.type === 'sale') {
+        const sell = trade.sell || {};
+        const matched = matchSell(sell, open);
+        const duplicate = txSeen.has(txKey(sell));
+        if (!duplicate) txSeen.add(txKey(sell));
+        preview.sales.push({ sell, matchedId: matched ? matched.id : null, duplicate, eventKeys });
+      } else if (trade.type === 'ignored') preview.ignored.push(trade);
+      else preview.review.push(trade);
+      addEventKeys(eventKeys);
+    }
+    preview.summary = {
+      buys: preview.buys.length,
+      sales: preview.sales.length,
+      mugs: preview.mugs.length,
+      review: preview.review.length,
+      ignored: preview.ignored.length,
+      already: preview.already.length,
+    };
+    return preview;
   }
 
   const STATUS_FILTERS = ['all', 'held', 'listed', 'sold'];
@@ -1195,18 +1576,83 @@
 
   function buildScanChecklist(mem) {
     const L = (mem && mem.ledger) || {};
+    const settings = (mem && mem.settings) || MEM.settings;
+    const scanSources = { ...DEFAULT_SCAN_SOURCES, ...(settings.scanSources || {}) };
+    const scanBackTo = settings.scanBackTo || '';
     const results = L.scanResults || [];
-    if (!results.length) return '';
+    const preview = L.scanPreview;
+    const setup = L.scanSetupOpen ? buildScanSetup(scanSources, scanBackTo, !!L.scanning) : '';
+    const staged = preview ? buildScanPreviewUi(preview, results.length) : '';
+    if (!results.length && !setup && !staged) return '';
     const n = results.length;
-    return `<div class="rwth-scan">
-      <div class="rwth-form-title">${n} auction win${n === 1 ? '' : 's'} detected</div>
+    const buyRows = results.length ? `
+      <div class="rwth-form-title">${n} RW buy${n === 1 ? '' : 's'} ready</div>
       ${results.map(buildScanRow).join('')}
-      <div class="rwth-scan-note">Checked wins are added as held items. Unchecked
-        wins are dismissed and won't reappear — use <strong>+ add</strong> later if needed.</div>
+      <div class="rwth-scan-note">Checked buys are added as held RW items. Unchecked
+        buys are dismissed when you commit this import.</div>` : '';
+    const actions = (results.length || preview) ? `
       <div class="rwth-form-actions">
-        <button class="rwth-btn" type="button" data-action="confirm-scan">Add to ledger</button>
+        <button class="rwth-btn" type="button" data-action="confirm-scan">Commit import</button>
         <button class="rwth-btn rwth-btn-ghost" type="button" data-action="cancel-scan">Cancel</button>
+      </div>` : '';
+    return `<div class="rwth-scan">
+      ${setup}
+      ${staged}
+      ${buyRows}
+      ${actions}
+    </div>`;
+  }
+
+  function buildScanSetup(scanSources, scanBackTo, scanning) {
+    const toggle = (key, label) => `<label class="rwth-scan-source">
+      <input type="checkbox" data-scan-source="${key}"${scanSources[key] !== false ? ' checked' : ''}>
+      <span>${label}</span>
+    </label>`;
+    return `<div class="rwth-scan-setup">
+      <div class="rwth-form-title">Scan RW logs</div>
+      <label class="rwth-field">
+        <span class="rwth-field-label">Scan back to</span>
+        <input class="rwth-field-input" type="date" data-scan-back-to value="${escapeAttr(scanBackTo)}">
+      </label>
+      <div class="rwth-scan-sources">
+        ${toggle('buys', 'Auction buys')}
+        ${toggle('sales', 'Sales')}
+        ${toggle('trades', 'Trades')}
+        ${toggle('mugs', 'Mugs')}
       </div>
+      <div class="rwth-scan-note">RW weapons and armor only. Trade baskets with extra goods stay out of the ledger.</div>
+      <div class="rwth-form-actions">
+        <button class="rwth-btn" type="button" data-action="run-scan"${scanning ? ' disabled' : ''}>${scanning ? 'Scanning...' : 'Run scan'}</button>
+        <button class="rwth-btn rwth-btn-ghost" type="button" data-action="close-scan-setup">Close</button>
+      </div>
+    </div>`;
+  }
+
+  function buildScanPreviewUi(preview, buyCount) {
+    const s = preview.summary || {};
+    const chip = (label, n) => `<span class="rwth-scan-chip">${label}: ${Number(n) || 0}</span>`;
+    const sales = (preview.sales || []).slice(0, 5).map(r => {
+      const sell = r.sell || {};
+      const dest = r.duplicate ? 'already logged' : r.matchedId ? 'matched' : 'recent';
+      return `<div class="rwth-scan-line">
+        <span>${escapeAttr(sell.itemName) || 'Unparsed sale'}</span>
+        <span>${fmtMoney(sell.saleNet)}</span>
+        <span>${escapeAttr(dest)}</span>
+      </div>`;
+    }).join('');
+    const review = (preview.review || []).slice(0, 4).map(r =>
+      `<div class="rwth-scan-line"><span>${escapeAttr(r.reason || r.type || 'Needs review')}</span><span></span><span>skipped</span></div>`).join('');
+    const ignored = (preview.ignored || []).slice(0, 3).map(r =>
+      `<div class="rwth-scan-line"><span>${escapeAttr(r.itemName || r.reason || 'Ignored')}</span><span></span><span>ignored</span></div>`).join('');
+    return `<div class="rwth-scan-preview">
+      <div class="rwth-form-title">Import preview</div>
+      <div class="rwth-scan-chips">
+        ${chip('buys', buyCount || s.buys)}${chip('sales', s.sales)}${chip('mugs', s.mugs)}
+        ${chip('review', s.review)}${chip('ignored', s.ignored)}${chip('already', s.already)}
+      </div>
+      ${sales ? `<div class="rwth-scan-section"><div class="rwth-field-label">Sales</div>${sales}</div>` : ''}
+      ${review ? `<div class="rwth-scan-section"><div class="rwth-field-label">Needs review</div>${review}</div>` : ''}
+      ${ignored ? `<div class="rwth-scan-section"><div class="rwth-field-label">Ignored</div>${ignored}</div>` : ''}
     </div>`;
   }
 
@@ -1953,7 +2399,7 @@
         <div class="rwth-ledger-actions">
           ${sortSel}
           <button class="rwth-btn rwth-btn-ghost" type="button" data-action="scan"${
-            scanning ? ' disabled' : ''}>${scanning ? 'Scanning…' : 'Scan'}</button>
+            scanning ? ' disabled' : ''}>${scanning ? 'Scanning...' : 'Scan logs'}</button>
           <button class="rwth-btn rwth-btn-add" type="button" data-action="add-item">+ add</button>
         </div>
       </div>
@@ -3468,10 +3914,13 @@
         case 'edit-item':     setState({ ledger: { ...MEM.ledger, editingId: id, expandedId: id } }); break;
         case 'cancel-item':   setState({ ledger: { ...MEM.ledger, editingId: null } }); break;
         case 'save-item':     saveLedgerItem(); break;
-        case 'scan':          LogScanner.scan(); break;
+        case 'scan':          setState({ ledger: { ...MEM.ledger, scanSetupOpen: true } }); break;
+        case 'run-scan':      LogScanner.scan(); break;
+        case 'close-scan-setup': setState({ ledger: { ...MEM.ledger, scanSetupOpen: false } }); break;
         case 'confirm-scan':  confirmScan(); break;
         case 'cancel-scan':   Store.set('rwth_scan', []);
-                              setState({ ledger: { ...MEM.ledger, scanResults: [], scanMessage: '' } }); break;
+                              Store.del('rwth_scan_preview');
+                              setState({ ledger: { ...MEM.ledger, scanResults: [], scanPreview: null, scanMessage: '' } }); break;
         case 'parse-sells':   parseSells(); break;
         case 'commit-sells':  commitSells(); break;
         case 'cancel-sells':  setState({ ledger: { ...MEM.ledger, sellPreview: null, sellMessage: '' } }); break;
@@ -3507,8 +3956,8 @@
     // Scan-checklist edits → write straight back into MEM.ledger.scanResults and
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
-    root.addEventListener('input', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
-    root.addEventListener('change', (e) => { syncScanEdit(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); });
+    root.addEventListener('input', (e) => { syncScanEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); });
     // #340 — Enter commits the inline ask edit. A lone text input (not in a form)
     // does not blur on Enter by itself, so force the blur that fires `change`.
     root.addEventListener('keydown', (e) => {
@@ -3718,6 +4167,22 @@
     hit.quality = numOrNull(val('quality'));
     if (check) hit.checked = check.checked;
     Store.set('rwth_scan', MEM.ledger.scanResults);
+  }
+
+  function syncScanSettings(e) {
+    const el = e.target;
+    if (!el || !el.matches) return;
+    if (el.matches('[data-scan-source]')) {
+      const key = el.dataset.scanSource;
+      const sources = { ...DEFAULT_SCAN_SOURCES, ...(MEM.settings.scanSources || {}), [key]: el.checked };
+      MEM.settings = { ...MEM.settings, scanSources: sources };
+      Store.set('rwth_settings', MEM.settings);
+      return;
+    }
+    if (el.matches('[data-scan-back-to]')) {
+      MEM.settings = { ...MEM.settings, scanBackTo: el.value || '' };
+      Store.set('rwth_settings', MEM.settings);
+    }
   }
 
   // Collect every settings input from the DOM, persist, re-render, then flash
@@ -4456,10 +4921,39 @@
     };
   }
 
-  // ─── LogScanner — auction-win detection (manual trigger only) ────────────────
-  // scan() queries the auction-win log category incrementally via rwth_log_cursor
-  // and produces a ScanHit[] of wins not already in rwth_seen_wins. No poll, no
-  // scan-on-open — the Ledger Scan button is the only caller.
+  function selectedScanLogTypes(sources) {
+    const s = { ...DEFAULT_SCAN_SOURCES, ...(sources || {}) };
+    const out = [];
+    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy);
+    if (s.sales) out.push(SCAN_LOG_TYPES.auctionSale, SCAN_LOG_TYPES.itemMarketSale, SCAN_LOG_TYPES.bazaarSale);
+    if (s.trades) out.push(SCAN_LOG_TYPES.tradeItemA, SCAN_LOG_TYPES.tradeItemB,
+      SCAN_LOG_TYPES.tradeMoneyA, SCAN_LOG_TYPES.tradeMoneyB);
+    if (s.mugs) out.push(SCAN_LOG_TYPES.mugged);
+    return out;
+  }
+
+  function scanCutoffUnix(scanBackTo) {
+    const t = Date.parse(scanBackTo || '');
+    return Number.isFinite(t) ? Math.floor(t / 1000) : null;
+  }
+
+  async function fetchLogType(logType, key, cutoffUnix) {
+    const params = new URLSearchParams({
+      log: String(logType),
+      key,
+      comment: 'rwth-scan',
+      _: String(Date.now()),
+    });
+    if (cutoffUnix != null) params.set('from', String(cutoffUnix));
+    const res = await fetch(`${API_BASE}/v2/user/log?${params.toString()}`);
+    const d = await res.json();
+    if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+    return (d && d.log) || [];
+  }
+
+  // ─── LogScanner — RW log import (manual trigger only) ────────────────────────
+  // scan() reads the selected user/log types into one staged preview. Nothing
+  // mutates ledger rows or Recent Transactions until confirmScan() commits.
   const LogScanner = {
     async scan() {
       if (MEM.ledger.scanning) return;
@@ -4470,31 +4964,44 @@
       }
       setState({ fetchError: null, ledger: { ...MEM.ledger, scanning: true, scanMessage: '' } });
 
-      const url = `${API_BASE}/v2/user/log?log=${LOG_TYPE_AUCTION_WIN}`
-                + `&key=${encodeURIComponent(key)}`;
-
-      let d;
-      try {
-        const res = await fetch(url);
-        d = await res.json();
-      } catch {
-        setState({ fetchError: 'Network error while scanning the auction log.',
-                   ledger: { ...MEM.ledger, scanning: false } });
-        return;
-      }
-      if (d && d.error) {
-        setState({ fetchError: `Torn API error: ${d.error.error} (code ${d.error.code}).`,
-                   ledger: { ...MEM.ledger, scanning: false } });
-        return;
-      }
-
       // Resolve item names; a failure here only degrades names to "Item #id".
       let itemNames = {};
       try { itemNames = await ItemDict.ensure(key); } catch { /* non-fatal */ }
+      const cats = ItemDict.categories();
+      const seen = scanSeenSet(Store.get('rwth_seen_log_events'));
+      for (const oldKey of (Store.get('rwth_seen_wins') || [])) {
+        seen.add(scanEventKey(SCAN_LOG_TYPES.auctionBuy, oldKey));
+      }
+      const cutoffUnix = scanCutoffUnix(MEM.settings.scanBackTo);
+      const types = selectedScanLogTypes(MEM.settings.scanSources);
+      const classified = [];
+      try {
+        for (const type of types) {
+          const log = await fetchLogType(type, key, cutoffUnix);
+          for (const [entryKey, entry] of logPairs(log)) {
+            const eventKey = scanEventKey(type, entryKey);
+            if (seen.has(eventKey)) {
+              classified.push({ type: 'ignored', eventKey, reason: 'already imported' });
+              continue;
+            }
+            const ts = logTimestampMs(entry);
+            if (cutoffUnix != null && ts != null && ts < cutoffUnix * 1000) continue;
+            classified.push(classifyLogEvent(entry, type, entryKey, itemNames, cats));
+          }
+        }
+      } catch (err) {
+        setState({ fetchError: `Torn API error while scanning logs: ${err && err.message ? err.message : 'unknown error'}.`,
+                   ledger: { ...MEM.ledger, scanning: false } });
+        return;
+      }
 
-      const log = (d && d.log) || [];
-      const seen = Store.get('rwth_seen_wins') || [];
-      const hits = toScanHits(log, seen, itemNames, ItemDict.categories());
+      const preview = buildScanPreview(classified, {
+        seen: [...seen],
+        itemNames, cats,
+        items: MEM.ledger.items,
+        transactions: MEM.advertise.transactions,
+      });
+      const hits = preview.buys || [];
 
       // Auto-fill each win from itemdetails (uid → real stats/bonuses/rarity).
       // A per-item failure just leaves that row's fields as the user can edit.
@@ -4504,24 +5011,28 @@
         catch { return h; }
       }));
 
+      const staged = { ...preview, buys: [] };
       Store.set('rwth_scan', enriched);
+      Store.set('rwth_scan_preview', staged);
       setState({
         fetchError: null,
         ledger: {
-          ...MEM.ledger, scanning: false, scanResults: enriched, lastScan: Date.now(),
-          scanMessage: enriched.length ? '' : 'No new auction wins found.',
+          ...MEM.ledger, scanning: false, scanSetupOpen: false,
+          scanResults: enriched, scanPreview: staged, lastScan: Date.now(),
+          scanMessage: (enriched.length || preview.sales.length || preview.mugs.length || preview.review.length || preview.ignored.length || preview.already.length)
+            ? '' : 'No new RW log events found.',
         },
       });
     },
   };
 
-  // Commit the scan checklist: checked wins become held ledger rows; every shown
-  // win (added or not) is written to rwth_seen_wins so it cannot reappear. Hits
-  // are read straight from state — the input listener keeps them synced with the
-  // DOM, so no live querying of the (about-to-be-torn-down) checklist is needed.
+  // Commit the staged scan: checked buys become held rows, matched sales close
+  // open rows, clean sales become Recent Transactions, clear mugs attach once.
+  // Log event IDs are recorded after commit so overlapping scans stay idempotent.
   function confirmScan() {
     const results = MEM.ledger.scanResults || [];
-    if (!results.length) return;
+    const preview = MEM.ledger.scanPreview || null;
+    if (!results.length && !preview) return;
 
     const newItems = [];
     for (const hit of results) {
@@ -4537,7 +5048,7 @@
         rarity: hit.rarity || null,
         buyPrice: hit.buyPrice || 0,
         buyTimestamp: hit.buyTimestamp || Date.now(),
-        buySource: 'auction',
+        buySource: hit.buySource || 'auction',
         listPrice: null,
         gyazoUrl: null,
         status: 'held',
@@ -4546,15 +5057,61 @@
       });
     }
 
-    const items = [...newItems, ...MEM.ledger.items];
+    let items = [...newItems, ...MEM.ledger.items];
+    const seenTx = new Set((MEM.advertise.transactions || []).map(txKey));
+    const newTx = [];
+    if (preview) {
+      for (const row of (preview.sales || [])) {
+        const sell = row.sell || {};
+        if (row.matchedId) {
+          const soldAt = sell.timestamp || Date.now();
+          const sold = items.find(i => i.id === row.matchedId);
+          if (sold) VelocityTracker.recordSale(sold, sold.buyTimestamp, soldAt);
+          items = items.map(i => (i.id === row.matchedId ? {
+            ...i, status: 'sold',
+            saleGross: sell.saleGross, saleFees: sell.saleFees, saleNet: sell.saleNet,
+            soldTimestamp: soldAt,
+            soldVenue: sell.venue, buyer: sell.buyer,
+          } : i));
+        }
+        const key = txKey(sell);
+        if (!row.duplicate && !seenTx.has(key)) {
+          seenTx.add(key);
+          newTx.push({ ...sellToTx(sell), origin: 'scan' });
+        }
+      }
+      for (const row of (preview.mugs || [])) {
+        const amount = Number(row && row.mug && row.mug.amount) || 0;
+        if (!row.matchedId || amount <= 0) continue;
+        items = items.map(i => (i.id === row.matchedId
+          ? { ...i, mugLoss: Math.max(0, Number(i.mugLoss) || 0) + amount }
+          : i));
+      }
+    }
     Store.set('rwth_ledger', items);
+    const transactions = newTx.length ? [...newTx, ...MEM.advertise.transactions] : MEM.advertise.transactions;
+    if (newTx.length) Store.set('rwth_transactions', transactions);
 
-    const seen = new Set(Store.get('rwth_seen_wins') || []);
-    for (const hit of results) seen.add(hit.key);
-    Store.set('rwth_seen_wins', [...seen]);
+    const seenKeys = scanSeenSet(Store.get('rwth_seen_log_events'));
+    const oldWins = new Set(Store.get('rwth_seen_wins') || []);
+    for (const hit of results) {
+      const keys = hit.eventKeys || [hit.eventKey || hit.key];
+      for (const k of keys) {
+        if (k) seenKeys.add(k);
+        const m = String(k || '').match(/^4320:(.*)$/);
+        if (m) oldWins.add(m[1]);
+      }
+    }
+    for (const k of (preview && preview.eventKeys || [])) seenKeys.add(k);
+    Store.set('rwth_seen_log_events', scanSeenStoreFromKeys([...seenKeys]));
+    Store.set('rwth_seen_wins', [...oldWins]);
     Store.set('rwth_scan', []);
+    Store.del('rwth_scan_preview');
 
-    setState({ ledger: { ...MEM.ledger, items, scanResults: [], scanMessage: '' } });
+    setState({
+      ledger: { ...MEM.ledger, items, scanResults: [], scanPreview: null, scanMessage: '' },
+      advertise: { ...MEM.advertise, transactions },
+    });
   }
 
   // Parse the Log-a-sale textarea, match each sell to an open ledger row, and
@@ -5050,6 +5607,36 @@
       .rwth-scan {
         display: flex; flex-direction: column; gap: var(--rwth-gap-md);
         border: 1px solid var(--rwth-border); border-radius: 6px; padding: var(--rwth-pad-card);
+      }
+      .rwth-scan-setup,
+      .rwth-scan-preview,
+      .rwth-scan-section {
+        display: flex; flex-direction: column; gap: var(--rwth-gap-sm);
+      }
+      .rwth-scan-sources,
+      .rwth-scan-chips {
+        display: flex; flex-wrap: wrap; gap: 6px;
+      }
+      .rwth-scan-source {
+        display: inline-flex; align-items: center; gap: 5px;
+        border: 1px solid var(--rwth-border-soft); border-radius: 4px;
+        padding: 5px 7px; font: 600 10px var(--rwth-font-mono);
+        color: var(--rwth-text); background: var(--rwth-fill-faint);
+      }
+      .rwth-scan-source input { accent-color: var(--rwth-accent); }
+      .rwth-scan-chip {
+        border: 1px solid var(--rwth-border-soft); border-radius: 4px;
+        padding: 3px 6px; font: 600 10px var(--rwth-font-mono);
+        color: var(--rwth-muted); background: var(--rwth-fill-faint);
+      }
+      .rwth-scan-line {
+        display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+        align-items: center; font: 11px var(--rwth-font-mono); color: var(--rwth-muted);
+        border-top: 1px solid var(--rwth-border-soft); padding-top: 5px;
+      }
+      .rwth-scan-line span:first-child {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: var(--rwth-text);
       }
       .rwth-scan-row {
         display: flex; flex-direction: column; gap: var(--rwth-gap-sm);
@@ -8766,8 +9353,15 @@
     buildSellBox,
     buildContent,
     ROI,
+    SCAN_LOG_TYPES,
+    DEFAULT_SCAN_SOURCES,
     parseAuctionWin,
     toScanHits,
+    scanEventKey,
+    classifyLogEvent,
+    reconcileTradeGroup,
+    buildScanPreview,
+    buildScanSetup,
     applyItemDetails,
     SellParser,
     matchSell,
