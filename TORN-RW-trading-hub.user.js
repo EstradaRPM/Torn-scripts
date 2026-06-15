@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.122
+// @version      0.3.123
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,18 +15,49 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.122';
+  const SCRIPT_VERSION = '0.3.123';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
   const SCAN_DEBUG_ENABLED = !TEST;
   const SCAN_DEBUG_PREFIX = '[RWTH-SCAN-DEBUG]';
+  const SCAN_DEBUG_STORE = 'rwth_scan_debug_lines';
+
+  function scanDebugStringify(payload) {
+    const seen = typeof WeakSet === 'function' ? new WeakSet() : null;
+    try {
+      return JSON.stringify(payload, (key, value) => {
+        if (/api[_-]?key|key/i.test(key)) return '[redacted]';
+        if (value && typeof value === 'object') {
+          if (seen && seen.has(value)) return '[circular]';
+          if (seen) seen.add(value);
+        }
+        return value;
+      });
+    } catch (err) {
+      return JSON.stringify({ stringifyError: err && err.message ? err.message : String(err) });
+    }
+  }
 
   function scanDebug(label, payload) {
     if (!SCAN_DEBUG_ENABLED || typeof console === 'undefined') return;
-    const fn = console.debug || console.log;
+    const line = `${SCAN_DEBUG_PREFIX} ${scanDebugStringify({ label, payload })}`;
+    const fn = console.log || console.debug;
     if (typeof fn !== 'function') return;
-    try { fn.call(console, `${SCAN_DEBUG_PREFIX} ${label}`, payload); }
+    try {
+      fn.call(console, line);
+      if (typeof localStorage !== 'undefined') {
+        const current = JSON.parse(localStorage.getItem(SCAN_DEBUG_STORE) || '[]');
+        const next = Array.isArray(current) ? current.concat(line).slice(-200) : [line];
+        localStorage.setItem(SCAN_DEBUG_STORE, JSON.stringify(next));
+      }
+    }
+    catch { /* debug output must never break scanning */ }
+  }
+
+  function scanDebugReset() {
+    if (!SCAN_DEBUG_ENABLED || typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(SCAN_DEBUG_STORE, '[]'); }
     catch { /* debug output must never break scanning */ }
   }
 
@@ -5072,6 +5103,7 @@
   const LogScanner = {
     async scan() {
       if (MEM.ledger.scanning) return;
+      scanDebugReset();
       const key = (MEM.settings.apiKey || '').trim();
       if (!key) {
         setState({ fetchError: 'Set your Torn API key in Settings before scanning.' });
