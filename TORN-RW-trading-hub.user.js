@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.106
+// @version      0.3.107
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.106';
+  const SCRIPT_VERSION = '0.3.107';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2144,11 +2144,13 @@
   // Normalise a Torn item `type` to an advertise category. Weapon classes pass
   // through; "Defensive" (armour) collapses to "Armor"; anything else → null.
   function normCategory(type) {
-    switch (String(type || '').toLowerCase()) {
+    const t = String(type || '').toLowerCase().replace(/\s+weapon$/, '').trim();
+    switch (t) {
       case 'primary':   return 'Primary';
       case 'secondary': return 'Secondary';
       case 'melee':     return 'Melee';
       case 'defensive': return 'Armor';
+      case 'armor':     return 'Armor';
       default:          return null;
     }
   }
@@ -2166,8 +2168,8 @@
     return 'Other';
   }
 
-  // The four user-pickable advertise categories (Other is resolved, not picked).
-  const PICK_CATEGORIES = ['Primary', 'Secondary', 'Melee', 'Armor'];
+  // Include Other so unresolved scan hits do not masquerade as Primary.
+  const PICK_CATEGORIES = ['Primary', 'Secondary', 'Melee', 'Armor', 'Other'];
   function categoryOptions(selected) {
     const sel = PICK_CATEGORIES.indexOf(selected) !== -1 ? selected : 'Primary';
     return PICK_CATEGORIES.map(c =>

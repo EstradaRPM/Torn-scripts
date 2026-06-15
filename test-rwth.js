@@ -288,6 +288,15 @@ test('toScanHits maps the API log array and skips seen entry ids', () => {
   assert.strictEqual(hits[0].buyTimestamp, 1779368765 * 1000);
 });
 
+test('toScanHits preserves dictionary categories for scanned wins', () => {
+  const { toScanHits } = globalThis.__RwthPure;
+  const hits = toScanHits([
+    { id: 'secondary', timestamp: 1779368765, data: { item: [{ id: 219 }], final_price: 180000001 } },
+  ], [], { 219: 'Taurus' }, { taurus: 'Secondary' });
+  assert.strictEqual(hits[0].category, 'Secondary');
+  assert.strictEqual(hits[0].type, 'weapon');
+});
+
 test('toScanHits sorts newest first', () => {
   const { toScanHits } = globalThis.__RwthPure;
   const hits = toScanHits([
@@ -306,6 +315,15 @@ test('buildScanChecklist renders a checklist when scan results exist', () => {
   assert.match(html, /data-scan-check/);
   assert.match(html, /data-scan-field="quality"/);
   assert.match(html, /data-action="confirm-scan"/);
+});
+
+test('buildScanChecklist shows unknown scan categories as Other, not Primary', () => {
+  const { buildScanChecklist } = globalThis.__RwthPure;
+  const html = buildScanChecklist({ ledger: { scanResults: [
+    { key: 'unknown', itemName: 'Item #123', buyPrice: 200, buyTimestamp: 2e9 },
+  ] } });
+  assert.match(html, /<option value="Other" selected>Other<\/option>/);
+  assert.doesNotMatch(html, /<option value="Primary" selected>Primary<\/option>/);
 });
 
 test('buildScanChecklist is empty with no results', () => {
