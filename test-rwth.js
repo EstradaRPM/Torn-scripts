@@ -240,7 +240,16 @@ test('buildLedgerDashboard renders solid realized and dashed projected chart lin
   assert.match(html, /class="rwth-hero-line rwth-hero-line-projected"/);
   assert.match(html, /rwth-legend-realized/);
   assert.match(html, /rwth-legend-projected/);
-  assert.match(html, /Projected cumulative P\/L/);
+  assert.match(html, /Projected P\/L \(listed asks, not banked\)/);
+  assert.match(html, /rwth-hero-axis/);
+  assert.match(html, /rwth-hero-axis-tick/);
+  assert.match(html, /Projected profit pace/);
+  assert.match(html, /listed asks minus buy price/);
+  assert.match(html, />Day</);
+  assert.match(html, />Week</);
+  assert.match(html, />Month</);
+  assert.match(html, />Quarter</);
+  assert.match(html, />Year</);
   assert.doesNotMatch(html, />Win rate</);
 });
 

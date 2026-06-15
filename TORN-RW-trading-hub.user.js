@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.109
+// @version      0.3.110
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.109';
+  const SCRIPT_VERSION = '0.3.110';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -762,6 +762,15 @@
     const v = Number(n || 0);
     return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US');
   }
+  function fmtCompactMoney(n) {
+    const v = Number(n || 0);
+    const sign = v < 0 ? '-' : '';
+    const abs = Math.abs(v);
+    if (abs >= 1_000_000_000) return `${sign}$${round1(abs / 1_000_000_000)}b`;
+    if (abs >= 1_000_000) return `${sign}$${round1(abs / 1_000_000)}m`;
+    if (abs >= 1_000) return `${sign}$${round1(abs / 1_000)}k`;
+    return `${sign}$${Math.round(abs).toLocaleString('en-US')}`;
+  }
   function fmtDate(ts) {
     if (!ts || !Number.isFinite(ts)) return '—';
     return new Date(ts).toISOString().slice(0, 10);
@@ -1249,6 +1258,14 @@
   // would be noise.
   const DAY_MS = 86_400_000;
   function round1(n) { return Math.round(n * 10) / 10; }
+  const PROJECTION_FALLBACK_CLEAR_DAYS = 7;
+  const PROJECTION_PERIODS = [
+    { key: 'day',     label: 'Day',     days: 1 },
+    { key: 'week',    label: 'Week',    days: 7 },
+    { key: 'month',   label: 'Month',   days: 30 },
+    { key: 'quarter', label: 'Quarter', days: 90 },
+    { key: 'year',    label: 'Year',    days: 365 },
+  ];
 
   const LedgerStats = {
     summarize(items, now) {
@@ -1353,10 +1370,22 @@
         })
         .filter(Boolean)
         .sort((a, b) => a.t - b.t);
+      const projectionClearDays = avgDaysToClear > 0
+        ? avgDaysToClear : PROJECTION_FALLBACK_CLEAR_DAYS;
+      const projectedDailyProfit = projectedProfit.reduce((sum, p) =>
+        sum + (p.profit / projectionClearDays), 0);
+      const projectedPace = PROJECTION_PERIODS.map(period => ({
+        ...period,
+        profit: Math.round(projectedDailyProfit * period.days),
+      }));
       let forecastTotal = lastRealized;
       const profitProjection = {
         realized: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative })),
         projected: projectedProfit,
+        clearDays: projectionClearDays,
+        clearDaysSource: avgDaysToClear > 0 ? 'avg-clear' : 'fallback',
+        dailyProfit: projectedDailyProfit,
+        periods: projectedPace,
         series: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative }))
           .concat(projectedProfit.map(p => {
             forecastTotal += p.profit;
@@ -1508,6 +1537,21 @@
       return { coords, line, area, baselineY, width: w, height: h };
     },
 
+    coordFor(value, axis, width, height, opts = {}) {
+      const pad = opts.pad != null ? Number(opts.pad) : 4;
+      const w = Number(width) || 0, h = Number(height) || 0;
+      const innerW = Math.max(0, w - pad * 2);
+      const innerH = Math.max(0, h - pad * 2);
+      const domain = opts.domain || {};
+      const min = Number(domain[axis === 'x' ? 'minX' : 'minY']);
+      const max = Number(domain[axis === 'x' ? 'maxX' : 'maxY']);
+      const v = Number(value);
+      if (!Number.isFinite(v) || !Number.isFinite(min) || !Number.isFinite(max)) return pad;
+      const span = (max - min) || 1;
+      const pct = (v - min) / span;
+      return round2(axis === 'x' ? pad + pct * innerW : pad + innerH - pct * innerH);
+    },
+
     // Histogram geometry: evenly-spaced bars across the width, heights scaled to
     // the max value. Negative/non-finite values clamp to 0; an all-zero or empty
     // series yields zero-height rects (a clean empty state, never NaN).
@@ -1558,22 +1602,33 @@
     if (!allPts.length) {
       return `<div class="rwth-hero-empty">No realized or projected profit yet — log a sale or list an item with an ask.</div>`;
     }
-    const W = 300, H = 80;
+    const W = 320, H = 112, PAD = 30;
     const xs = allPts.map(p => p.x), ys = allPts.map(p => p.y);
     const domain = {
       minX: Math.min(...xs), maxX: Math.max(...xs),
       minY: Math.min(0, ...ys), maxY: Math.max(0, ...ys),
     };
-    const allG = ChartGeom.project(allPts, W, H, { pad: 6, domain });
+    const allG = ChartGeom.project(allPts, W, H, { pad: PAD, domain });
     const realizedG = ChartGeom.project(realizedPts, W, H, {
-      pad: 6, domain, spanSingle: !projectedRaw.length,
+      pad: PAD, domain, spanSingle: !projectedRaw.length,
     });
-    const projectedG = ChartGeom.project(projectedPts, W, H, { pad: 6, domain });
+    const projectedG = ChartGeom.project(projectedPts, W, H, { pad: PAD, domain });
     const last = projectedRaw.length
       ? projectedRaw[projectedRaw.length - 1].y
       : realized[realized.length - 1].cumulative;
     const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-    const label = projectedRaw.length ? 'Projected cumulative P/L' : 'Cumulative realized P/L';
+    const label = projectedRaw.length ? 'Projected P/L (listed asks, not banked)' : 'Cumulative realized P/L';
+    const minDate = new Date(domain.minX).toISOString().slice(5, 10);
+    const maxDate = new Date(domain.maxX).toISOString().slice(5, 10);
+    const yTicks = Array.from(new Set([domain.minY, 0, domain.maxY]
+      .filter(v => Number.isFinite(v)).map(v => Math.round(v))));
+    const yAxis = yTicks.map(v => {
+      const y = ChartGeom.coordFor(v, 'y', W, H, { pad: PAD, domain });
+      return `<g class="rwth-hero-axis-tick">
+        <line x1="${PAD - 4}" y1="${y}" x2="${W - 6}" y2="${y}"></line>
+        <text x="2" y="${y + 3}">${fmtCompactMoney(v)}</text>
+      </g>`;
+    }).join('');
     const legend = `<div class="rwth-hero-legend">`
       + (realizedPts.length
         ? `<span><i class="rwth-legend-line rwth-legend-realized"></i>realized</span>` : '')
@@ -1586,12 +1641,42 @@
         <span class="rwth-hero-val ${cls}">${last >= 0 ? '+' : ''}${fmtMoney(last)}</span>
       </div>
       <svg class="rwth-hero-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <g class="rwth-hero-axis">
+          <line x1="${PAD}" y1="${H - PAD}" x2="${W - 6}" y2="${H - PAD}"></line>
+          <line x1="${PAD}" y1="6" x2="${PAD}" y2="${H - PAD}"></line>
+          ${yAxis}
+          <text class="rwth-hero-axis-label" x="${PAD}" y="${H - 8}">${escapeAttr(minDate)}</text>
+          <text class="rwth-hero-axis-label rwth-hero-axis-label-end" x="${W - 6}" y="${H - 8}">${escapeAttr(maxDate)}</text>
+        </g>
         <line class="rwth-hero-base" x1="0" y1="${allG.baselineY}" x2="${W}" y2="${allG.baselineY}" vector-effect="non-scaling-stroke"></line>
         ${realizedG.area ? `<path class="rwth-hero-area" d="${realizedG.area}"></path>` : ''}
         ${realizedG.line ? `<path class="rwth-hero-line rwth-hero-line-realized" d="${realizedG.line}" vector-effect="non-scaling-stroke"></path>` : ''}
         ${projectedG.line ? `<path class="rwth-hero-line rwth-hero-line-projected" d="${projectedG.line}" vector-effect="non-scaling-stroke"></path>` : ''}
       </svg>
       ${legend}
+    </div>`;
+  }
+
+  function buildProjectionPace(projection) {
+    const periods = projection && Array.isArray(projection.periods) ? projection.periods : [];
+    const clearDays = projection && Number.isFinite(Number(projection.clearDays))
+      ? round1(Number(projection.clearDays)) : PROJECTION_FALLBACK_CLEAR_DAYS;
+    const source = projection && projection.clearDaysSource === 'avg-clear'
+      ? `${clearDays}d clear avg` : `${clearDays}d fallback`;
+    if (!periods.length) return '';
+    const cells = periods.map(p => {
+      const profit = Number(p.profit) || 0;
+      const cls = profit >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
+      return `<span class="rwth-pace-cell">
+        <b class="${cls}">${fmtMoney(profit)}</b><small>${escapeAttr(p.label)}</small>
+      </span>`;
+    }).join('');
+    return `<div class="rwth-pace">
+      <div class="rwth-pace-head">
+        <span>Projected profit pace</span>
+        <small>listed asks minus buy price · ${escapeAttr(source)}</small>
+      </div>
+      <div class="rwth-pace-grid">${cells}</div>
     </div>`;
   }
 
@@ -1674,6 +1759,7 @@
         ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
       </div>
       ${buildLedgerHeroChart(s.profitProjection)}
+      ${buildProjectionPace(s.profitProjection)}
       ${buildLedgerAnalytics(s, analyticsCollapsed)}
     </div>`;
   }
@@ -4896,7 +4982,7 @@
         letter-spacing: .5px; color: var(--rwth-muted);
       }
       .rwth-hero-val { font: 700 14px var(--rwth-font-mono); color: var(--rwth-text); }
-      .rwth-hero-svg { width: 100%; height: 80px; display: block; overflow: visible; }
+      .rwth-hero-svg { width: 100%; height: 112px; display: block; overflow: visible; }
       .rwth-hero-line {
         fill: none; stroke: var(--rwth-accent); stroke-width: 2;
         stroke-linejoin: round; stroke-linecap: round;
@@ -4907,6 +4993,14 @@
       }
       .rwth-hero-area { fill: var(--rwth-accent-fill); stroke: none; }
       .rwth-hero-base { stroke: var(--rwth-border); stroke-width: 1; stroke-dasharray: 3 3; }
+      .rwth-hero-axis line { stroke: var(--rwth-border-soft); stroke-width: 1; }
+      .rwth-hero-axis-tick line { opacity: .65; stroke-dasharray: 2 4; }
+      .rwth-hero-axis text,
+      .rwth-hero-axis-label {
+        fill: var(--rwth-muted); font: 8px var(--rwth-font-mono);
+        text-transform: uppercase;
+      }
+      .rwth-hero-axis-label-end { text-anchor: end; }
       .rwth-hero-legend {
         display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
         font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
@@ -4918,6 +5012,37 @@
       .rwth-hero-empty {
         border: 1px solid var(--rwth-border-soft); border-radius: 6px; padding: 16px 11px;
         font: 11px var(--rwth-font-mono); color: var(--rwth-muted); font-style: italic; text-align: center;
+      }
+
+      .rwth-pace {
+        display: flex; flex-direction: column; gap: 7px;
+        border: 1px solid var(--rwth-border-soft); border-radius: 6px; padding: 9px 11px;
+        background: var(--rwth-fill-faint);
+      }
+      .rwth-pace-head {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+        font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
+        letter-spacing: .5px; color: var(--rwth-muted);
+      }
+      .rwth-pace-head small {
+        font: 10px var(--rwth-font-mono); text-transform: none; letter-spacing: 0;
+        text-align: right; color: var(--rwth-muted);
+      }
+      .rwth-pace-grid {
+        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px;
+      }
+      .rwth-pace-cell {
+        min-width: 0; border: 1px solid var(--rwth-border-soft); border-radius: 4px;
+        padding: 6px 5px; background: var(--rwth-fill);
+        display: flex; flex-direction: column; align-items: center; gap: 2px;
+      }
+      .rwth-pace-cell b {
+        max-width: 100%; overflow-wrap: anywhere;
+        font: 700 12px var(--rwth-font-mono); color: var(--rwth-text);
+      }
+      .rwth-pace-cell small {
+        font: 700 8px var(--rwth-font-mono); text-transform: uppercase;
+        color: var(--rwth-muted);
       }
 
       .rwth-analytics {

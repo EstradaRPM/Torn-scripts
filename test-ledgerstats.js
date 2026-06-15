@@ -295,6 +295,11 @@ console.log('\nprofitProjection — listed ask-derived points');
   assertEq('final forecast adds projected profits to realized baseline',
     s.profitProjection.series[s.profitProjection.series.length - 1].cumulative,
     s.realized + 300 + 600);
+  assertEq('projection pace uses avg clear time for per-day profit', s.profitProjection.periods.find(p => p.key === 'day').profit, 225);
+  assertEq('projection pace shows weekly profit', s.profitProjection.periods.find(p => p.key === 'week').profit, 1575);
+  assertEq('projection pace shows monthly profit', s.profitProjection.periods.find(p => p.key === 'month').profit, 6750);
+  assertEq('projection pace shows quarterly profit', s.profitProjection.periods.find(p => p.key === 'quarter').profit, 20250);
+  assertEq('projection pace shows yearly profit', s.profitProjection.periods.find(p => p.key === 'year').profit, 82125);
 }
 
 console.log('\nprofitProjection — invalid input stays finite');
@@ -309,6 +314,8 @@ console.log('\nprofitProjection — invalid input stays finite');
   assertEq('invalid price legs do not create fake zero-profit projections', s.profitProjection.projected.length, 1);
   assertEq('valid no-stamp projection keeps ask-derived profit', s.profitProjection.projected[0].profit, 300);
   assertEq('missing timing falls back to now', s.profitProjection.projected[0].t, NOW);
+  assertEq('no clear history uses seven-day pace fallback', s.profitProjection.clearDays, 7);
+  assertEq('fallback daily pace is ask profit divided by seven', s.profitProjection.periods.find(p => p.key === 'day').profit, 43);
   assertFiniteDeep('forecast contains no NaN/Infinity', s.profitProjection);
 }
 
