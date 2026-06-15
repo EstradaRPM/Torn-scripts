@@ -570,6 +570,59 @@ test('buildScanPreview links a same-scan mug to its matched sale', () => {
   assert.strictEqual(preview.review.length, 0);
 });
 
+test('buildScanPreview keeps every scanned mug selectable instead of review-skipping', () => {
+  const { buildScanPreview, scanEventKey, SCAN_LOG_TYPES } = globalThis.__RwthPure;
+  const t0 = Date.UTC(2026, 4, 20, 12, 0, 0);
+  const preview = buildScanPreview([
+    {
+      type: 'mug',
+      eventKey: scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-1'),
+      mug: { amount: 1200000, timestamp: t0 },
+    },
+    {
+      type: 'mug',
+      eventKey: scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-2'),
+      mug: { amount: 3400000, timestamp: t0 + 60_000 },
+    },
+  ], {
+    items: [],
+    transactions: [],
+  });
+
+  assert.strictEqual(preview.mugs.length, 2);
+  assert.strictEqual(preview.mugs.every(row => row.checked === true), true);
+  assert.strictEqual(preview.review.length, 0);
+});
+
+test('buildScanChecklist renders scanned mugs as checkbox rows', () => {
+  const { buildScanChecklist, scanEventKey, SCAN_LOG_TYPES } = globalThis.__RwthPure;
+  const html = buildScanChecklist({ ledger: { scanPreview: {
+    summary: { mugs: 2 },
+    mugs: [
+      {
+        checked: true,
+        eventKeys: [scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-1')],
+        matchedId: 'sold-1',
+        mug: { amount: 1200000, timestamp: Date.UTC(2026, 4, 20, 12, 0, 0), attacker: 'A' },
+      },
+      {
+        checked: true,
+        eventKeys: [scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-2')],
+        matchedId: null,
+        mug: { amount: 3400000, timestamp: Date.UTC(2026, 4, 20, 12, 1, 0), attacker: 'B' },
+      },
+    ],
+  } } });
+
+  assert.match(html, /data-scan-mug-check/);
+  assert.match(html, /Mug by A/);
+  assert.match(html, /Mug by B/);
+  assert.match(html, /matched/);
+  assert.match(html, /no sale match/);
+  assert.doesNotMatch(html, /Needs review/);
+  assert.doesNotMatch(html, /skipped/);
+});
+
 test('matchSell matches an open row by item name', () => {
   const { matchSell } = globalThis.__RwthPure;
   const sell = { itemName: 'Riot Body', bonusName: null };

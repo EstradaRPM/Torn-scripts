@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.119
+// @version      0.3.120
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.119';
+  const SCRIPT_VERSION = '0.3.120';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1113,8 +1113,7 @@
       } else if (row.type === 'mug') {
         const mug = row.mug || {};
         const match = matchMug(mug, mugMatchItems);
-        if (match) preview.mugs.push({ mug, matchedId: match.id, eventKeys });
-        else preview.review.push({ type: 'mug', reason: 'no clear sale match', mug, eventKeys });
+        preview.mugs.push({ mug, matchedId: match ? match.id : null, checked: true, eventKeys });
         addEventKeys(eventKeys);
       } else if (row.type === 'ignored') {
         preview.ignored.push(row);
@@ -1644,6 +1643,19 @@
         <span>${escapeAttr(dest)}</span>
       </div>`;
     }).join('');
+    const mugs = (preview.mugs || []).map((r, idx) => {
+      const mug = r.mug || {};
+      const key = escapeAttr((r.eventKeys || []).join('|') || `mug-${idx}`);
+      const checked = r.checked === false ? '' : ' checked';
+      const label = mug.attacker ? `Mug by ${mug.attacker}` : 'Mug';
+      const dest = r.matchedId ? 'matched' : 'no sale match';
+      return `<label class="rwth-scan-line rwth-scan-mug-line" data-scan-mug="${key}">
+        <input type="checkbox" data-scan-mug-check${checked}>
+        <span>${escapeAttr(label)}</span>
+        <span>${fmtMoney(mug.amount)}</span>
+        <span>${escapeAttr(dest)}</span>
+      </label>`;
+    }).join('');
     const review = (preview.review || []).slice(0, 4).map(r =>
       `<div class="rwth-scan-line"><span>${escapeAttr(r.reason || r.type || 'Needs review')}</span><span></span><span>skipped</span></div>`).join('');
     const ignored = (preview.ignored || []).slice(0, 3).map(r =>
@@ -1655,6 +1667,7 @@
         ${chip('review', s.review)}${chip('ignored', s.ignored)}${chip('already', s.already)}
       </div>
       ${sales ? `<div class="rwth-scan-section"><div class="rwth-field-label">Sales</div>${sales}</div>` : ''}
+      ${mugs ? `<div class="rwth-scan-section"><div class="rwth-field-label">Mugs</div>${mugs}</div>` : ''}
       ${review ? `<div class="rwth-scan-section"><div class="rwth-field-label">Needs review</div>${review}</div>` : ''}
       ${ignored ? `<div class="rwth-scan-section"><div class="rwth-field-label">Ignored</div>${ignored}</div>` : ''}
     </div>`;
@@ -3960,8 +3973,8 @@
     // Scan-checklist edits → write straight back into MEM.ledger.scanResults and
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
-    root.addEventListener('input', (e) => { syncScanEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
-    root.addEventListener('change', (e) => { syncScanEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); });
+    root.addEventListener('input', (e) => { syncScanEdit(e); syncScanPreviewEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncScanPreviewEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); });
     // #340 — Enter commits the inline ask edit. A lone text input (not in a form)
     // does not blur on Enter by itself, so force the blur that fires `change`.
     root.addEventListener('keydown', (e) => {
@@ -4171,6 +4184,20 @@
     hit.quality = numOrNull(val('quality'));
     if (check) hit.checked = check.checked;
     Store.set('rwth_scan', MEM.ledger.scanResults);
+  }
+
+  function syncScanPreviewEdit(e) {
+    const el = e.target;
+    if (!el || !el.matches || !el.matches('[data-scan-mug-check]')) return;
+    const row = el.closest('[data-scan-mug]');
+    const preview = MEM.ledger.scanPreview;
+    if (!row || !preview || !Array.isArray(preview.mugs)) return;
+    const key = row.dataset.scanMug;
+    preview.mugs = preview.mugs.map((m, idx) => {
+      const mugKey = (m.eventKeys || []).join('|') || `mug-${idx}`;
+      return mugKey === key ? { ...m, checked: el.checked } : m;
+    });
+    Store.set('rwth_scan_preview', preview);
   }
 
   function syncScanSettings(e) {
@@ -5086,6 +5113,7 @@
       }
       for (const row of (preview.mugs || [])) {
         const amount = Number(row && row.mug && row.mug.amount) || 0;
+        if (row.checked === false) continue;
         if (!row.matchedId || amount <= 0) continue;
         items = items.map(i => (i.id === row.matchedId
           ? { ...i, mugLoss: Math.max(0, Number(i.mugLoss) || 0) + amount }
@@ -5638,10 +5666,19 @@
         align-items: center; font: 11px var(--rwth-font-mono); color: var(--rwth-muted);
         border-top: 1px solid var(--rwth-border-soft); padding-top: 5px;
       }
+      .rwth-scan-line.rwth-scan-mug-line {
+        grid-template-columns: auto minmax(0, 1fr) auto auto;
+        cursor: pointer;
+      }
       .rwth-scan-line span:first-child {
         min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         color: var(--rwth-text);
       }
+      .rwth-scan-mug-line span:first-of-type {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: var(--rwth-text);
+      }
+      .rwth-scan-mug-line input { accent-color: var(--rwth-accent); }
       .rwth-scan-row {
         display: flex; flex-direction: column; gap: var(--rwth-gap-sm);
         border: 1px solid var(--rwth-border-soft); border-radius: 4px; padding: var(--rwth-gap-sm);
