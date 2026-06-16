@@ -48,6 +48,26 @@ test('scan log constants include RW buy, sale, mug, and trade sources', () => {
   );
 });
 
+test('selected scan log types keep the buys toggle scoped to auction wins', () => {
+  assert.deepStrictEqual(P.selectedScanLogTypes({
+    buys: true,
+    sales: false,
+    trades: false,
+    mugs: false,
+  }), [P.SCAN_LOG_TYPES.auctionBuy]);
+});
+
+test('legacy item dictionary cache can still supply auction-win names', () => {
+  const cached = {
+    schema: 1,
+    ts: 1779368765000,
+    map: { 614: 'Diamond Bladed Knife' },
+  };
+
+  assert.strictEqual(P.itemDictCacheUsable(cached), false);
+  assert.deepStrictEqual(P.itemDictNameMapFromCache(cached), cached.map);
+});
+
 test('classifyLogEvent parses buy logs from action text when data.item is absent', () => {
   const row = P.classifyLogEvent({
     id: 'buy-market-1',

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.127
+// @version      0.3.128
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.127';
+  const SCRIPT_VERSION = '0.3.128';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3187,6 +3187,11 @@
     return true;
   }
 
+  function itemDictNameMapFromCache(cached) {
+    if (!cached || !cached.map || typeof cached.map !== 'object') return null;
+    return Object.keys(cached.map).length ? cached.map : null;
+  }
+
   // Resolve one item's advertise category. An explicit, user-set `item.category`
   // always wins; then the optional name→category index from ItemDict; then the
   // item's own weapon/armor type; then the offline fallback map; then "Other".
@@ -4958,29 +4963,35 @@
       if (itemDictCacheUsable(cached) && Date.now() - cached.ts < WEEK) {
         return cached.map;
       }
-      const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
-      const d = await res.json();
-      if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
-      const map = {};
-      const cats = {};
-      const record = (id, item) => {
-        const name = item && item.name;
-        if (id == null || !name) return;
-        map[id] = name;
-        const c = itemDictCategoryRecord(item);
-        if (c) cats[String(name).toLowerCase()] = c;
-      };
-      const items = d && d.items;
-      if (Array.isArray(items)) {
-        for (const it of items) if (it) record(it.id, it);
-      } else if (items && typeof items === 'object') {
-        for (const id of Object.keys(items)) {
-          const it = items[id];
-          if (it) record(id, it);
+      const cachedNames = itemDictNameMapFromCache(cached);
+      try {
+        const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
+        const d = await res.json();
+        if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+        const map = {};
+        const cats = {};
+        const record = (id, item) => {
+          const name = item && item.name;
+          if (id == null || !name) return;
+          map[id] = name;
+          const c = itemDictCategoryRecord(item);
+          if (c) cats[String(name).toLowerCase()] = c;
+        };
+        const items = d && d.items;
+        if (Array.isArray(items)) {
+          for (const it of items) if (it) record(it.id, it);
+        } else if (items && typeof items === 'object') {
+          for (const id of Object.keys(items)) {
+            const it = items[id];
+            if (it) record(id, it);
+          }
         }
+        Store.set('rwth_items', { schema: ITEM_DICT_SCHEMA, ts: Date.now(), map, cats });
+        return map;
+      } catch (err) {
+        if (cachedNames) return cachedNames;
+        throw err;
       }
-      Store.set('rwth_items', { schema: ITEM_DICT_SCHEMA, ts: Date.now(), map, cats });
-      return map;
     },
     // Sync name→category index from the cached dictionary; {} until first scan.
     categories() {
@@ -5217,8 +5228,7 @@
   function selectedScanLogTypes(sources) {
     const s = { ...DEFAULT_SCAN_SOURCES, ...(sources || {}) };
     const out = [];
-    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy,
-      SCAN_LOG_TYPES.itemMarketBuy, SCAN_LOG_TYPES.bazaarBuy);
+    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy);
     if (s.sales) out.push(SCAN_LOG_TYPES.auctionSale, SCAN_LOG_TYPES.itemMarketSale, SCAN_LOG_TYPES.bazaarSale);
     if (s.trades) out.push(SCAN_LOG_TYPES.tradeItemA, SCAN_LOG_TYPES.tradeItemB,
       SCAN_LOG_TYPES.tradeMoneyA, SCAN_LOG_TYPES.tradeMoneyB);
@@ -9852,6 +9862,8 @@
     VELOCITY_MIN_SAMPLES,
     itemDictCategoryRecord,
     itemDictCacheUsable,
+    itemDictNameMapFromCache,
+    selectedScanLogTypes,
     mergeLadder,
   };
 
