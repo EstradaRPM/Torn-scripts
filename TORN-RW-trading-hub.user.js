@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.125
+// @version      0.3.126
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.125';
+  const SCRIPT_VERSION = '0.3.126';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1005,12 +1005,16 @@
     };
   }
 
-  function buildScanDebugSummary(enriched, staged, cats, detailDebug) {
+  function buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs) {
     const rows = Array.isArray(enriched) ? enriched : [];
     const summary = (staged && staged.summary) || {};
+    const failures = Array.isArray(failedLogs) ? failedLogs : [];
     const lines = [
-      `scan v${SCRIPT_VERSION} buys=${rows.length} sales=${summary.sales || 0} mugs=${summary.mugs || 0} ignored=${summary.ignored || 0} already=${summary.already || 0} cats=${Object.keys(cats || {}).length}`,
+      `scan v${SCRIPT_VERSION} buys=${rows.length} sales=${summary.sales || 0} mugs=${summary.mugs || 0} ignored=${summary.ignored || 0} already=${summary.already || 0} failed=${failures.length} cats=${Object.keys(cats || {}).length}`,
     ];
+    for (const f of failures) {
+      lines.push(`FAILED: ${scanLogTypeLabel(f.logType)} (${scanDebugVal(f.logType)}) | ${scanDebugVal(f.error)}`);
+    }
     rows.forEach((hit, index) => {
       const dbg = scanDebugHit(hit, cats) || {};
       const detail = (detailDebug && detailDebug[hit.key]) || {};
@@ -5176,6 +5180,31 @@
     return out;
   }
 
+  function scanLogTypeLabel(logType) {
+    switch (Number(logType)) {
+      case SCAN_LOG_TYPES.auctionBuy:     return 'auction buys';
+      case SCAN_LOG_TYPES.auctionSale:    return 'auction sales';
+      case SCAN_LOG_TYPES.itemMarketSale: return 'item market sales';
+      case SCAN_LOG_TYPES.bazaarSale:     return 'bazaar sales';
+      case SCAN_LOG_TYPES.mugged:         return 'mugs';
+      case SCAN_LOG_TYPES.tradeItemA:     return 'trade items A';
+      case SCAN_LOG_TYPES.tradeItemB:     return 'trade items B';
+      case SCAN_LOG_TYPES.tradeMoneyA:    return 'trade money A';
+      case SCAN_LOG_TYPES.tradeMoneyB:    return 'trade money B';
+      default:                            return `log ${logType}`;
+    }
+  }
+
+  function scanErrorMessage(err) {
+    return err && err.message ? err.message : String(err || 'unknown error');
+  }
+
+  function scanLogFailureSummary(failures) {
+    const rows = Array.isArray(failures) ? failures : [];
+    if (!rows.length) return '';
+    return rows.map(f => `${scanLogTypeLabel(f.logType)}: ${f.error || 'unknown error'}`).join('; ');
+  }
+
   function scanCutoffUnix(scanBackTo) {
     const t = Date.parse(scanBackTo || '');
     return Number.isFinite(t) ? Math.floor(t / 1000) : null;
@@ -5190,7 +5219,10 @@
     });
     if (cutoffUnix != null) params.set('from', String(cutoffUnix));
     const res = await fetch(`${API_BASE}/v2/user/log?${params.toString()}`);
-    const d = await res.json();
+    let d;
+    try { d = await res.json(); }
+    catch (err) { throw new Error(`bad JSON from Torn API (${res.status || 'no status'}): ${scanErrorMessage(err)}`); }
+    if (!res.ok) throw new Error(`HTTP ${res.status}${d && d.error ? `: ${d.error.error}` : ''}`);
     if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
     return (d && d.log) || [];
   }
@@ -5219,6 +5251,11 @@
       }
       const cutoffUnix = scanCutoffUnix(MEM.settings.scanBackTo);
       const types = selectedScanLogTypes(MEM.settings.scanSources);
+      if (!types.length) {
+        setState({ fetchError: 'Select at least one scan source before scanning.',
+                   ledger: { ...MEM.ledger, scanning: false } });
+        return;
+      }
       scanDebug('scan start', {
         version: SCRIPT_VERSION,
         scanBackTo: MEM.settings.scanBackTo || '',
@@ -5230,8 +5267,9 @@
         seenCount: seen.size,
       });
       const classified = [];
-      try {
-        for (const type of types) {
+      const failedLogs = [];
+      for (const type of types) {
+        try {
           const log = await fetchLogType(type, key, cutoffUnix);
           scanDebug('fetched log type', {
             logType: type,
@@ -5261,10 +5299,18 @@
             });
             classified.push(classifiedRow);
           }
+        } catch (err) {
+          const failure = { logType: type, label: scanLogTypeLabel(type), error: scanErrorMessage(err) };
+          failedLogs.push(failure);
+          scanDebug('fetch log type failed', failure);
         }
-      } catch (err) {
-        setState({ fetchError: `Torn API error while scanning logs: ${err && err.message ? err.message : 'unknown error'}.`,
-                   ledger: { ...MEM.ledger, scanning: false } });
+      }
+      if (failedLogs.length === types.length) {
+        const msg = scanLogFailureSummary(failedLogs);
+        setState({ fetchError: `Could not read any selected Torn logs. ${msg}`,
+                   ledger: { ...MEM.ledger, scanning: false,
+                             scanDebugSummary: failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`) } });
+        Store.set(SCAN_DEBUG_SUMMARY_STORE, failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`));
         return;
       }
 
@@ -5317,7 +5363,7 @@
       }));
 
       const staged = { ...preview, buys: [] };
-      const scanDebugSummary = buildScanDebugSummary(enriched, staged, cats, detailDebug);
+      const scanDebugSummary = buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs);
       scanDebug('scan stored results', {
         enriched: enriched.map(h => scanDebugHit(h, cats)),
         stagedSummary: staged.summary,
@@ -5334,8 +5380,10 @@
         ledger: {
           ...MEM.ledger, scanning: false, scanSetupOpen: false,
           scanResults: enriched, scanPreview: staged, scanDebugSummary, lastScan: Date.now(),
-          scanMessage: (enriched.length || preview.sales.length || preview.mugs.length || preview.review.length || preview.ignored.length || preview.already.length)
-            ? '' : 'No new RW log events found.',
+          scanMessage: failedLogs.length
+            ? `Scan finished with skipped logs: ${scanLogFailureSummary(failedLogs)}`
+            : (enriched.length || preview.sales.length || preview.mugs.length || preview.review.length || preview.ignored.length || preview.already.length)
+              ? '' : 'No new RW log events found.',
         },
       });
     },
@@ -9707,6 +9755,8 @@
     buildScanPreview,
     buildScanSetup,
     applyItemDetails,
+    scanLogTypeLabel,
+    scanLogFailureSummary,
     SellParser,
     matchSell,
     summarizeSells,

@@ -61,6 +61,16 @@ test('buildScanSetup renders a compact date and source selector', () => {
   assert.match(html, /data-action="run-scan"/);
 });
 
+test('scan log failure summary names the failing source', () => {
+  assert.strictEqual(P.scanLogTypeLabel(P.SCAN_LOG_TYPES.tradeMoneyA), 'trade money A');
+  const text = P.scanLogFailureSummary([
+    { logType: P.SCAN_LOG_TYPES.tradeMoneyA, error: 'Access denied (code 7)' },
+    { logType: P.SCAN_LOG_TYPES.mugged, error: 'Temporary error' },
+  ]);
+  assert.match(text, /trade money A: Access denied \(code 7\)/);
+  assert.match(text, /mugs: Temporary error/);
+});
+
 test('classifyLogEvent parses item-market sale logs into sell rows', () => {
   const row = P.classifyLogEvent({
     id: 'sale-1',
