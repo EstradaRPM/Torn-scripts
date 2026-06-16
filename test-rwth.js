@@ -402,6 +402,45 @@ test('toScanHits preserves dictionary categories for scanned wins', () => {
   assert.strictEqual(hits[0].type, 'weapon');
 });
 
+test('item dictionary category builder reads Torn weapon subtype fields', () => {
+  const { itemDictCategoryRecord } = globalThis.__RwthPure;
+  assert.strictEqual(itemDictCategoryRecord({
+    name: 'Sawed-Off Shotgun',
+    type: 'Weapon',
+    weapon_type: 'Primary Weapon',
+  }), 'Primary');
+  assert.strictEqual(itemDictCategoryRecord({
+    name: 'Benelli M4 Super',
+    type: 'Weapon',
+    sub_type: 'Secondary Weapon',
+  }), 'Secondary');
+  assert.strictEqual(itemDictCategoryRecord({
+    name: 'Riot Body',
+    type: 'Defensive',
+  }), 'Armor');
+});
+
+test('item dictionary cache guard rejects old or empty category indexes', () => {
+  const { itemDictCacheUsable } = globalThis.__RwthPure;
+  assert.strictEqual(itemDictCacheUsable({
+    ts: Date.now(),
+    map: { 1: 'Benelli M4 Super' },
+    cats: { 'benelli m4 super': 'Secondary' },
+  }), false);
+  assert.strictEqual(itemDictCacheUsable({
+    schema: 2,
+    ts: Date.now(),
+    map: { 1: 'Benelli M4 Super' },
+    cats: {},
+  }), false);
+  assert.strictEqual(itemDictCacheUsable({
+    schema: 2,
+    ts: Date.now(),
+    map: { 1: 'Benelli M4 Super' },
+    cats: { 'benelli m4 super': 'Secondary' },
+  }), true);
+});
+
 test('toScanHits sorts newest first', () => {
   const { toScanHits } = globalThis.__RwthPure;
   const hits = toScanHits([
@@ -429,6 +468,20 @@ test('buildScanChecklist shows unknown scan categories as Other, not Primary', (
   ] } });
   assert.match(html, /<option value="Other" selected>Other<\/option>/);
   assert.doesNotMatch(html, /<option value="Primary" selected>Primary<\/option>/);
+});
+
+test('buildScanChecklist renders PDA-readable scan debug summary', () => {
+  const { buildScanChecklist } = globalThis.__RwthPure;
+  const html = buildScanChecklist({ ledger: {
+    scanDebugSummary: [
+      'scan v0.3.x buys=1 sales=0 mugs=0 ignored=0 already=0 cats=999',
+      'BUY 1: Sawed-Off Shotgun | id=383 | stored=Other | cats=Primary | rendered=Primary',
+    ],
+  } });
+  assert.match(html, /Scan debug summary/);
+  assert.match(html, /rwth-scan-debug-box/);
+  assert.match(html, /Sawed-Off Shotgun/);
+  assert.match(html, /cats=Primary/);
 });
 
 test('buildScanChecklist is empty with no results', () => {

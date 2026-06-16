@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.123
+// @version      0.3.125
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,19 +15,20 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.123';
+  const SCRIPT_VERSION = '0.3.125';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
   const SCAN_DEBUG_ENABLED = !TEST;
   const SCAN_DEBUG_PREFIX = '[RWTH-SCAN-DEBUG]';
   const SCAN_DEBUG_STORE = 'rwth_scan_debug_lines';
+  const SCAN_DEBUG_SUMMARY_STORE = 'rwth_scan_debug_summary';
 
   function scanDebugStringify(payload) {
     const seen = typeof WeakSet === 'function' ? new WeakSet() : null;
     try {
       return JSON.stringify(payload, (key, value) => {
-        if (/api[_-]?key|key/i.test(key)) return '[redacted]';
+        if (/^(apiKey|api_key|key)$/i.test(key)) return '[redacted]';
         if (value && typeof value === 'object') {
           if (seen && seen.has(value)) return '[circular]';
           if (seen) seen.add(value);
@@ -57,7 +58,10 @@
 
   function scanDebugReset() {
     if (!SCAN_DEBUG_ENABLED || typeof localStorage === 'undefined') return;
-    try { localStorage.setItem(SCAN_DEBUG_STORE, '[]'); }
+    try {
+      localStorage.setItem(SCAN_DEBUG_STORE, '[]');
+      localStorage.removeItem(SCAN_DEBUG_SUMMARY_STORE);
+    }
     catch { /* debug output must never break scanning */ }
   }
 
@@ -407,6 +411,7 @@
       expandedId: null,       // null | itemId — the tap-expanded row
       scanResults: [],        // ScanHit[] from the last scan, awaiting confirm
       scanPreview: null,      // null | staged non-editable sale/mug/review import summary
+      scanDebugSummary: [],    // string[] compact debug readout for PDA screenshots
       scanSetupOpen: false,   // whether the compact scan setup panel is open
       scanMessage: '',        // transient scan feedback (e.g. "No new auction wins found.")
       scanning: false,        // a scan request is in flight
@@ -513,6 +518,8 @@
     if (Array.isArray(scan)) MEM.ledger.scanResults = scan;
     const scanPreview = Store.get('rwth_scan_preview');
     if (scanPreview && typeof scanPreview === 'object') MEM.ledger.scanPreview = scanPreview;
+    const scanDebugSummary = Store.get(SCAN_DEBUG_SUMMARY_STORE);
+    if (Array.isArray(scanDebugSummary)) MEM.ledger.scanDebugSummary = scanDebugSummary;
 
     const transactions = Store.get('rwth_transactions');
     if (Array.isArray(transactions)) MEM.advertise.transactions = transactions;
@@ -976,6 +983,61 @@
     if (row.type === 'mug') return { type: row.type, eventKey: row.eventKey, eventKeys: row.eventKeys, mug: row.mug };
     if (row.type === 'trade') return { type: row.type, leg: row.leg };
     return row;
+  }
+
+  function scanDebugVal(value) {
+    return value == null || value === '' ? '-' : String(value);
+  }
+
+  function scanDebugDetails(details) {
+    if (!details) return null;
+    const stats = details.stats || {};
+    return {
+      name: details.name || null,
+      category: details.category || details.item_category || details.itemCategory || null,
+      itemType: details.item_type || details.itemType || details.type || null,
+      subType: details.sub_type || details.subType || null,
+      rarity: details.rarity || null,
+      quality: stats.quality != null ? Number(stats.quality) : null,
+      bonuses: Array.isArray(details.bonuses)
+        ? details.bonuses.map(b => `${scanDebugVal(b && b.title)}=${scanDebugVal(b && b.value)}`).join(',')
+        : '',
+    };
+  }
+
+  function buildScanDebugSummary(enriched, staged, cats, detailDebug) {
+    const rows = Array.isArray(enriched) ? enriched : [];
+    const summary = (staged && staged.summary) || {};
+    const lines = [
+      `scan v${SCRIPT_VERSION} buys=${rows.length} sales=${summary.sales || 0} mugs=${summary.mugs || 0} ignored=${summary.ignored || 0} already=${summary.already || 0} cats=${Object.keys(cats || {}).length}`,
+    ];
+    rows.forEach((hit, index) => {
+      const dbg = scanDebugHit(hit, cats) || {};
+      const detail = (detailDebug && detailDebug[hit.key]) || {};
+      lines.push([
+        `BUY ${index + 1}: ${scanDebugVal(hit.itemName)}`,
+        `id=${scanDebugVal(hit.itemId)}`,
+        `uid=${scanDebugVal(hit.uid)}`,
+        `stored=${scanDebugVal(dbg.storedCategory)}`,
+        `cats=${scanDebugVal(dbg.categoryFromCats)}`,
+        `rendered=${scanDebugVal(dbg.renderedCategory)}`,
+        `picker=${scanDebugVal(dbg.pickerSelected)}`,
+        `type=${scanDebugVal(hit.type)}`,
+        `detailCat=${scanDebugVal(detail.category)}`,
+        `detailType=${scanDebugVal(detail.itemType)}`,
+        `detailSub=${scanDebugVal(detail.subType)}`,
+        `rarity=${scanDebugVal(hit.rarity)}`,
+        `q=${scanDebugVal(hit.quality)}`,
+        `price=${fmtMoney(hit.buyPrice)}`,
+        detail.error ? `detailErr=${detail.error}` : '',
+      ].filter(Boolean).join(' | '));
+    });
+    if (staged && Array.isArray(staged.ignored) && staged.ignored.length) {
+      for (const row of staged.ignored.slice(0, 6)) {
+        lines.push(`IGNORED: ${scanDebugVal(row.itemName || row.reason)} | reason=${scanDebugVal(row.reason)}`);
+      }
+    }
+    return lines;
   }
 
   function isRwCategory(category) {
@@ -1688,6 +1750,16 @@
     </div>`;
   }
 
+  function buildScanDebugSummaryUi(lines) {
+    const list = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    if (!list.length) return '';
+    const text = list.join('\n');
+    return `<div class="rwth-scan-debug">
+      <div class="rwth-field-label">Scan debug summary</div>
+      <textarea class="rwth-scan-debug-box" readonly spellcheck="false">${escapeAttr(text)}</textarea>
+    </div>`;
+  }
+
   function buildScanChecklist(mem) {
     const L = (mem && mem.ledger) || {};
     const settings = (mem && mem.settings) || MEM.settings;
@@ -1697,7 +1769,9 @@
     const preview = L.scanPreview;
     const setup = L.scanSetupOpen ? buildScanSetup(scanSources, scanBackTo, !!L.scanning) : '';
     const staged = preview ? buildScanPreviewUi(preview, results.length) : '';
-    if (!results.length && !setup && !staged) return '';
+    const debugSummary = Array.isArray(L.scanDebugSummary) ? L.scanDebugSummary : [];
+    const debugUi = buildScanDebugSummaryUi(debugSummary);
+    if (!results.length && !setup && !staged && !debugUi) return '';
     const n = results.length;
     const buyRows = results.length ? `
       <div class="rwth-form-title">${n} RW buy${n === 1 ? '' : 's'} ready</div>
@@ -1713,6 +1787,7 @@
       ${setup}
       ${staged}
       ${buyRows}
+      ${debugUi}
       ${actions}
     </div>`;
   }
@@ -3027,6 +3102,7 @@
   // from /v2/torn/items — so every weapon Torn knows is mapped automatically.
   // Pre-dictionary first runs fall through to 'Other'.
   const CATEGORY_ORDER = ['Primary', 'Secondary', 'Melee', 'Armor', 'Other'];
+  const ITEM_DICT_SCHEMA = 2;
 
   // Normalise a Torn item `type` to an advertise category. Weapon classes pass
   // through; "Defensive" (armour) collapses to "Armor"; anything else → null.
@@ -3040,6 +3116,26 @@
       case 'armor':     return 'Armor';
       default:          return null;
     }
+  }
+
+  function itemDictCategoryRecord(it) {
+    if (!it || typeof it !== 'object') return null;
+    const candidates = [
+      it.type, it.item_type, it.itemType, it.category, it.item_category, it.itemCategory,
+      it.sub_type, it.subType, it.weapon_type, it.weaponType, it.weapon_class, it.weaponClass,
+    ];
+    for (const raw of candidates) {
+      const c = normCategory(raw);
+      if (c) return c;
+    }
+    return null;
+  }
+
+  function itemDictCacheUsable(cached) {
+    if (!cached || cached.schema !== ITEM_DICT_SCHEMA || !cached.map || !cached.cats || !cached.ts) return false;
+    const keys = Object.keys(cached.cats || {});
+    if (!keys.length) return false;
+    return true;
   }
 
   // Resolve one item's advertise category. An explicit, user-set `item.category`
@@ -4048,7 +4144,8 @@
         case 'confirm-scan':  confirmScan(); break;
         case 'cancel-scan':   Store.set('rwth_scan', []);
                               Store.del('rwth_scan_preview');
-                              setState({ ledger: { ...MEM.ledger, scanResults: [], scanPreview: null, scanMessage: '' } }); break;
+                              Store.del(SCAN_DEBUG_SUMMARY_STORE);
+                              setState({ ledger: { ...MEM.ledger, scanResults: [], scanPreview: null, scanDebugSummary: [], scanMessage: '' } }); break;
         case 'parse-sells':   parseSells(); break;
         case 'commit-sells':  commitSells(); break;
         case 'cancel-sells':  setState({ ledger: { ...MEM.ledger, sellPreview: null, sellMessage: '' } }); break;
@@ -4806,10 +4903,10 @@
     async ensure(key) {
       const WEEK = 7 * 24 * 3600 * 1000;
       const cached = Store.get('rwth_items');
-      // `cats` must be present too — caches from before the category index was
-      // added are treated as stale so the dictionary is re-fetched once.
-      if (cached && cached.map && cached.cats && cached.ts
-          && Date.now() - cached.ts < WEEK) {
+      // `cats` must be present and schema-current too. Older caches could have
+      // names but an empty/partial category index, causing RW sales to be
+      // ignored as non-RW.
+      if (itemDictCacheUsable(cached) && Date.now() - cached.ts < WEEK) {
         return cached.map;
       }
       const res = await fetch(`${API_BASE}/v2/torn/items?key=${encodeURIComponent(key)}`);
@@ -4817,22 +4914,23 @@
       if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
       const map = {};
       const cats = {};
-      const record = (id, name, type) => {
+      const record = (id, item) => {
+        const name = item && item.name;
         if (id == null || !name) return;
         map[id] = name;
-        const c = normCategory(type);
+        const c = itemDictCategoryRecord(item);
         if (c) cats[String(name).toLowerCase()] = c;
       };
       const items = d && d.items;
       if (Array.isArray(items)) {
-        for (const it of items) if (it) record(it.id, it.name, it.type);
+        for (const it of items) if (it) record(it.id, it);
       } else if (items && typeof items === 'object') {
         for (const id of Object.keys(items)) {
           const it = items[id];
-          if (it) record(id, it.name, it.type);
+          if (it) record(id, it);
         }
       }
-      Store.set('rwth_items', { ts: Date.now(), map, cats });
+      Store.set('rwth_items', { schema: ITEM_DICT_SCHEMA, ts: Date.now(), map, cats });
       return map;
     },
     // Sync name→category index from the cached dictionary; {} until first scan.
@@ -5109,7 +5207,7 @@
         setState({ fetchError: 'Set your Torn API key in Settings before scanning.' });
         return;
       }
-      setState({ fetchError: null, ledger: { ...MEM.ledger, scanning: true, scanMessage: '' } });
+      setState({ fetchError: null, ledger: { ...MEM.ledger, scanning: true, scanMessage: '', scanDebugSummary: [] } });
 
       // Resolve item names; a failure here only degrades names to "Item #id".
       let itemNames = {};
@@ -5191,14 +5289,17 @@
 
       // Auto-fill each win from itemdetails (uid → real stats/bonuses/rarity).
       // A per-item failure just leaves that row's fields as the user can edit.
+      const detailDebug = {};
       const enriched = await Promise.all(hits.map(async (h) => {
         if (h.uid == null) {
+          detailDebug[h.key] = { error: 'missing uid' };
           scanDebug('enrich skipped missing uid', scanDebugHit(h, cats));
           return h;
         }
         try {
           const details = await ItemDetails.fetch(h.uid, key);
           const after = applyItemDetails(h, details);
+          detailDebug[h.key] = scanDebugDetails(details) || {};
           scanDebug('enriched itemdetails', {
             before: scanDebugHit(h, cats),
             rawDetails: details,
@@ -5206,6 +5307,7 @@
           });
           return after;
         } catch (err) {
+          detailDebug[h.key] = { error: err && err.message ? err.message : String(err) };
           scanDebug('enrich failed', {
             before: scanDebugHit(h, cats),
             error: err && err.message ? err.message : String(err),
@@ -5215,6 +5317,7 @@
       }));
 
       const staged = { ...preview, buys: [] };
+      const scanDebugSummary = buildScanDebugSummary(enriched, staged, cats, detailDebug);
       scanDebug('scan stored results', {
         enriched: enriched.map(h => scanDebugHit(h, cats)),
         stagedSummary: staged.summary,
@@ -5225,11 +5328,12 @@
       });
       Store.set('rwth_scan', enriched);
       Store.set('rwth_scan_preview', staged);
+      Store.set(SCAN_DEBUG_SUMMARY_STORE, scanDebugSummary);
       setState({
         fetchError: null,
         ledger: {
           ...MEM.ledger, scanning: false, scanSetupOpen: false,
-          scanResults: enriched, scanPreview: staged, lastScan: Date.now(),
+          scanResults: enriched, scanPreview: staged, scanDebugSummary, lastScan: Date.now(),
           scanMessage: (enriched.length || preview.sales.length || preview.mugs.length || preview.review.length || preview.ignored.length || preview.already.length)
             ? '' : 'No new RW log events found.',
         },
@@ -5325,9 +5429,10 @@
     Store.set('rwth_seen_wins', [...oldWins]);
     Store.set('rwth_scan', []);
     Store.del('rwth_scan_preview');
+    Store.del(SCAN_DEBUG_SUMMARY_STORE);
 
     setState({
-      ledger: { ...MEM.ledger, items, scanResults: [], scanPreview: null, scanMessage: '' },
+      ledger: { ...MEM.ledger, items, scanResults: [], scanPreview: null, scanDebugSummary: [], scanMessage: '' },
       advertise: { ...MEM.advertise, transactions },
     });
   }
@@ -5878,6 +5983,18 @@
       .rwth-scan-meta { font: 11px var(--rwth-font-mono); color: var(--rwth-muted); }
       .rwth-scan-note { font: 11px var(--rwth-font-mono); color: var(--rwth-muted); }
       .rwth-scan-note strong { color: var(--rwth-secondary); }
+      .rwth-scan-debug {
+        display: flex; flex-direction: column; gap: 4px;
+        border: 1px solid var(--rwth-border-soft); border-radius: 4px;
+        padding: var(--rwth-gap-sm);
+      }
+      .rwth-scan-debug-box {
+        width: 100%; min-height: 138px; resize: vertical;
+        border: 1px solid var(--rwth-border); border-radius: 4px;
+        background: var(--rwth-bg-alt); color: var(--rwth-text);
+        font: 10px/1.45 var(--rwth-font-mono); padding: 6px;
+        white-space: pre; overflow: auto;
+      }
       .rwth-rarity {
         font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
         color: var(--rwth-bg); padding: 1px 5px; border-radius: 3px;
@@ -9634,6 +9751,8 @@
     velocityClass,
     velocityBaseline,
     VELOCITY_MIN_SAMPLES,
+    itemDictCategoryRecord,
+    itemDictCacheUsable,
     mergeLadder,
   };
 
