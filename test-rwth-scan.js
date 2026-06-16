@@ -31,6 +31,8 @@ const cats = {
 
 test('scan log constants include RW buy, sale, mug, and trade sources', () => {
   assert.strictEqual(P.SCAN_LOG_TYPES.auctionBuy, 4320);
+  assert.strictEqual(P.SCAN_LOG_TYPES.itemMarketBuy, 1112);
+  assert.strictEqual(P.SCAN_LOG_TYPES.bazaarBuy, 1125);
   assert.strictEqual(P.SCAN_LOG_TYPES.auctionSale, 4322);
   assert.strictEqual(P.SCAN_LOG_TYPES.itemMarketSale, 1113);
   assert.strictEqual(P.SCAN_LOG_TYPES.bazaarSale, 1226);
@@ -44,6 +46,22 @@ test('scan log constants include RW buy, sale, mug, and trade sources', () => {
     ].sort(),
     [4440, 4441, 4445, 4446].sort(),
   );
+});
+
+test('classifyLogEvent parses buy logs from action text when data.item is absent', () => {
+  const row = P.classifyLogEvent({
+    id: 'buy-market-1',
+    timestamp: 1779280000,
+    action: 'You bought 1x Diamond Bladed Knife on the item market from SellerName at $75,000,000 each for a total of $75,000,000',
+    data: {},
+  }, P.SCAN_LOG_TYPES.itemMarketBuy, 'buy-market-1', {}, cats);
+
+  assert.strictEqual(row.type, 'buy');
+  assert.strictEqual(row.hit.eventKey, '1112:buy-market-1');
+  assert.strictEqual(row.hit.itemName, 'Diamond Bladed Knife');
+  assert.strictEqual(row.hit.buySource, 'market');
+  assert.strictEqual(row.hit.buyPrice, 75_000_000);
+  assert.strictEqual(row.hit.category, 'Melee');
 });
 
 test('buildScanSetup renders a compact date and source selector', () => {
@@ -154,6 +172,44 @@ test('buildScanPreview reconciles same-scan backloaded buy, sale, and mug', () =
 
   assert.strictEqual(preview.buys.length, 1);
   assert.strictEqual(preview.ignored.length, 0);
+  assert.strictEqual(preview.sales.length, 1);
+  assert.match(preview.sales[0].matchedId, /^scan-buy:/);
+  assert.strictEqual(preview.mugs.length, 1);
+  assert.strictEqual(preview.mugs[0].matchedId, preview.sales[0].matchedId);
+  assert.strictEqual(preview.mugs[0].mug.amount, 8_000_000);
+});
+
+test('buildScanPreview keeps unclassified non-auction buys visible but unchecked', () => {
+  const boughtAt = 1779280000;
+  const soldAt = 1779372185;
+  const buy = P.classifyLogEvent({
+    id: 'buy-unknown',
+    timestamp: boughtAt,
+    action: 'You bought 1x Diamond Bladed Knife on the item market from SellerName at $75,000,000 each for a total of $75,000,000',
+    data: {},
+  }, P.SCAN_LOG_TYPES.itemMarketBuy, 'buy-unknown', {}, {});
+  const sale = P.classifyLogEvent({
+    id: 'sale-action',
+    timestamp: soldAt,
+    action: 'You sold 1x Diamond Bladed Knife on your bazaar to BuyerName at $120,000,000 each for a total of $120,000,000',
+    data: {},
+  }, P.SCAN_LOG_TYPES.bazaarSale, 'sale-action', {}, {});
+  const mug = P.classifyLogEvent({
+    id: 'mug-action',
+    timestamp: soldAt + 120,
+    action: 'You were mugged by 1580562 and lost $8,000,000',
+    data: { user: 1580562 },
+  }, P.SCAN_LOG_TYPES.mugged, 'mug-action', {}, {});
+
+  const preview = P.buildScanPreview([buy, sale, mug], {
+    cats: {},
+    items: [],
+    transactions: [],
+  });
+
+  assert.strictEqual(preview.buys.length, 1);
+  assert.strictEqual(preview.buys[0].checked, false);
+  assert.strictEqual(preview.buys[0].itemName, 'Diamond Bladed Knife');
   assert.strictEqual(preview.sales.length, 1);
   assert.match(preview.sales[0].matchedId, /^scan-buy:/);
   assert.strictEqual(preview.mugs.length, 1);

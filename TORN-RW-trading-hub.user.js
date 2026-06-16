@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.126
+// @version      0.3.127
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.126';
+  const SCRIPT_VERSION = '0.3.127';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -352,8 +352,11 @@
   // Torn v2 API. Log IDs are kept explicit so RWTH can request only the log
   // categories its scan setup needs.
   const API_BASE = 'https://api.torn.com';
+  const SCAN_LOG_LIMIT = 100;
   const SCAN_LOG_TYPES = {
     auctionBuy: 4320,
+    itemMarketBuy: 1112,
+    bazaarBuy: 1125,
     auctionSale: 4322,
     itemMarketSale: 1113,
     bazaarSale: 1226,
@@ -665,7 +668,7 @@
   // ($Y = net proceeds); optional "after $Z in fees" (absent = 0, e.g. bazaar).
   function parseSellLine(line) {
     const raw = String(line || '');
-    if (!/\bsold an?\b/i.test(raw)) return null;
+    if (!/\bsold\s+(?:\d+x|an?|a pair of)\b/i.test(raw)) return null;
     const anonymous = /\banonymously\b/i.test(raw);
     // Strip "anonymously" so it can't leak into the item-name capture.
     const text = raw.replace(/\s*\banonymously\b/i, '');
@@ -675,7 +678,7 @@
     else if (/on the item market/i.test(text)) venue = 'market';
 
     let itemName = '', bonusName = null;
-    const m = text.match(/sold an? (?:pair of )?(.+?)\s+on (?:your bazaar|the item market)/i);
+    const m = text.match(/sold\s+(?:(?:\d+)x\s+|a pair of\s+|an?\s+)(.+?)\s+on (?:your bazaar|the item market)/i);
     if (m) {
       const nm = m[1].trim();
       const bm = nm.match(/^(.*\S)\s*\(([^)]+)\)$/);
@@ -876,12 +879,13 @@
     const parts = [];
     const add = (v) => { if (v != null && typeof v !== 'object') parts.push(String(v)); };
     add(entry && entry.title);
+    add(entry && entry.action);
     add(entry && entry.description);
     add(entry && entry.message);
     add(entry && entry.event);
     add(entry && entry.details && entry.details.title);
     const data = (entry && entry.data) || {};
-    for (const k of ['title', 'description', 'message', 'text', 'event', 'name', 'buyer', 'seller', 'user']) add(data[k]);
+    for (const k of ['title', 'action', 'description', 'message', 'text', 'event', 'name', 'buyer', 'seller', 'user']) add(data[k]);
     return parts.join(' ');
   }
 
@@ -892,6 +896,19 @@
       if (s) return s;
     }
     return '';
+  }
+
+  function logItemFromText(text) {
+    const raw = String(text || '');
+    const m = raw.match(/\b(?:bought|sold)\s+(?:(\d+)x\s+|a pair of\s+|an?\s+)?(.+?)\s+(?:on|from|at)\s+(?:\S+'s bazaar|your bazaar|the item market|the auction house|auction house|auction)\b/i);
+    if (!m) return null;
+    const named = String(m[2] || '').trim();
+    if (!named) return null;
+    const bm = named.match(/^(.*\S)\s*\(([^)]+)\)$/);
+    return {
+      itemName: (bm ? bm[1] : named).trim(),
+      quantity: firstNum(m[1]) || 1,
+    };
   }
 
   function itemFromLogEntry(entry, itemNames) {
@@ -908,14 +925,35 @@
     const itemId = firstNum(rec.id, rec.item_id, data.item_id, data.itemId);
     const uid = firstNum(rec.uid, rec.item_uid, data.uid, data.item_uid);
     const names = itemNames || {};
+    const textItem = logItemFromText(logText(entry));
     const name = firstText(rec.name, rec.item_name, data.item_name, data.itemName,
-      itemId ? names[itemId] : '');
+      itemId ? names[itemId] : '', textItem && textItem.itemName);
     return {
       itemId: itemId || null,
       uid: uid || null,
       itemName: name || (itemId ? `Item #${itemId}` : ''),
-      quantity: firstNum(rec.qty, rec.quantity, data.qty, data.quantity) || 1,
+      quantity: firstNum(rec.qty, rec.quantity, data.qty, data.quantity,
+        textItem && textItem.quantity) || 1,
     };
+  }
+
+  function firstPositiveNum(...vals) {
+    for (const v of vals) {
+      if (v == null || v === '') continue;
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return 0;
+  }
+
+  function mugMoney(entry) {
+    const data = (entry && entry.data) || {};
+    const n = firstPositiveNum(data.amount_mugged, data.mugged_amount,
+      data.stolen_amount, data.cash_amount, data.cash, data.stolen,
+      data.mugged, data.amount, data.money);
+    if (n) return n;
+    const m = logText(entry).match(/\$([\d,]+)/);
+    return m ? parseMoney(m[1]) : 0;
   }
 
   function logMoney(entry) {
@@ -1075,7 +1113,7 @@
 
   function saleFromLogEntry(entry, logType, itemNames) {
     const parsed = SellParser.parse(logText(entry))[0];
-    if (parsed) return parsed;
+    if (parsed) return { ...parsed, timestamp: parsed.timestamp || logTimestampMs(entry) };
     const item = itemFromLogEntry(entry, itemNames);
     const data = (entry && entry.data) || {};
     const text = logText(entry);
@@ -1102,7 +1140,7 @@
   function mugFromLogEntry(entry) {
     const data = (entry && entry.data) || {};
     return {
-      amount: logMoney(entry),
+      amount: mugMoney(entry),
       timestamp: logTimestampMs(entry),
       attacker: firstText(data.attacker, data.attacker_name, data.user, data.name) || null,
       text: logText(entry),
@@ -1136,6 +1174,12 @@
   function classifyLogEvent(entry, logType, key, itemNames, cats) {
     if (logType === SCAN_LOG_TYPES.auctionBuy) {
       return { type: 'buy', hit: scanHitFromBuy(entry, key, 'auction', itemNames, cats, logType) };
+    }
+    if (logType === SCAN_LOG_TYPES.itemMarketBuy) {
+      return { type: 'buy', hit: scanHitFromBuy(entry, key, 'market', itemNames, cats, logType) };
+    }
+    if (logType === SCAN_LOG_TYPES.bazaarBuy) {
+      return { type: 'buy', hit: scanHitFromBuy(entry, key, 'bazaar', itemNames, cats, logType) };
     }
     if (logType === SCAN_LOG_TYPES.auctionSale
         || logType === SCAN_LOG_TYPES.itemMarketSale
@@ -1252,11 +1296,12 @@
       if (row.type === 'buy') {
         const hit = row.hit || {};
         const cat = hit.category || scanCategory(hit.itemName, cats);
-        if (!isRwCategory(cat) && hit.buySource !== 'auction') {
+        if (cat && !isRwCategory(cat) && hit.buySource !== 'auction') {
           preview.ignored.push({ type: 'ignored', reason: 'non-RW item', eventKeys, itemName: hit.itemName });
         } else {
           const stagedId = scanBuyMatchId({ ...hit, eventKeys });
-          const stagedHit = { ...hit, category: cat, eventKeys, stagedId };
+          const stagedHit = { ...hit, category: cat, eventKeys, stagedId,
+            checked: hit.checked === false ? false : !!(isRwCategory(cat) || hit.buySource === 'auction') };
           preview.buys.push(stagedHit);
           if (stagedId) {
             saleMatchItems.push({
@@ -1273,7 +1318,7 @@
         const sell = row.sell || {};
         const cat = scanCategory(sell.itemName, cats);
         const matched = matchSell(sell, saleMatchItems);
-        if (!isRwCategory(cat) && !matched) {
+        if (cat && !isRwCategory(cat) && !matched) {
           preview.ignored.push({ type: 'ignored', reason: 'non-RW sale', eventKeys, itemName: sell.itemName });
         } else {
           const duplicate = txSeen.has(txKey(sell));
@@ -5172,7 +5217,8 @@
   function selectedScanLogTypes(sources) {
     const s = { ...DEFAULT_SCAN_SOURCES, ...(sources || {}) };
     const out = [];
-    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy);
+    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy,
+      SCAN_LOG_TYPES.itemMarketBuy, SCAN_LOG_TYPES.bazaarBuy);
     if (s.sales) out.push(SCAN_LOG_TYPES.auctionSale, SCAN_LOG_TYPES.itemMarketSale, SCAN_LOG_TYPES.bazaarSale);
     if (s.trades) out.push(SCAN_LOG_TYPES.tradeItemA, SCAN_LOG_TYPES.tradeItemB,
       SCAN_LOG_TYPES.tradeMoneyA, SCAN_LOG_TYPES.tradeMoneyB);
@@ -5183,6 +5229,8 @@
   function scanLogTypeLabel(logType) {
     switch (Number(logType)) {
       case SCAN_LOG_TYPES.auctionBuy:     return 'auction buys';
+      case SCAN_LOG_TYPES.itemMarketBuy:  return 'item market buys';
+      case SCAN_LOG_TYPES.bazaarBuy:      return 'bazaar buys';
       case SCAN_LOG_TYPES.auctionSale:    return 'auction sales';
       case SCAN_LOG_TYPES.itemMarketSale: return 'item market sales';
       case SCAN_LOG_TYPES.bazaarSale:     return 'bazaar sales';
@@ -5213,6 +5261,7 @@
   async function fetchLogType(logType, key, cutoffUnix) {
     const params = new URLSearchParams({
       log: String(logType),
+      limit: String(SCAN_LOG_LIMIT),
       key,
       comment: 'rwth-scan',
       _: String(Date.now()),
