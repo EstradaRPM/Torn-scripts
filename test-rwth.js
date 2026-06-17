@@ -428,13 +428,13 @@ test('item dictionary cache guard rejects old or empty category indexes', () => 
     cats: { 'benelli m4 super': 'Secondary' },
   }), false);
   assert.strictEqual(itemDictCacheUsable({
-    schema: 2,
+    schema: 3,
     ts: Date.now(),
     map: { 1: 'Benelli M4 Super' },
     cats: {},
   }), false);
   assert.strictEqual(itemDictCacheUsable({
-    schema: 2,
+    schema: 3,
     ts: Date.now(),
     map: { 1: 'Benelli M4 Super' },
     cats: { 'benelli m4 super': 'Secondary' },

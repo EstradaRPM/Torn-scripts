@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.131
+// @version      0.3.132
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.131';
+  const SCRIPT_VERSION = '0.3.132';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -968,7 +968,7 @@
 
   function mugMoney(entry) {
     const data = (entry && entry.data) || {};
-    const n = firstPositiveNum(data.amount_mugged, data.mugged_amount,
+    const n = firstPositiveNum(data.money_mugged, data.amount_mugged, data.mugged_amount,
       data.stolen_amount, data.cash_amount, data.cash, data.stolen,
       data.mugged, data.amount, data.money);
     if (n) return n;
@@ -979,8 +979,8 @@
   function logMoney(entry) {
     const data = (entry && entry.data) || {};
     const n = firstNum(data.net, data.total, data.total_price, data.price,
-      data.sale_price, data.final_price, data.cost, data.amount, data.money,
-      data.cash, data.cash_amount, data.mugged, data.mugged_amount,
+      data.sale_price, data.final_price, data.cost_total, data.cost_each, data.cost,
+      data.amount, data.money, data.cash, data.cash_amount, data.mugged, data.mugged_amount,
       data.amount_mugged, data.stolen, data.stolen_amount);
     if (n) return n;
     const m = logText(entry).match(/\$([\d,]+)/);
@@ -1140,9 +1140,13 @@
     const venue = logType === SCAN_LOG_TYPES.bazaarSale ? 'bazaar'
       : logType === SCAN_LOG_TYPES.itemMarketSale ? 'market'
         : logType === SCAN_LOG_TYPES.auctionSale ? 'auction' : null;
-    const gross = firstNum(data.gross, data.sale_gross, data.price, data.sale_price, data.amount);
-    const net = firstNum(data.net, data.total, data.total_price, data.proceeds) || gross;
-    const fees = firstNum(data.fees, data.fee, data.tax) || 0;
+    // v2 item-market/bazaar sell: cost_each = gross per unit, cost_total = net
+    // total already after fee, fee = market fee (bazaar omits it).
+    const qty = firstNum(data.items && data.items[0] && data.items[0].qty) || 1;
+    const fees = firstNum(data.fee, data.fees, data.tax) || 0;
+    const net = firstNum(data.cost_total, data.net, data.total, data.total_price, data.proceeds);
+    const grossUnit = firstNum(data.cost_each, data.gross, data.sale_gross, data.price, data.sale_price, data.amount);
+    const gross = (grossUnit ? grossUnit * qty : 0) || (net ? net + fees : 0);
     const buyerM = text.match(/\bto\s+(\S+?)\s+(?:at\s+\$|for a total|\$)/i);
     return {
       itemName: item.itemName,
@@ -1151,9 +1155,9 @@
       buyer: firstText(data.buyer, data.buyer_name, buyerM && buyerM[1]) || null,
       saleGross: gross || net,
       saleFees: fees,
-      saleNet: net,
+      saleNet: net || gross,
       timestamp: logTimestampMs(entry),
-      anonymous: /\banonymously\b/i.test(text),
+      anonymous: /\banonymously\b/i.test(text) || data.anonymous === 1,
     };
   }
 
@@ -1169,10 +1173,15 @@
 
   function tradeLegFromLogEntry(entry, key, logType, itemNames, cats) {
     const text = logText(entry).toLowerCase();
-    const isMoneyType = logType === SCAN_LOG_TYPES.tradeMoneyA || logType === SCAN_LOG_TYPES.tradeMoneyB;
+    const data = (entry && entry.data) || {};
+    // The four trade log ids do NOT split cleanly into money/items by id (e.g.
+    // 4440 is "Trade money outgoing", 4446 is "Trade items incoming"), so route
+    // by the entry's own content — a money leg carries data.money, an item leg
+    // carries data.items. Direction comes from the details.title (logText folds
+    // it in): "...outgoing" is out, "...incoming" is in.
+    const isMoneyType = data.money != null && !(Array.isArray(data.items) && data.items.length);
     const dir = /\b(received|income|incoming|gained|got)\b/.test(text) ? 'in'
       : /\b(sent|gave|given|outgoing|lost|paid)\b/.test(text) ? 'out' : null;
-    const data = (entry && entry.data) || {};
     const group = firstText(data.trade_id, data.tradeId, data.trade, data.user_id,
       data.user, data.name, logTimestampMs(entry));
     if (isMoneyType) {
@@ -3171,7 +3180,7 @@
   // from /v2/torn/items — so every weapon Torn knows is mapped automatically.
   // Pre-dictionary first runs fall through to 'Other'.
   const CATEGORY_ORDER = ['Primary', 'Secondary', 'Melee', 'Armor', 'Other'];
-  const ITEM_DICT_SCHEMA = 2;
+  const ITEM_DICT_SCHEMA = 3;
 
   // Normalise a Torn item `type` to an advertise category. Weapon classes pass
   // through; "Defensive" (armour) collapses to "Armor"; anything else → null.
@@ -3187,6 +3196,22 @@
     }
   }
 
+  // Torn API v2 collapses every weapon's `type` to the generic "Weapon" and moves
+  // the real distinction into `weapon_class` (Rifle, Shotgun, Pistol, Slashing…),
+  // so normCategory alone can no longer place a weapon. This maps the class to the
+  // advertise slot using Torn's own merit grouping: rifles/MGs/shotguns are
+  // Primary; pistols/SMGs/heavy-artillery are Secondary; blades/clubs/mechanical
+  // are Melee. Keyed off normWeaponBase so spelling/casing variants collapse first.
+  const WEAPON_CLASS_CATEGORY = {
+    rifle: 'Primary', 'machine gun': 'Primary', shotgun: 'Primary',
+    pistol: 'Secondary', smg: 'Secondary', 'heavy artillery': 'Secondary',
+    club: 'Melee', piercing: 'Melee', slashing: 'Melee', mechanical: 'Melee',
+  };
+  function weaponClassCategory(raw) {
+    const base = normWeaponBase(raw);
+    return base ? (WEAPON_CLASS_CATEGORY[base] || null) : null;
+  }
+
   function itemDictCategoryRecord(it) {
     if (!it || typeof it !== 'object') return null;
     const candidates = [
@@ -3197,7 +3222,8 @@
       const c = normCategory(raw);
       if (c) return c;
     }
-    return null;
+    // v2 weapons land here (type="Weapon"); route them by weapon class.
+    return weaponClassCategory(it.weapon_class || it.weaponClass || it.sub_type || it.subType);
   }
 
   function itemDictCacheUsable(cached) {
@@ -5233,7 +5259,10 @@
     const stats = details.stats || {};
     const category = normCategory(details.category || details.item_category
       || details.itemCategory || details.item_type || details.itemType
-      || details.sub_type || details.subType || details.type) || hit.category || null;
+      || details.sub_type || details.subType || details.type)
+      || weaponClassCategory(details.weapon_class || details.weaponClass
+        || details.sub_type || details.subType)
+      || hit.category || null;
     return {
       ...hit,
       itemName: details.name || hit.itemName,
