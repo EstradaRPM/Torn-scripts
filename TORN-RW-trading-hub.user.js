@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.129
+// @version      0.3.130
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.129';
+  const SCRIPT_VERSION = '0.3.130';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -368,15 +368,13 @@
   };
   const LOG_TYPE_AUCTION_WIN = SCAN_LOG_TYPES.auctionBuy;
   const DEFAULT_SCAN_SOURCES = { buys: true, sales: true, trades: true, mugs: true };
-  // Key-builder deep link. Selections are grouped by section (user/torn/market);
-  // there is no per-log-ID restriction param — the `log` user selection grants
-  // the whole activity log, which is all the scan needs. `torn=items,itemdetails`
-  // is required for /v2/torn/items (names) and /v2/torn/{uid}/itemdetails (the
-  // per-instance quality/bonuses/rarity the scan enriches each buy with); without
-  // it itemdetails returns error 16 and rows come back with blank stats. `market`
-  // covers the /v2/market/{id}/itemmarket pricing comps (no `auctionhouse`
-  // selection exists — auction wins arrive through the log, not a market call).
-  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&torn=items,itemdetails&market=itemmarket';
+  // Key-builder deep link. Keeps the user-selected log categories (logIds) and
+  // market scopes untouched; the only thing it adds is the torn section, which is
+  // required for /v2/torn/items (names) and /v2/torn/{uid}/itemdetails (the
+  // per-instance quality/bonuses/rarity the scan enriches each buy with). Without
+  // torn=items,itemdetails that endpoint returns error 16 and scanned rows come
+  // back with blank stats — that was the missing item-data scope.
+  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&logIds=88,182,11,94,18&market=auctionhouse,itemmarket&torn=items,itemdetails';
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const MEM = {
