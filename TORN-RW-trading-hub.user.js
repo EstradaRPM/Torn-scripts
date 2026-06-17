@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.128
+// @version      0.3.129
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.128';
+  const SCRIPT_VERSION = '0.3.129';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -368,7 +368,15 @@
   };
   const LOG_TYPE_AUCTION_WIN = SCAN_LOG_TYPES.auctionBuy;
   const DEFAULT_SCAN_SOURCES = { buys: true, sales: true, trades: true, mugs: true };
-  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&logIds=88,182,11,94,18&market=auctionhouse,itemmarket';
+  // Key-builder deep link. Selections are grouped by section (user/torn/market);
+  // there is no per-log-ID restriction param — the `log` user selection grants
+  // the whole activity log, which is all the scan needs. `torn=items,itemdetails`
+  // is required for /v2/torn/items (names) and /v2/torn/{uid}/itemdetails (the
+  // per-instance quality/bonuses/rarity the scan enriches each buy with); without
+  // it itemdetails returns error 16 and rows come back with blank stats. `market`
+  // covers the /v2/market/{id}/itemmarket pricing comps (no `auctionhouse`
+  // selection exists — auction wins arrive through the log, not a market call).
+  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&torn=items,itemdetails&market=itemmarket';
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const MEM = {
@@ -1853,7 +1861,7 @@
         <input class="rwth-field-input" type="date" data-scan-back-to value="${escapeAttr(scanBackTo)}">
       </label>
       <div class="rwth-scan-sources">
-        ${toggle('buys', 'Auction buys')}
+        ${toggle('buys', 'Buys')}
         ${toggle('sales', 'Sales')}
         ${toggle('trades', 'Trades')}
         ${toggle('mugs', 'Mugs')}
@@ -5228,7 +5236,7 @@
   function selectedScanLogTypes(sources) {
     const s = { ...DEFAULT_SCAN_SOURCES, ...(sources || {}) };
     const out = [];
-    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy);
+    if (s.buys) out.push(SCAN_LOG_TYPES.auctionBuy, SCAN_LOG_TYPES.itemMarketBuy, SCAN_LOG_TYPES.bazaarBuy);
     if (s.sales) out.push(SCAN_LOG_TYPES.auctionSale, SCAN_LOG_TYPES.itemMarketSale, SCAN_LOG_TYPES.bazaarSale);
     if (s.trades) out.push(SCAN_LOG_TYPES.tradeItemA, SCAN_LOG_TYPES.tradeItemB,
       SCAN_LOG_TYPES.tradeMoneyA, SCAN_LOG_TYPES.tradeMoneyB);
@@ -5286,6 +5294,48 @@
     return (d && d.log) || [];
   }
 
+  // One-shot validator: the SCAN_LOG_TYPES IDs are hand-coded, so a wrong number
+  // silently returns nothing for that source. fetchLogTypes pulls Torn's own
+  // id->title map from /v2/torn/logtypes; verifyLogTypeIds turns it into readout
+  // lines for the in-script scan debug window (NOT the console) so each ID can be
+  // eyeballed against its intent. Temporary debug aid — remove once IDs are
+  // confirmed. Best-effort: any failure degrades to a single explanatory line.
+  async function fetchLogTypes(key) {
+    const res = await fetch(`${API_BASE}/v2/torn/logtypes?key=${encodeURIComponent(key)}&comment=rwth-logtypes`);
+    let d;
+    try { d = await res.json(); }
+    catch (err) { throw new Error(`bad JSON from Torn API (${res.status || 'no status'}): ${scanErrorMessage(err)}`); }
+    if (!res.ok) throw new Error(`HTTP ${res.status}${d && d.error ? `: ${d.error.error}` : ''}`);
+    if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+    // Accept either an id->title object map or an array of {id,title} rows.
+    const raw = (d && (d.logtypes || d.log)) || {};
+    const map = {};
+    if (Array.isArray(raw)) {
+      for (const row of raw) {
+        if (row && row.id != null) map[String(row.id)] = String(row.title != null ? row.title : row.name || '');
+      }
+    } else if (raw && typeof raw === 'object') {
+      for (const id of Object.keys(raw)) {
+        const v = raw[id];
+        map[String(id)] = String(v && typeof v === 'object' ? (v.title || v.name || '') : v);
+      }
+    }
+    return map;
+  }
+
+  function verifyLogTypeIds(map) {
+    const m = map || {};
+    const lines = [`LOGTYPE CHECK: ${Object.keys(m).length} types returned by /v2/torn/logtypes`];
+    for (const name of Object.keys(SCAN_LOG_TYPES)) {
+      const id = SCAN_LOG_TYPES[name];
+      const title = m[String(id)];
+      lines.push(title != null && title !== ''
+        ? `LOGTYPE ${name}=${id} -> "${title}"`
+        : `LOGTYPE MISSING ${name}=${id} (no such id in logtypes)`);
+    }
+    return lines;
+  }
+
   // ─── LogScanner — RW log import (manual trigger only) ────────────────────────
   // scan() reads the selected user/log types into one staged preview. Nothing
   // mutates ledger rows or Recent Transactions until confirmScan() commits.
@@ -5304,6 +5354,10 @@
       let itemNames = {};
       try { itemNames = await ItemDict.ensure(key); } catch { /* non-fatal */ }
       const cats = ItemDict.categories();
+      // One-shot log-id audit into the visible debug window (temporary).
+      let logTypeAudit = [];
+      try { logTypeAudit = verifyLogTypeIds(await fetchLogTypes(key)); }
+      catch (err) { logTypeAudit = [`LOGTYPE CHECK failed: ${scanErrorMessage(err)}`]; }
       const seen = scanSeenSet(Store.get('rwth_seen_log_events'));
       for (const oldKey of (Store.get('rwth_seen_wins') || [])) {
         seen.add(scanEventKey(SCAN_LOG_TYPES.auctionBuy, oldKey));
@@ -5366,10 +5420,10 @@
       }
       if (failedLogs.length === types.length) {
         const msg = scanLogFailureSummary(failedLogs);
+        const failSummary = logTypeAudit.concat(failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`));
         setState({ fetchError: `Could not read any selected Torn logs. ${msg}`,
-                   ledger: { ...MEM.ledger, scanning: false,
-                             scanDebugSummary: failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`) } });
-        Store.set(SCAN_DEBUG_SUMMARY_STORE, failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`));
+                   ledger: { ...MEM.ledger, scanning: false, scanDebugSummary: failSummary } });
+        Store.set(SCAN_DEBUG_SUMMARY_STORE, failSummary);
         return;
       }
 
@@ -5422,7 +5476,7 @@
       }));
 
       const staged = { ...preview, buys: [] };
-      const scanDebugSummary = buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs);
+      const scanDebugSummary = logTypeAudit.concat(buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs));
       scanDebug('scan stored results', {
         enriched: enriched.map(h => scanDebugHit(h, cats)),
         stagedSummary: staged.summary,
