@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.130
+// @version      0.3.131
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.130';
+  const SCRIPT_VERSION = '0.3.131';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -38,6 +38,20 @@
     } catch (err) {
       return JSON.stringify({ stringifyError: err && err.message ? err.message : String(err) });
     }
+  }
+
+  // TEMP debug helpers — cap a raw blob so a PDA screenshot stays readable, and
+  // pull a few raw /v2/torn/items records so the real schema (type/sub_type/
+  // weapon_class names) is visible in the scan window rather than guessed.
+  function scanDebugTrunc(s, max) {
+    const str = String(s == null ? '' : s);
+    const cap = max || 700;
+    return str.length > cap ? `${str.slice(0, cap)}…(${str.length})` : str;
+  }
+  function rawItemSampleLines() {
+    const c = Store.get('rwth_items');
+    const s = (c && Array.isArray(c.sample)) ? c.sample : [];
+    return s.slice(0, 6).map((it, i) => `RAW ITEM ${i + 1}: ${scanDebugTrunc(scanDebugStringify(it))}`);
   }
 
   function scanDebug(label, payload) {
@@ -4976,12 +4990,14 @@
         if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
         const map = {};
         const cats = {};
+        const sample = [];   // TEMP: a few raw records so the real v2 schema is visible
         const record = (id, item) => {
           const name = item && item.name;
           if (id == null || !name) return;
           map[id] = name;
           const c = itemDictCategoryRecord(item);
           if (c) cats[String(name).toLowerCase()] = c;
+          if (sample.length < 6 && item && (item.weapon_class || item.type)) sample.push(item);
         };
         const items = d && d.items;
         if (Array.isArray(items)) {
@@ -4992,7 +5008,7 @@
             if (it) record(id, it);
           }
         }
-        Store.set('rwth_items', { schema: ITEM_DICT_SCHEMA, ts: Date.now(), map, cats });
+        Store.set('rwth_items', { schema: ITEM_DICT_SCHEMA, ts: Date.now(), map, cats, sample });
         return map;
       } catch (err) {
         if (cachedNames) return cachedNames;
@@ -5379,9 +5395,14 @@
       });
       const classified = [];
       const failedLogs = [];
+      const rawSamples = [];   // TEMP: first raw entry per log type, into the debug window
       for (const type of types) {
         try {
           const log = await fetchLogType(type, key, cutoffUnix);
+          const pairs = logPairs(log);
+          if (pairs.length) {
+            rawSamples.push(`RAW ${scanLogTypeLabel(type)} (${type}): ${scanDebugTrunc(scanDebugStringify(pairs[0][1]))}`);
+          }
           scanDebug('fetched log type', {
             logType: type,
             entryCount: logPairs(log).length,
@@ -5418,7 +5439,9 @@
       }
       if (failedLogs.length === types.length) {
         const msg = scanLogFailureSummary(failedLogs);
-        const failSummary = logTypeAudit.concat(failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`));
+        const failSummary = logTypeAudit
+          .concat(rawSamples, rawItemSampleLines())
+          .concat(failedLogs.map(f => `FAILED: ${f.label} (${f.logType}) | ${f.error}`));
         setState({ fetchError: `Could not read any selected Torn logs. ${msg}`,
                    ledger: { ...MEM.ledger, scanning: false, scanDebugSummary: failSummary } });
         Store.set(SCAN_DEBUG_SUMMARY_STORE, failSummary);
@@ -5474,7 +5497,9 @@
       }));
 
       const staged = { ...preview, buys: [] };
-      const scanDebugSummary = logTypeAudit.concat(buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs));
+      const scanDebugSummary = logTypeAudit
+        .concat(rawSamples, rawItemSampleLines())
+        .concat(buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs));
       scanDebug('scan stored results', {
         enriched: enriched.map(h => scanDebugHit(h, cats)),
         stagedSummary: staged.summary,
