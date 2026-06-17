@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.132
+// @version      0.3.134
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.132';
+  const SCRIPT_VERSION = '0.3.134';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1105,6 +1105,17 @@
   function isRwCategory(category) {
     return category === 'Armor' || category === 'Primary'
       || category === 'Secondary' || category === 'Melee';
+  }
+
+  // Every RW-tradeable instance carries a colour rarity: weapons are yellow/
+  // orange/red variants of a null-bonus standard, and armor (riot/dune/assault=
+  // yellow, EOD=red) always has one. So rarity is the whole test — red/orange/
+  // yellow is RW, anything else (a standard no-bonus Minigun, a consumable like
+  // Ipecac Syrup, or a row whose itemdetails never resolved) is not, and is
+  // dropped. No rarity, no useful row.
+  const RW_TRADE_RARITIES = ['yellow', 'orange', 'red'];
+  function scanHitIsRwTradeable(hit) {
+    return RW_TRADE_RARITIES.indexOf(String((hit && hit.rarity) || '').toLowerCase()) !== -1;
   }
 
   function scanHitFromBuy(entry, key, source, itemNames, cats, logType) {
@@ -5525,29 +5536,50 @@
         }
       }));
 
-      const staged = { ...preview, buys: [] };
+      // Now that itemdetails has resolved per-instance rarity, drop everything
+      // that isn't red/orange/yellow — standard no-bonus weapons, consumables,
+      // and rows whose lookup never resolved (no rarity = no useful row anyway).
+      // Dropped rows surface as IGNORED so the count stays honest; their event
+      // keys are already in preview.eventKeys, so commit still marks them seen.
+      const keptBuys = [];
+      const rarityDropped = [];
+      for (const h of enriched) {
+        if (scanHitIsRwTradeable(h)) keptBuys.push(h);
+        else rarityDropped.push({
+          type: 'ignored',
+          itemName: h.itemName,
+          reason: `standard/non-RW (rarity ${scanDebugVal(h.rarity)})`,
+          eventKeys: h.eventKeys || [h.eventKey || h.key],
+        });
+      }
+
+      const staged = { ...preview, buys: [],
+        ignored: [...(preview.ignored || []), ...rarityDropped] };
+      staged.summary = { ...(preview.summary || {}),
+        ignored: ((preview.summary && preview.summary.ignored) || 0) + rarityDropped.length };
       const scanDebugSummary = logTypeAudit
         .concat(rawSamples, rawItemSampleLines())
-        .concat(buildScanDebugSummary(enriched, staged, cats, detailDebug, failedLogs));
+        .concat(buildScanDebugSummary(keptBuys, staged, cats, detailDebug, failedLogs));
       scanDebug('scan stored results', {
-        enriched: enriched.map(h => scanDebugHit(h, cats)),
+        enriched: keptBuys.map(h => scanDebugHit(h, cats)),
+        rarityDropped,
         stagedSummary: staged.summary,
         stagedSales: staged.sales,
         stagedMugs: staged.mugs,
         stagedReview: staged.review,
         stagedIgnored: staged.ignored,
       });
-      Store.set('rwth_scan', enriched);
+      Store.set('rwth_scan', keptBuys);
       Store.set('rwth_scan_preview', staged);
       Store.set(SCAN_DEBUG_SUMMARY_STORE, scanDebugSummary);
       setState({
         fetchError: null,
         ledger: {
           ...MEM.ledger, scanning: false, scanSetupOpen: false,
-          scanResults: enriched, scanPreview: staged, scanDebugSummary, lastScan: Date.now(),
+          scanResults: keptBuys, scanPreview: staged, scanDebugSummary, lastScan: Date.now(),
           scanMessage: failedLogs.length
             ? `Scan finished with skipped logs: ${scanLogFailureSummary(failedLogs)}`
-            : (enriched.length || preview.sales.length || preview.mugs.length || preview.review.length || preview.ignored.length || preview.already.length)
+            : (keptBuys.length || preview.sales.length || preview.mugs.length || preview.review.length || staged.ignored.length || preview.already.length)
               ? '' : 'No new RW log events found.',
         },
       });
@@ -9917,6 +9949,7 @@
     scanEventKey,
     classifyLogEvent,
     reconcileTradeGroup,
+    scanHitIsRwTradeable,
     buildScanPreview,
     buildScanSetup,
     applyItemDetails,

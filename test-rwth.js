@@ -393,6 +393,19 @@ test('toScanHits maps the API log array and skips seen entry ids', () => {
   assert.strictEqual(hits[0].buyTimestamp, 1779368765 * 1000);
 });
 
+test('scanHitIsRwTradeable keeps colour rarities and drops everything else', () => {
+  const { scanHitIsRwTradeable } = globalThis.__RwthPure;
+  // Colour rarity → RW-tradeable, keep.
+  for (const r of ['yellow', 'orange', 'red', 'Red']) {
+    assert.strictEqual(scanHitIsRwTradeable({ rarity: r }, true), true, `keep ${r}`);
+  }
+  // Anything else → drop: standard/consumable (Minigun, Ipecac) or no rarity.
+  assert.strictEqual(scanHitIsRwTradeable({ rarity: null }), false);
+  assert.strictEqual(scanHitIsRwTradeable({ rarity: '' }), false);
+  assert.strictEqual(scanHitIsRwTradeable({ rarity: 'white' }), false);
+  assert.strictEqual(scanHitIsRwTradeable({}), false);
+});
+
 test('toScanHits preserves dictionary categories for scanned wins', () => {
   const { toScanHits } = globalThis.__RwthPure;
   const hits = toScanHits([
