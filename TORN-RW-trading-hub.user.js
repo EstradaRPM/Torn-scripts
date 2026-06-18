@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.143
+// @version      0.3.144
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.143';
+  const SCRIPT_VERSION = '0.3.144';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5821,6 +5821,8 @@
       ledger: { ...MEM.ledger, items, mugs, scanResults: [], scanPreview: null, scanDebugSummary: [], scanMessage: '' },
       advertise: { ...MEM.advertise, transactions },
     });
+    // Scanned sales carry a numeric buyer id; resolve to names off the hot path.
+    void resolveBuyerNames();
   }
 
   // Parse the Log-a-sale textarea, match each sell to an open ledger row, and
@@ -7097,6 +7099,97 @@
         ontimeout: () => reject(new Error('Request timeout')),
       });
     });
+  }
+
+  // ─── Buyer name resolution ───────────────────────────────────────────────
+  // A scanned sale's buyer comes from the v2 sell log's data.buyer, which is a
+  // numeric user id only — the name is never in the log (same as data.attacker
+  // on mugs). We resolve id->name via /v2/user/{id}/basic, cache every hit in
+  // rwth_usernames so each id costs exactly one call ever (buyers repeat), and
+  // rewrite the stored tx so the name shows in outputs and the editable field.
+  // Anonymous sales carry a null buyer and never reach here. Re-scans cannot
+  // re-create a resolved tx: the rwth_seen_log_events guard drops the event
+  // before it becomes a tx, so swapping buyer from id to name is safe.
+  const USERNAME_STORE = 'rwth_usernames';
+  const MAX_NAME_LOOKUPS_PER_RUN = 60;   // spread a big first backfill; stay well under Torn ~100/min
+
+  function loadUsernameCache() {
+    const c = Store.get(USERNAME_STORE);
+    return (c && typeof c === 'object' && !Array.isArray(c)) ? c : {};
+  }
+
+  // A bare numeric tx.buyer is an unresolved id; a name (paste path or already
+  // resolved) is left untouched.
+  function isBuyerId(v) {
+    if (typeof v === 'number') return Number.isFinite(v);
+    return typeof v === 'string' && /^\d+$/.test(v.trim());
+  }
+
+  function fetchUserName(id, key) {
+    const url = `${API_BASE}/v2/user/${encodeURIComponent(id)}/basic`
+      + `?key=${encodeURIComponent(key)}&comment=rwth-buyer`;
+    return gmRequest({ method: 'GET', url }).then((d) => {
+      if (d && d.error) throw new Error(`${d.error.error} (code ${d.error.code})`);
+      const name = d && (d.name
+        || (d.basic && d.basic.name)
+        || (d.profile && d.profile.name));
+      if (!name) throw new Error('no name in response');
+      return String(name);
+    });
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Resolve every unresolved numeric buyer across Recent Transactions, then
+  // rewrite those tx records to the resolved name. Cheap by design: cached ids
+  // never re-fetch, so steady state is ~zero calls. Failures leave the id in
+  // place (retried on a later run). Fire-and-forget from confirmScan and boot.
+  let _resolvingNames = false;
+  async function resolveBuyerNames() {
+    if (_resolvingNames) return;
+    const txs = MEM.advertise.transactions || [];
+    const cache = loadUsernameCache();
+
+    // Distinct unresolved ids not already cached, capped per run.
+    const toFetch = [];
+    const seen = new Set();
+    for (const tx of txs) {
+      if (!tx || !isBuyerId(tx.buyer)) continue;
+      const id = String(tx.buyer).trim();
+      if (seen.has(id) || cache[id]) continue;
+      seen.add(id);
+      toFetch.push(id);
+      if (toFetch.length >= MAX_NAME_LOOKUPS_PER_RUN) break;
+    }
+
+    if (toFetch.length) {
+      const key = (MEM.settings && MEM.settings.apiKey || '').trim();
+      if (key) {
+        _resolvingNames = true;
+        try {
+          for (const id of toFetch) {
+            try { cache[id] = await fetchUserName(id, key); }
+            catch { /* leave id; retried next run */ }
+            await sleep(150);   // pace under Torn rate limit
+          }
+          Store.set(USERNAME_STORE, cache);
+        } finally {
+          _resolvingNames = false;
+        }
+      }
+    }
+
+    // Apply every cached name (covers ids resolved just now and in past runs).
+    let changed = false;
+    const next = txs.map((tx) => {
+      const id = tx && isBuyerId(tx.buyer) ? String(tx.buyer).trim() : null;
+      if (id && cache[id]) { changed = true; return { ...tx, buyer: cache[id] }; }
+      return tx;
+    });
+    if (changed) {
+      Store.set('rwth_transactions', next);
+      setState({ advertise: { ...MEM.advertise, transactions: next } });
+    }
   }
 
   const SupabaseClient = {
@@ -10210,6 +10303,9 @@
     render();          // builds the shell (hidden until MEM.ui.open)
     startLauncher();
     AuctionScanner.refresh();
+    // One-time backfill: turn any buyer ids already sitting in Recent
+    // Transactions into names (cached, so this is cheap after the first run).
+    void resolveBuyerNames();
     // SPA-aware: Torn navigates without full reload, so poll for href changes
     // and reconcile the scanner's attach state with the new URL.
     let lastHref = location.href;
