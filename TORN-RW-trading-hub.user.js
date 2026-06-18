@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.139
+// @version      0.3.140
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.139';
+  const SCRIPT_VERSION = '0.3.140';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2065,7 +2065,6 @@
   ];
   const PROJECTION_PERIOD_IDS = PROJECTION_PERIODS.map(p => p.key);
   const DEFAULT_PROJECTION_PERIOD = 'month';
-  const PROJECTION_HISTORY_WINDOW_DAYS = 30;
 
   function projectionPeriod(key) {
     return PROJECTION_PERIODS.find(p => p.key === key)
@@ -2186,11 +2185,14 @@
 
       // Forecast series for the next dashboard slice: realized points remain
       // saleNet-buyPrice; listed projections keep their concrete ask-buy detail,
-      // while the dashboard pace is a fixed 30d normalized realized P/L rate.
-      // Current listed asks stay visible as inventory context, but they do not
-      // drive period projections. Invalid price legs are skipped instead of
-      // being coerced into a fake $0 projection, and stale/unknown timing clamps
-      // to a finite floor.
+      // while the dashboard pace is a true running average — total realized P/L
+      // divided by the days elapsed since the first sale, measured to `now`.
+      // Because the denominator is real elapsed time (not a fixed window), the
+      // pace eases down every day a sale does not land instead of holding flat
+      // then dropping off a cliff. Current listed asks stay visible as inventory
+      // context but do not drive the pace. Invalid price legs are skipped instead
+      // of being coerced into a fake $0 projection, and stale/unknown timing
+      // clamps to a finite floor.
       const lastRealized = cumulativeProfit.length
         ? cumulativeProfit[cumulativeProfit.length - 1].cumulative : 0;
       const lastRealizedT = cumulativeProfit.length
@@ -2230,21 +2232,24 @@
 
       const listedDailyProfit = projectedProfit.reduce((sum, p) =>
         sum + (p.profit / projectionClearDays), 0);
-      const recentFloor = forecastFloor - PROJECTION_HISTORY_WINDOW_DAYS * DAY_MS;
-      const recentSales = sold
-        .map(it => {
-          const t = fin(it.soldTimestamp);
-          if (t == null || t > forecastFloor || t < recentFloor) return null;
-          return { t, profit: realizedProfit(it) };
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.t - b.t);
-      const recentProfit = recentSales.reduce((sum, p) => sum + p.profit, 0);
-      const newestRecentT = recentSales.length ? recentSales[recentSales.length - 1].t : null;
-      const realizedDailyProfit = recentSales.length ? recentProfit / PROJECTION_HISTORY_WINDOW_DAYS : 0;
-      const newestSaleAgeDays = newestRecentT != null
-        ? Math.max(0, (forecastFloor - newestRecentT) / DAY_MS) : null;
-      const forecastBasis = recentSales.length ? 'history' : 'none';
+      // Running-average pace: total realized P/L ÷ days elapsed since the first
+      // sale, measured to the forecast floor (today). The denominator grows with
+      // every render, so with no fresh sale the daily rate decays day by day:
+      // $1000 over 18 days paces to ~$56/d; the same $1000 at day 22 paces to
+      // ~$45/d. cumulativeProfit is already the stamped, time-sorted, accumulated
+      // realized series, so its last value is the total and its first stamp is
+      // the anchor. Elapsed days clamp to ≥1 so a same-day first sale cannot
+      // divide by zero (early estimates are necessarily noisy until days accrue).
+      const pacedProfit = lastRealized;
+      const pacedSoldCount = cumulativeProfit.length;
+      const firstRealizedT = cumulativeProfit.length ? cumulativeProfit[0].t : null;
+      const elapsedDays = firstRealizedT != null
+        ? Math.max(1, (forecastFloor - firstRealizedT) / DAY_MS) : 0;
+      const realizedDailyProfit = pacedSoldCount && elapsedDays > 0
+        ? pacedProfit / elapsedDays : 0;
+      const newestSaleAgeDays = lastRealizedT != null
+        ? Math.max(0, (forecastFloor - lastRealizedT) / DAY_MS) : null;
+      const forecastBasis = pacedSoldCount ? 'history' : 'none';
       const projectedDailyProfit = realizedDailyProfit;
       const projectedPace = PROJECTION_PERIODS.map(period => ({
         ...period,
@@ -2261,10 +2266,9 @@
         realizedDailyProfit,
         forecastBasis,
         hasOperatingForecast: forecastBasis !== 'none',
-        historyWindowDays: PROJECTION_HISTORY_WINDOW_DAYS,
-        historySpanDays: recentSales.length ? PROJECTION_HISTORY_WINDOW_DAYS : 0,
-        recentProfit,
-        recentSoldCount: recentSales.length,
+        elapsedDays: round1(elapsedDays),
+        pacedProfit,
+        pacedSoldCount,
         newestSaleAgeDays: newestSaleAgeDays == null ? null : round1(newestSaleAgeDays),
         periods: projectedPace,
         series: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative }))
@@ -2503,7 +2507,7 @@
     const cls = last >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
     const selectedLabel = projection && projection.selectedPeriodLabel;
     const basis = projection && projection.forecastBasis;
-    const basisLabel = basis === 'history' ? '30d realized pace' : 'listed inventory';
+    const basisLabel = basis === 'history' ? 'realized daily pace' : 'listed inventory';
     const label = projectedRaw.length
       ? (periodLine
         ? `Projected ${selectedLabel ? selectedLabel + ' ' : ''}P/L (${basisLabel})`
@@ -2564,12 +2568,13 @@
     const realizedDaily = Number(projection && projection.realizedDailyProfit) || 0;
     const listedDaily = Number(projection && projection.listedDailyProfit) || 0;
     const fmtDaily = v => `${fmtMoney(Math.round(Number(v) || 0))}/d`;
-    const recentSold = Number(projection && projection.recentSoldCount) || 0;
-    const recentProfit = Number(projection && projection.recentProfit) || 0;
-    const basisLabel = basis === 'history' ? '30d realized pace' : 'Projection display';
+    const pacedSold = Number(projection && projection.pacedSoldCount) || 0;
+    const pacedProfit = Number(projection && projection.pacedProfit) || 0;
+    const elapsedDays = round1(Number(projection && projection.elapsedDays) || 0);
+    const basisLabel = basis === 'history' ? 'realized daily pace' : 'Projection display';
     const basisDetail = basis === 'history'
-      ? `Last 30d realized P/L: ${fmtMoney(Math.round(recentProfit))} across ${recentSold} sale${recentSold === 1 ? '' : 's'} = ${fmtDaily(realizedDaily)}. Current asks are not used as growth.`
-      : `No 30d realized pace yet. Listed floor is ${fmtDaily(listedDaily)} over ${escapeAttr(source)}, but it is not projected as growth.`;
+      ? `Realized P/L ${fmtMoney(Math.round(pacedProfit))} across ${pacedSold} sale${pacedSold === 1 ? '' : 's'} over ${elapsedDays} day${elapsedDays === 1 ? '' : 's'} = ${fmtDaily(realizedDaily)}. Eases down each day without a sale; current asks are not counted as growth.`
+      : `No realized sales yet. Listed floor is ${fmtDaily(listedDaily)} over ${escapeAttr(source)}, but it is not projected as growth.`;
     const buttons = PROJECTION_PERIODS.map(p => {
       const active = p.key === selected.key;
       return `<button class="rwth-proj-btn${active ? ' rwth-proj-btn-active' : ''}" type="button"
@@ -2579,7 +2584,7 @@
       <div class="rwth-projection-pop-head">
         <div>
           <span>${basisLabel}</span>
-          <small>Projection uses realized P/L normalized over 30 days.</small>
+          <small>Pace = realized P/L ÷ days since your first sale, so it decays each day without a sale.</small>
         </div>
         <button class="rwth-icon-btn" type="button" data-action="close-projection-panel" aria-label="Close projection controls" title="Close">×</button>
       </div>

@@ -260,7 +260,7 @@ test('buildLedgerDashboard renders solid realized and dashed projected chart lin
   assert.match(html, /class="rwth-hero-line rwth-hero-line-projected"/);
   assert.match(html, /rwth-legend-realized/);
   assert.match(html, /rwth-legend-projected/);
-  assert.match(html, /Projected Month P\/L \(30d realized pace\)/);
+  assert.match(html, /Projected Month P\/L \(realized daily pace\)/);
   assert.match(html, /rwth-hero-axis/);
   assert.match(html, /rwth-hero-axis-tick/);
   assert.doesNotMatch(html, /Projection display/);
@@ -292,16 +292,16 @@ test('buildLedgerDashboard opens projection popup with safe period controls', ()
   assert.match(html, /data-projection-trigger role="button" tabindex="0"/);
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /role="dialog" aria-label="Projection controls"/);
-  assert.match(html, /Projected Week P\/L \(30d realized pace\)/);
+  assert.match(html, /Projected Week P\/L \(realized daily pace\)/);
   assert.match(html, /data-action="set-projection-period" data-period="day"/);
   assert.match(html, /data-action="set-projection-period" data-period="week" aria-pressed="true"/);
   assert.match(html, /data-action="set-projection-period" data-period="month"/);
   assert.match(html, /data-action="set-projection-period" data-period="quarter"/);
   assert.match(html, /data-action="set-projection-period" data-period="year"/);
-  assert.match(html, /30d realized pace/);
-  assert.match(html, /Projection uses realized P\/L normalized over 30 days/);
+  assert.match(html, /realized daily pace/);
+  assert.match(html, /days since your first sale/);
   assert.match(html, /Week projected operating profit/);
-  assert.match(html, /Last 30d realized P\/L: \$600 across 1 sale = \$20\/d/);
+  assert.match(html, /Realized P\/L \$600 across 1 sale over 2 days = \$300\/d/);
 });
 
 test('buildLedgerDashboard renders projected-only chart without faking realized line', () => {
