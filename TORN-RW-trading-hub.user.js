@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.138
+// @version      0.3.139
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.138';
+  const SCRIPT_VERSION = '0.3.139';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -2128,18 +2128,26 @@
       const open   = list.filter(i => i && (i.status === 'held' || i.status === 'listed'));
 
       // Realized P/L + ROI, win count, fees, best/worst flip over sold rows.
-      let realized = 0, soldCost = 0, wins = 0, feesPaid = 0;
+      // mugLossTotal sums the cash mugged off matched sales — the same per-row
+      // mugLoss already deducted inside realizedProfit(), surfaced as a headline
+      // figure. It is not a second deduction; it just makes the drag visible.
+      let realized = 0, soldCost = 0, wins = 0, feesPaid = 0, mugLossTotal = 0;
       let best = null, worst = null;
       for (const it of sold) {
         const profit = realizedProfit(it);
         realized += profit;
         soldCost += cost(it);
         feesPaid += fin(it.saleFees) || 0;
+        mugLossTotal += Math.max(0, fin(it.mugLoss) || 0);
         if (profit > 0) wins++;
         if (!best  || profit > best.profit)  best  = { name: it.itemName, profit };
         if (!worst || profit < worst.profit) worst = { name: it.itemName, profit };
       }
       const realizedRoiPct = soldCost > 0 ? round1((realized / soldCost) * 100) : 0;
+      // ROI points the mugs cost: mugLoss / cost basis × 100. Equals the gap
+      // between gross ROI (no mug) and the realized ROI above, so it reads as
+      // "how much ROI was lost to muggings".
+      const mugRoiPct = soldCost > 0 ? round1((mugLossTotal / soldCost) * 100) : 0;
       const winRate = sold.length ? Math.round((wins / sold.length) * 100) : 0;
 
       // Pending P/L at list — listed rows carrying a finite list price only.
@@ -2344,6 +2352,7 @@
 
       return {
         realized, realizedRoiPct, pending, capitalDeployed,
+        mugLossTotal, mugRoiPct,
         winRate, avgDaysToClear, feesPaid,
         soldCount: sold.length, listedCount: listed.length,
         best, worst, cumulativeProfit, profitProjection,
@@ -2655,6 +2664,13 @@
         + ` · ${s.winRate}% win · ${s.avgDaysToClear}d clear`
       : 'no sales yet';
 
+    // Mug losses — cash mugged off matched sales, already netted into Realized
+    // P/L (and the projection pace). Surfaced here as the drag it is: the value
+    // is shown negative, the sub reports the ROI points the mugs cost.
+    const mugSub = s.mugLossTotal > 0
+      ? `-${s.mugRoiPct}% ROI lost`
+      : (s.soldCount ? 'no mugs hit' : 'no sales yet');
+
     const projectionView = buildProjectionView(s.profitProjection, ui.projectionPeriod, now);
     const projectionOpen = !!ui.projectionPanelOpen;
 
@@ -2663,6 +2679,7 @@
         ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
         ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
         ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
+        ${card('Mug losses', s.mugLossTotal > 0 ? fmtMoney(-s.mugLossTotal) : fmtMoney(0), mugSub, s.mugLossTotal > 0 ? 'rwth-roi-neg' : '')}
       </div>
       ${buildLedgerHeroChart(projectionView, { interactive: true, open: projectionOpen })}
       ${buildProjectionPopup(projectionView, projectionOpen)}

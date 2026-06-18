@@ -362,6 +362,39 @@ console.log('\nprofitProjection — invalid now still safe');
   assertFiniteDeep('invalid now does not leak NaN', s.profitProjection);
 }
 
+// ── mug-loss headline (mugLossTotal / mugRoiPct) ─────────────────────────────
+
+console.log('\nmug losses — none logged');
+{
+  const s = LedgerStats.summarize([sold({ buyPrice: 1000, saleNet: 1500 })], NOW);
+  assertEq('mugLossTotal 0 when no mugs', s.mugLossTotal, 0);
+  assertEq('mugRoiPct 0 when no mugs', s.mugRoiPct, 0);
+}
+
+console.log('\nmug losses — surfaced as ROI drag');
+{
+  const s = LedgerStats.summarize([
+    sold({ buyPrice: 1000, saleNet: 3000, mugLoss: 600 }),   // cost 1000, mug 600
+    sold({ buyPrice: 1000, saleNet: 1500 }),                  // cost 1000, no mug
+  ], NOW);
+  assertEq('mugLossTotal sums matched mug cash', s.mugLossTotal, 600);
+  // soldCost = 2000 → 600 / 2000 = 30% ROI lost.
+  assertEq('mugRoiPct is mugLoss / cost basis', s.mugRoiPct, 30);
+  // Equals the gap between gross ROI and the realized ROI it already nets.
+  const grossRoi = round1(((3000 - 1000 + 1500 - 1000) / 2000) * 100);
+  assertEq('mugRoiPct equals gross ROI minus realized ROI',
+    s.mugRoiPct, round1(grossRoi - s.realizedRoiPct));
+}
+
+console.log('\nmug losses — empty ledger stays finite');
+{
+  const s = LedgerStats.summarize([], NOW);
+  assertEq('mugLossTotal 0 on empty', s.mugLossTotal, 0);
+  assertEq('mugRoiPct 0 on empty (no divide-by-zero)', s.mugRoiPct, 0);
+}
+
+function round1(n) { return Math.round(n * 10) / 10; }
+
 // ── margin spread buckets (#310) ─────────────────────────────────────────────
 
 function bucketCount(buckets, label) {
