@@ -299,9 +299,9 @@ test('buildLedgerDashboard opens projection popup with safe period controls', ()
   assert.match(html, /data-action="set-projection-period" data-period="quarter"/);
   assert.match(html, /data-action="set-projection-period" data-period="year"/);
   assert.match(html, /realized daily pace/);
-  assert.match(html, /days since your first sale/);
+  assert.match(html, /days since your first buy/);
   assert.match(html, /Week projected operating profit/);
-  assert.match(html, /Realized P\/L \$600 across 1 sale over 2 days = \$300\/d/);
+  assert.match(html, /Realized P\/L \$600 \(net of mugs\) across 1 sale over 4 days since first buy = \$150\/d/);
 });
 
 test('buildLedgerDashboard renders projected-only chart without faking realized line', () => {
@@ -602,7 +602,7 @@ const openListed = {
   bonuses: [{ name: 'Impenetrable', value: 8 }], buyPrice: 70000000,
 };
 
-test('buildScanPreview links a same-scan mug to its matched sale', () => {
+test('buildScanPreview stages a mug as flat cash, not tied to any item', () => {
   const { buildScanPreview, scanEventKey, SCAN_LOG_TYPES } = globalThis.__RwthPure;
   const soldAt = Date.UTC(2026, 4, 20, 12, 0, 0);
   const preview = buildScanPreview([
@@ -630,10 +630,36 @@ test('buildScanPreview links a same-scan mug to its matched sale', () => {
     transactions: [],
   });
 
+  // The sale still matches its open row; the mug rides along independently with
+  // no item linkage — it's a flat cash drag the user can uncheck.
   assert.strictEqual(preview.sales[0].matchedId, 'h1');
   assert.strictEqual(preview.mugs.length, 1);
-  assert.strictEqual(preview.mugs[0].matchedId, 'h1');
+  assert.strictEqual(preview.mugs[0].mug.amount, 1200000);
+  assert.strictEqual('matchedId' in preview.mugs[0], false);
   assert.strictEqual(preview.review.length, 0);
+});
+
+test('buildScanPreview re-stages a mug absent from the store, skips one already recorded', () => {
+  const { buildScanPreview, scanEventKey, SCAN_LOG_TYPES } = globalThis.__RwthPure;
+  const t0 = Date.UTC(2026, 4, 20, 12, 0, 0);
+  const recordedKey = scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-recorded');
+  const freshKey = scanEventKey(SCAN_LOG_TYPES.mugged, 'mug-fresh');
+  const preview = buildScanPreview([
+    { type: 'mug', eventKey: recordedKey, mug: { amount: 500000, timestamp: t0 } },
+    { type: 'mug', eventKey: freshKey, mug: { amount: 900000, timestamp: t0 + 60_000 } },
+  ], {
+    items: [],
+    transactions: [],
+    // recordedKey is in the global seen-set (an earlier scan saw it) AND in the
+    // mug store; freshKey was seen-then-dropped by the old build (in seen-set,
+    // NOT in the store) and must re-stage so it can backfill.
+    seen: [recordedKey, freshKey],
+    mugs: [{ amount: 500000, eventKeys: [recordedKey] }],
+  });
+
+  assert.strictEqual(preview.mugs.length, 1);
+  assert.strictEqual(preview.mugs[0].mug.amount, 900000);
+  assert.strictEqual(preview.already.length, 1);
 });
 
 test('buildScanPreview keeps every scanned mug selectable instead of review-skipping', () => {

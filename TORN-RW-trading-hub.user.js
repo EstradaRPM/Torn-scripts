@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.140
+// @version      0.3.141
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.140';
+  const SCRIPT_VERSION = '0.3.141';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -429,6 +429,7 @@
     },
     ledger: {
       items: [],
+      mugs: [],               // standalone mug-cash records: { amount, timestamp, attacker, eventKeys }
       statusFilter: 'listed',
       editingId: null,        // null | 'new' | itemId — drives the add/edit form
       expandedId: null,       // null | itemId — the tap-expanded row
@@ -535,6 +536,9 @@
   function hydrate() {
     const ledger = Store.get('rwth_ledger');
     if (Array.isArray(ledger)) MEM.ledger.items = ledger;
+
+    const mugs = Store.get('rwth_mugs');
+    if (Array.isArray(mugs)) MEM.ledger.mugs = mugs;
 
     // Pending scan checklist — survives panel close/reopen and page reload.
     const scan = Store.get('rwth_scan');
@@ -1259,18 +1263,6 @@
     return { type: 'ignored', eventKey: scanEventKey(logType, key), reason: 'unsupported log type' };
   }
 
-  function matchMug(mug, items) {
-    if (!mug || !Array.isArray(items)) return null;
-    const t = Number(mug.timestamp);
-    if (!Number.isFinite(t)) return null;
-    const windowMs = 10 * 60 * 1000;
-    const candidates = items.filter(i => i && i.status === 'sold'
-      && Number.isFinite(Number(i.soldTimestamp))
-      && Number(i.soldTimestamp) <= t
-      && t - Number(i.soldTimestamp) <= windowMs);
-    return candidates.length === 1 ? candidates[0] : null;
-  }
-
   function reconcileTradeGroup(legs, itemNames, cats) {
     const list = Array.isArray(legs) ? legs : [];
     const itemLegs = list.filter(l => l && l.kind === 'tradeItem');
@@ -1330,7 +1322,14 @@
     const txs = (ctx && ctx.transactions) || [];
     const open = items.filter(i => i.status === 'held' || i.status === 'listed');
     const saleMatchItems = open.slice();
-    const mugMatchItems = items.slice();
+    // Mugs dedupe against the standalone mug store by eventKey — NOT the global
+    // seen-set — so a mug that an earlier build dropped (and that the global
+    // seen-set would now gate out) can still be re-pulled and backfilled, while
+    // a mug already in the store stays out of the preview.
+    const mugSeen = new Set();
+    for (const m of (ctx && ctx.mugs) || []) {
+      for (const k of (m && m.eventKeys) || []) if (k) mugSeen.add(k);
+    }
     const txSeen = new Set(txs.map(txKey));
     const preview = {
       buys: [], sales: [], mugs: [], review: [], ignored: [], already: [],
@@ -1351,7 +1350,9 @@
       }
       const eventKeys = row.hit && row.hit.eventKeys ? row.hit.eventKeys
         : row.eventKeys || [row.eventKey || (row.hit && row.hit.eventKey)];
-      if (eventKeys.some(k => seen.has(k))) {
+      // Mugs gate on the mug store; everything else on the global seen-set.
+      const gate = row.type === 'mug' ? mugSeen : seen;
+      if (eventKeys.some(k => gate.has(k))) {
         preview.already.push({ ...row, eventKeys });
         continue;
       }
@@ -1387,15 +1388,11 @@
           const duplicate = txSeen.has(txKey(sell));
           if (!duplicate) txSeen.add(txKey(sell));
           preview.sales.push({ sell, matchedId: matched ? matched.id : null, duplicate, eventKeys });
-          if (!duplicate && matched && Number.isFinite(Number(sell.timestamp))) {
-            mugMatchItems.push({ ...matched, status: 'sold', soldTimestamp: Number(sell.timestamp) });
-          }
         }
         addEventKeys(eventKeys);
       } else if (row.type === 'mug') {
-        const mug = row.mug || {};
-        const match = matchMug(mug, mugMatchItems);
-        preview.mugs.push({ mug, matchedId: match ? match.id : null, checked: true, eventKeys });
+        // Mugs are flat cash, not tied to any item — just stage the amount.
+        preview.mugs.push({ mug: row.mug || {}, checked: true, eventKeys });
         addEventKeys(eventKeys);
       } else if (row.type === 'ignored') {
         preview.ignored.push(row);
@@ -2105,8 +2102,9 @@
   }
 
   const LedgerStats = {
-    summarize(items, now) {
+    summarize(items, now, mugs) {
       const list = Array.isArray(items) ? items : [];
+      const mugList = Array.isArray(mugs) ? mugs : [];
       // null/'' are the codebase's "not set" sentinels (e.g. an unsold row's
       // saleNet) — Number() would coerce them to 0, so reject them up front.
       const fin  = v => {
@@ -2115,33 +2113,41 @@
         return Number.isFinite(n) ? n : null;
       };
       const cost = it => fin(it.buyPrice) || 0;
+      // Per-row profit is just sale − cost. Mug cash is a flat, item-agnostic
+      // drag summed separately (mugLossTotal) and netted off the headline P/L
+      // and the pace — never attached to a single row.
       const realizedProfit = it => {
         const saleNet = fin(it.saleNet);
         if (saleNet == null) return null;
-        const mugLoss = Math.max(0, fin(it.mugLoss) || 0);
-        return saleNet - cost(it) - mugLoss;
+        return saleNet - cost(it);
       };
+
+      // Total mug cash lost — every recorded mug, regardless of any sale.
+      const mugLossTotal = mugList.reduce((sum, m) => {
+        const a = Number(m && m.amount);
+        return sum + (Number.isFinite(a) && a > 0 ? a : 0);
+      }, 0);
 
       const sold   = list.filter(i => i && i.status === 'sold' && fin(i.saleNet) != null);
       const listed = list.filter(i => i && i.status === 'listed');
       const open   = list.filter(i => i && (i.status === 'held' || i.status === 'listed'));
 
       // Realized P/L + ROI, win count, fees, best/worst flip over sold rows.
-      // mugLossTotal sums the cash mugged off matched sales — the same per-row
-      // mugLoss already deducted inside realizedProfit(), surfaced as a headline
-      // figure. It is not a second deduction; it just makes the drag visible.
-      let realized = 0, soldCost = 0, wins = 0, feesPaid = 0, mugLossTotal = 0;
+      // The sold loop sums gross flips (sale − cost); mug cash is netted off the
+      // headline afterward so the total always reflects the mug drag even when a
+      // mug can't be tied to any sale.
+      let realizedGross = 0, soldCost = 0, wins = 0, feesPaid = 0;
       let best = null, worst = null;
       for (const it of sold) {
         const profit = realizedProfit(it);
-        realized += profit;
+        realizedGross += profit;
         soldCost += cost(it);
         feesPaid += fin(it.saleFees) || 0;
-        mugLossTotal += Math.max(0, fin(it.mugLoss) || 0);
         if (profit > 0) wins++;
         if (!best  || profit > best.profit)  best  = { name: it.itemName, profit };
         if (!worst || profit < worst.profit) worst = { name: it.itemName, profit };
       }
+      const realized = realizedGross - mugLossTotal;
       const realizedRoiPct = soldCost > 0 ? round1((realized / soldCost) * 100) : 0;
       // ROI points the mugs cost: mugLoss / cost basis × 100. Equals the gap
       // between gross ROI (no mug) and the realized ROI above, so it reads as
@@ -2186,9 +2192,9 @@
       // Forecast series for the next dashboard slice: realized points remain
       // saleNet-buyPrice; listed projections keep their concrete ask-buy detail,
       // while the dashboard pace is a true running average — total realized P/L
-      // divided by the days elapsed since the first sale, measured to `now`.
-      // Because the denominator is real elapsed time (not a fixed window), the
-      // pace eases down every day a sale does not land instead of holding flat
+      // (net of mug cash) divided by the days elapsed since the first buy,
+      // measured to `now`. Because the denominator is real elapsed time (not a
+      // fixed window), the pace eases down every day a sale does not land
       // then dropping off a cliff. Current listed asks stay visible as inventory
       // context but do not drive the pace. Invalid price legs are skipped instead
       // of being coerced into a fake $0 projection, and stale/unknown timing
@@ -2232,19 +2238,24 @@
 
       const listedDailyProfit = projectedProfit.reduce((sum, p) =>
         sum + (p.profit / projectionClearDays), 0);
-      // Running-average pace: total realized P/L ÷ days elapsed since the first
-      // sale, measured to the forecast floor (today). The denominator grows with
-      // every render, so with no fresh sale the daily rate decays day by day:
-      // $1000 over 18 days paces to ~$56/d; the same $1000 at day 22 paces to
-      // ~$45/d. cumulativeProfit is already the stamped, time-sorted, accumulated
-      // realized series, so its last value is the total and its first stamp is
-      // the anchor. Elapsed days clamp to ≥1 so a same-day first sale cannot
-      // divide by zero (early estimates are necessarily noisy until days accrue).
-      const pacedProfit = lastRealized;
+      // Running-average pace: total realized P/L (net of mug cash) ÷ days
+      // elapsed since the first buy, measured to the forecast floor (today). The
+      // denominator grows with every render, so with no fresh sale the daily
+      // rate decays day by day: $1000 over 18 days paces to ~$56/d; the same
+      // $1000 at day 22 paces to ~$45/d. cumulativeProfit is the stamped,
+      // time-sorted, accumulated realized series, so its last value is the
+      // total; the anchor is the earliest buy stamp. Elapsed days clamp to ≥1 so
+      // a same-day first buy cannot divide by zero.
+      // Pace = realized P/L (net of mug cash) ÷ days since capital was first
+      // deployed (earliest buy), not since the first sale. Anchoring on the buy
+      // date means the denominator reflects how long you've actually been
+      // trading, so a recent first sale can't shrink it and balloon the rate.
+      const pacedProfit = lastRealized - mugLossTotal;
       const pacedSoldCount = cumulativeProfit.length;
-      const firstRealizedT = cumulativeProfit.length ? cumulativeProfit[0].t : null;
-      const elapsedDays = firstRealizedT != null
-        ? Math.max(1, (forecastFloor - firstRealizedT) / DAY_MS) : 0;
+      const buyStamps = list.map(it => (it ? fin(it.buyTimestamp) : null)).filter(v => v != null);
+      const firstBuyT = buyStamps.length ? Math.min(...buyStamps) : null;
+      const elapsedDays = firstBuyT != null
+        ? Math.max(1, (forecastFloor - firstBuyT) / DAY_MS) : 0;
       const realizedDailyProfit = pacedSoldCount && elapsedDays > 0
         ? pacedProfit / elapsedDays : 0;
       const newestSaleAgeDays = lastRealizedT != null
@@ -2573,7 +2584,7 @@
     const elapsedDays = round1(Number(projection && projection.elapsedDays) || 0);
     const basisLabel = basis === 'history' ? 'realized daily pace' : 'Projection display';
     const basisDetail = basis === 'history'
-      ? `Realized P/L ${fmtMoney(Math.round(pacedProfit))} across ${pacedSold} sale${pacedSold === 1 ? '' : 's'} over ${elapsedDays} day${elapsedDays === 1 ? '' : 's'} = ${fmtDaily(realizedDaily)}. Eases down each day without a sale; current asks are not counted as growth.`
+      ? `Realized P/L ${fmtMoney(Math.round(pacedProfit))} (net of mugs) across ${pacedSold} sale${pacedSold === 1 ? '' : 's'} over ${elapsedDays} day${elapsedDays === 1 ? '' : 's'} since first buy = ${fmtDaily(realizedDaily)}. Eases down each day without a sale; current asks are not counted as growth.`
       : `No realized sales yet. Listed floor is ${fmtDaily(listedDaily)} over ${escapeAttr(source)}, but it is not projected as growth.`;
     const buttons = PROJECTION_PERIODS.map(p => {
       const active = p.key === selected.key;
@@ -2584,7 +2595,7 @@
       <div class="rwth-projection-pop-head">
         <div>
           <span>${basisLabel}</span>
-          <small>Pace = realized P/L ÷ days since your first sale, so it decays each day without a sale.</small>
+          <small>Pace = realized P/L (net of mugs) ÷ days since your first buy, so it decays each day without a sale.</small>
         </div>
         <button class="rwth-icon-btn" type="button" data-action="close-projection-panel" aria-label="Close projection controls" title="Close">×</button>
       </div>
@@ -2653,7 +2664,7 @@
   function buildLedgerDashboard(items, now, analyticsCollapsed = true, stats, ui = {}) {
     // `stats` lets buildLedgerTab share one summarize() pass with the filter
     // chips; standalone callers (tests) omit it and get a fresh computation.
-    const s = stats || LedgerStats.summarize(items, now);
+    const s = stats || LedgerStats.summarize(items, now, []);
     const signed = n => (n >= 0 ? '+' : '') + fmtMoney(n);
     const cls    = n => (n >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg');
     const card = (label, value, sub, valCls) =>
@@ -2669,9 +2680,9 @@
         + ` · ${s.winRate}% win · ${s.avgDaysToClear}d clear`
       : 'no sales yet';
 
-    // Mug losses — cash mugged off matched sales, already netted into Realized
-    // P/L (and the projection pace). Surfaced here as the drag it is: the value
-    // is shown negative, the sub reports the ROI points the mugs cost.
+    // Mug losses — total mug cash recorded (item-agnostic), already netted into
+    // Realized P/L (and the projection pace). Surfaced here as the drag it is:
+    // the value is shown negative, the sub reports the ROI points the mugs cost.
     const mugSub = s.mugLossTotal > 0
       ? `-${s.mugRoiPct}% ROI lost`
       : (s.soldCount ? 'no mugs hit' : 'no sales yet');
@@ -2702,7 +2713,7 @@
     // Per-filter count + value rollup (#337/#362). Counts stay in the tap targets;
     // large money tails move to a separate summary line so the four status filters
     // do not fight sort/scan/add at the 360px docked panel width.
-    const stats = LedgerStats.summarize(items, now);
+    const stats = LedgerStats.summarize(items, now, L.mugs || []);
     const bs = stats.byStatus;
     const chipMeta = {
       all:    { count: items.length },
@@ -5572,6 +5583,7 @@
         seen: [...seen],
         itemNames, cats,
         items: MEM.ledger.items,
+        mugs: MEM.ledger.mugs,
         transactions: MEM.advertise.transactions,
       });
       scanDebug('preview built', {
@@ -5705,6 +5717,7 @@
     let items = [...newItems, ...MEM.ledger.items];
     const seenTx = new Set((MEM.advertise.transactions || []).map(txKey));
     const newTx = [];
+    const newMugs = [];
     if (preview) {
       for (const row of (preview.sales || [])) {
         const sell = row.sell || {};
@@ -5726,17 +5739,25 @@
           newTx.push({ ...sellToTx(sell), origin: 'scan' });
         }
       }
+      // Mugs are a flat cash drag, not tied to any item. Every checked mug is
+      // recorded as a standalone loss; the user already unchecks unrelated ones
+      // in the scan preview, so there is no per-item match to fail and drop.
       for (const row of (preview.mugs || [])) {
-        const amount = Number(row && row.mug && row.mug.amount) || 0;
         if (row.checked === false) continue;
-        const matchedId = stagedBuyIds[row.matchedId] || row.matchedId;
-        if (!matchedId || amount <= 0) continue;
-        items = items.map(i => (i.id === matchedId
-          ? { ...i, mugLoss: Math.max(0, Number(i.mugLoss) || 0) + amount }
-          : i));
+        const mug = row.mug || {};
+        const amount = Number(mug.amount) || 0;
+        if (amount <= 0) continue;
+        newMugs.push({
+          amount,
+          timestamp: Number(mug.timestamp) || Date.now(),
+          attacker: mug.attacker || null,
+          eventKeys: row.eventKeys || [],
+        });
       }
     }
     Store.set('rwth_ledger', items);
+    const mugs = newMugs.length ? [...newMugs, ...MEM.ledger.mugs] : MEM.ledger.mugs;
+    if (newMugs.length) Store.set('rwth_mugs', mugs);
     const transactions = newTx.length ? [...newTx, ...MEM.advertise.transactions] : MEM.advertise.transactions;
     if (newTx.length) Store.set('rwth_transactions', transactions);
 
@@ -5758,7 +5779,7 @@
     Store.del(SCAN_DEBUG_SUMMARY_STORE);
 
     setState({
-      ledger: { ...MEM.ledger, items, scanResults: [], scanPreview: null, scanDebugSummary: [], scanMessage: '' },
+      ledger: { ...MEM.ledger, items, mugs, scanResults: [], scanPreview: null, scanDebugSummary: [], scanMessage: '' },
       advertise: { ...MEM.advertise, transactions },
     });
   }

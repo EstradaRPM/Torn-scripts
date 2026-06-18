@@ -279,8 +279,9 @@ console.log('\nprofitProjection — sold rows stay authoritative');
 
 console.log('\nprofitProjection — listed ask-derived points');
 {
-  // Sales span 8 days (first at NOW-8d, last at NOW-2d), total realized 1300.
-  // Pace = 1300 / 8 elapsed days = 162.5/d.
+  // Total realized 1300. Pace anchors on the earliest BUY across all items —
+  // here the stale listed row bought NOW-20d — so elapsed = 20 days and the
+  // pace = 1300 / 20 = 65/d.
   const s = LedgerStats.summarize([
     sold({ buyPrice: 1000, saleNet: 1500, buyTimestamp: NOW - 10 * DAY, soldTimestamp: NOW - 8 * DAY }),
     sold({ buyPrice: 1000, saleNet: 1800, buyTimestamp: NOW - 8 * DAY, soldTimestamp: NOW - 2 * DAY }),
@@ -298,47 +299,48 @@ console.log('\nprofitProjection — listed ask-derived points');
     s.profitProjection.series[s.profitProjection.series.length - 1].cumulative,
     s.realized + 300 + 600);
   assertEq('listed floor keeps ask profit over avg clear time', Math.round(s.profitProjection.listedDailyProfit), 225);
-  assertEq('elapsed days span first sale to now', s.profitProjection.elapsedDays, 8);
+  assertEq('elapsed days span first buy to now', s.profitProjection.elapsedDays, 20);
   assertEq('paced profit is total realized', s.profitProjection.pacedProfit, 1300);
   assertEq('paced sold count', s.profitProjection.pacedSoldCount, 2);
-  assertEq('realized pace = total profit / elapsed days', Math.round(s.profitProjection.realizedDailyProfit), 163);
+  assertEq('realized pace = total profit / elapsed days', Math.round(s.profitProjection.realizedDailyProfit), 65);
   assertEq('forecast basis is realized history only', s.profitProjection.forecastBasis, 'history');
-  assertEq('daily pace = realizedDaily x 1', s.profitProjection.periods.find(p => p.key === 'day').profit, 163);
-  assertEq('weekly pace = realizedDaily x 7', s.profitProjection.periods.find(p => p.key === 'week').profit, 1138);
-  assertEq('monthly pace = realizedDaily x 30', s.profitProjection.periods.find(p => p.key === 'month').profit, 4875);
-  assertEq('quarterly pace = realizedDaily x 90', s.profitProjection.periods.find(p => p.key === 'quarter').profit, 14625);
-  assertEq('yearly pace = realizedDaily x 365', s.profitProjection.periods.find(p => p.key === 'year').profit, 59313);
+  assertEq('daily pace = realizedDaily x 1', s.profitProjection.periods.find(p => p.key === 'day').profit, 65);
+  assertEq('weekly pace = realizedDaily x 7', s.profitProjection.periods.find(p => p.key === 'week').profit, 455);
+  assertEq('monthly pace = realizedDaily x 30', s.profitProjection.periods.find(p => p.key === 'month').profit, 1950);
+  assertEq('quarterly pace = realizedDaily x 90', s.profitProjection.periods.find(p => p.key === 'quarter').profit, 5850);
+  assertEq('yearly pace = realizedDaily x 365', s.profitProjection.periods.find(p => p.key === 'year').profit, 23725);
 }
 
 console.log('\nprofitProjection — pace decays as elapsed days grow without a sale');
 {
-  // Same $1000 of realized profit, viewed at two different "now"s: 18 days and
-  // 22 days after the single sale. The monthly pace eases down as days accrue.
+  // Same $1000 of realized profit, viewed at two different "now"s. Pace anchors
+  // on the buy (NOW-19d), so elapsed is 19 then 23 days; the monthly pace eases
+  // down as days accrue without a new sale.
   const base = [sold({ buyPrice: 1000, saleNet: 2000, buyTimestamp: NOW - 19 * DAY, soldTimestamp: NOW - 18 * DAY })];
   const at18 = LedgerStats.summarize(base, NOW);
   const at22 = LedgerStats.summarize(base, NOW + 4 * DAY);
-  assertEq('elapsed days at first read', at18.profitProjection.elapsedDays, 18);
-  assertEq('elapsed days four days later', at22.profitProjection.elapsedDays, 22);
-  assertEq('monthly pace at 18 days = 1000/18*30', at18.profitProjection.periods.find(p => p.key === 'month').profit, 1667);
-  assertEq('monthly pace at 22 days = 1000/22*30', at22.profitProjection.periods.find(p => p.key === 'month').profit, 1364);
+  assertEq('elapsed days at first read', at18.profitProjection.elapsedDays, 19);
+  assertEq('elapsed days four days later', at22.profitProjection.elapsedDays, 23);
+  assertEq('monthly pace at 19 days = 1000/19*30', at18.profitProjection.periods.find(p => p.key === 'month').profit, 1579);
+  assertEq('monthly pace at 23 days = 1000/23*30', at22.profitProjection.periods.find(p => p.key === 'month').profit, 1304);
   assert('pace decayed with no new sale',
     at22.profitProjection.realizedDailyProfit < at18.profitProjection.realizedDailyProfit);
 }
 
 console.log('\nprofitProjection — realized pace can lift a thin listed floor');
 {
-  // 5 sales over 4 elapsed days (NOW-6d first, NOW-2d last), total 6300.
-  // Pace = 6300 / (NOW - (NOW-6d)) = 6300 / 6 = 1050/d, well above the listed floor.
+  // 5 sales, all bought NOW-6d, total realized 6300. Pace anchors on that first
+  // buy: 6300 / 6 = 1050/d, well above the listed floor. Spans 0–4d → avg clear 2.
   const s = LedgerStats.summarize([
-    sold({ buyPrice: 1000, saleNet: 2500, soldTimestamp: NOW - 6 * DAY }),
-    sold({ buyPrice: 1000, saleNet: 2400, soldTimestamp: NOW - 5 * DAY }),
-    sold({ buyPrice: 1000, saleNet: 2300, soldTimestamp: NOW - 4 * DAY }),
-    sold({ buyPrice: 1000, saleNet: 2200, soldTimestamp: NOW - 3 * DAY }),
-    sold({ buyPrice: 1000, saleNet: 1900, soldTimestamp: NOW - 2 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2500, buyTimestamp: NOW - 6 * DAY, soldTimestamp: NOW - 6 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2400, buyTimestamp: NOW - 6 * DAY, soldTimestamp: NOW - 5 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2300, buyTimestamp: NOW - 6 * DAY, soldTimestamp: NOW - 4 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 2200, buyTimestamp: NOW - 6 * DAY, soldTimestamp: NOW - 3 * DAY }),
+    sold({ buyPrice: 1000, saleNet: 1900, buyTimestamp: NOW - 6 * DAY, soldTimestamp: NOW - 2 * DAY }),
     listed({ id: 'thin', buyPrice: 1000, listPrice: 1700, buyTimestamp: NOW - DAY }),
   ], NOW);
-  assertEq('listed floor is low with one current ask', Math.round(s.profitProjection.listedDailyProfit), 100);
-  assertEq('elapsed days span first sale to now', s.profitProjection.elapsedDays, 6);
+  assertEq('listed floor over avg clear (700 / 2d)', Math.round(s.profitProjection.listedDailyProfit), 350);
+  assertEq('elapsed days span first buy to now', s.profitProjection.elapsedDays, 6);
   assertEq('realized pace = 6300 / 6 elapsed days', Math.round(s.profitProjection.realizedDailyProfit), 1050);
   assertEq('basis is realized history even when listed pipeline exists', s.profitProjection.forecastBasis, 'history');
   assert('realized daily forecast is above the listed floor',
@@ -346,20 +348,19 @@ console.log('\nprofitProjection — realized pace can lift a thin listed floor')
   assertEq('monthly forecast = pace x 30', s.profitProjection.periods.find(p => p.key === 'month').profit, 31500);
 }
 
-console.log('\nprofitProjection — mugLoss reduces realized pace when present');
+console.log('\nprofitProjection — mug cash reduces realized pace when present');
 {
-  // Single sale 10 days ago: gross flip 2000, mug 600 → realized 1400 over 10
-  // elapsed days = 140/d. Without the mug it would pace at 200/d.
-  const s = LedgerStats.summarize([
-    sold({ buyPrice: 1000, saleNet: 3000, mugLoss: 600, soldTimestamp: NOW - 10 * DAY }),
-  ], NOW);
-  const noMug = LedgerStats.summarize([
-    sold({ buyPrice: 1000, saleNet: 3000, soldTimestamp: NOW - 10 * DAY }),
-  ], NOW);
-  assertEq('realized P/L subtracts mugLoss', s.realized, 1400);
-  assertEq('cumulative realized point subtracts mugLoss', s.profitProjection.realized[0].cumulative, 1400);
-  assertEq('realized pace subtracts mugLoss (1400 / 10 days)', Math.round(s.profitProjection.realizedDailyProfit), 140);
-  assertEq('monthly forecast includes mugLoss-adjusted realized P/L', s.profitProjection.periods.find(p => p.key === 'month').profit, 4200);
+  // Single sale: gross flip 2000, bought NOW-10d. Mug 600 (item-agnostic, via
+  // the mugs arg) nets realized to 1400 over 10 elapsed days = 140/d. Without
+  // the mug it would pace at 200/d. The chart curve stays gross; the mug nets
+  // the headline P/L and the pace, not individual sale points.
+  const items = [sold({ buyPrice: 1000, saleNet: 3000, buyTimestamp: NOW - 10 * DAY, soldTimestamp: NOW - 9 * DAY })];
+  const s = LedgerStats.summarize(items, NOW, [{ amount: 600 }]);
+  const noMug = LedgerStats.summarize(items, NOW, []);
+  assertEq('realized P/L subtracts mug cash', s.realized, 1400);
+  assertEq('cumulative chart point stays gross flip', s.profitProjection.realized[0].cumulative, 2000);
+  assertEq('realized pace subtracts mug cash (1400 / 10 days)', Math.round(s.profitProjection.realizedDailyProfit), 140);
+  assertEq('monthly forecast includes mug-adjusted realized P/L', s.profitProjection.periods.find(p => p.key === 'month').profit, 4200);
   assert('mug drags the pace below the no-mug case',
     s.profitProjection.realizedDailyProfit < noMug.profitProjection.realizedDailyProfit);
 }
@@ -404,12 +405,12 @@ console.log('\nmug losses — none logged');
 console.log('\nmug losses — surfaced as ROI drag');
 {
   const s = LedgerStats.summarize([
-    sold({ buyPrice: 1000, saleNet: 3000, mugLoss: 600 }),   // cost 1000, mug 600
-    sold({ buyPrice: 1000, saleNet: 1500 }),                  // cost 1000, no mug
-  ], NOW);
-  assertEq('mugLossTotal sums matched mug cash', s.mugLossTotal, 600);
+    sold({ buyPrice: 1000, saleNet: 3000 }),   // cost 1000
+    sold({ buyPrice: 1000, saleNet: 1500 }),   // cost 1000
+  ], NOW, [{ amount: 600 }]);                   // item-agnostic mug cash
+  assertEq('mugLossTotal sums recorded mug cash', s.mugLossTotal, 600);
   // soldCost = 2000 → 600 / 2000 = 30% ROI lost.
-  assertEq('mugRoiPct is mugLoss / cost basis', s.mugRoiPct, 30);
+  assertEq('mugRoiPct is mug cash / cost basis', s.mugRoiPct, 30);
   // Equals the gap between gross ROI and the realized ROI it already nets.
   const grossRoi = round1(((3000 - 1000 + 1500 - 1000) / 2000) * 100);
   assertEq('mugRoiPct equals gross ROI minus realized ROI',
