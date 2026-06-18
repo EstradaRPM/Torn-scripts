@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.137
+// @version      0.3.138
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.137';
+  const SCRIPT_VERSION = '0.3.138';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3138,6 +3138,9 @@
         <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
         <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
       </div>
+      <div class="rwth-settings-actions">
+        <button class="rwth-btn rwth-btn-danger" type="button" data-action="clear-data" title="Testing only: wipe all stored data and reload as a fresh install">Clear all data (testing)</button>
+      </div>
     </div>`;
   }
 
@@ -4324,6 +4327,7 @@
         case 'delete-item':   if (confirm('Delete this ledger item?')) Ledger.remove(id); break;
         case 'add-tx':        addTransaction(); break;
         case 'reset-colours': resetColourOverrides(); break;
+        case 'clear-data':    clearAllData(); break;
         case 'remove-tx':     removeTransaction(id); break;
         case 'promote-tx':    promoteTransaction(id); break;
         case 'copy-output':   copyOutput(actionEl.dataset.copyTarget); break;
@@ -5850,6 +5854,22 @@
     MEM.settings = { ...MEM.settings, themeOverrides: {} };
     Store.set('rwth_settings', MEM.settings);
     render();
+  }
+
+  // Testing aid — wipe every rwth_ localStorage key (ledger, transactions,
+  // settings, scan state, dict, caches) so the next load behaves like a fresh
+  // install. Enumerates by prefix so it stays correct as new keys are added.
+  function clearAllData() {
+    if (!confirm('Clear ALL RW Trading Hub data (ledger, transactions, settings, caches)? This cannot be undone. The page will reload.')) return;
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf('rwth_') === 0) keys.push(k);
+      }
+      for (const k of keys) { try { localStorage.removeItem(k); } catch {} }
+    } catch {}
+    location.reload();
   }
 
   function removeTransaction(id) {
