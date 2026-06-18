@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.141
+// @version      0.3.142
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.141';
+  const SCRIPT_VERSION = '0.3.142';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -5541,7 +5541,13 @@
           });
           for (const [entryKey, entry] of logPairs(log)) {
             const eventKey = scanEventKey(type, entryKey);
-            if (seen.has(eventKey)) {
+            // Mugs dedupe ONLY against the rwth_mugs store (handled in
+            // buildScanPreview), never the global seen-set — so a mug that an
+            // earlier build trapped in the global set can still be re-pulled and
+            // backfilled. Gating mugs here would drop them before classification
+            // and permanently strand them out of the store. All other types gate
+            // on the global seen-set as usual.
+            if (type !== SCAN_LOG_TYPES.mugged && seen.has(eventKey)) {
               classified.push({ type: 'ignored', eventKey, reason: 'already imported' });
               continue;
             }
@@ -5771,7 +5777,15 @@
         if (m) oldWins.add(m[1]);
       }
     }
-    for (const k of (preview && preview.eventKeys || [])) seenKeys.add(k);
+    // Mug keys are intentionally excluded from the global seen-set: mugs dedupe
+    // against the rwth_mugs store only (see buildScanPreview + the scan loop).
+    // Writing them here is what previously trapped mugs as "already imported" on
+    // every rescan and stranded them out of the store at $0.
+    const mugKeyPrefix = `${SCAN_LOG_TYPES.mugged}:`;
+    for (const k of (preview && preview.eventKeys || [])) {
+      if (String(k).startsWith(mugKeyPrefix)) continue;
+      seenKeys.add(k);
+    }
     Store.set('rwth_seen_log_events', scanSeenStoreFromKeys([...seenKeys]));
     Store.set('rwth_seen_wins', [...oldWins]);
     Store.set('rwth_scan', []);
