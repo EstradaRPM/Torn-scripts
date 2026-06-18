@@ -32,7 +32,7 @@ const cats = {
 test('scan log constants include RW buy, sale, mug, and trade sources', () => {
   assert.strictEqual(P.SCAN_LOG_TYPES.auctionBuy, 4320);
   assert.strictEqual(P.SCAN_LOG_TYPES.itemMarketBuy, 1112);
-  assert.strictEqual(P.SCAN_LOG_TYPES.bazaarBuy, 1125);
+  assert.strictEqual(P.SCAN_LOG_TYPES.bazaarBuy, 1225);
   assert.strictEqual(P.SCAN_LOG_TYPES.auctionSale, 4322);
   assert.strictEqual(P.SCAN_LOG_TYPES.itemMarketSale, 1113);
   assert.strictEqual(P.SCAN_LOG_TYPES.bazaarSale, 1226);
@@ -48,13 +48,13 @@ test('scan log constants include RW buy, sale, mug, and trade sources', () => {
   );
 });
 
-test('selected scan log types keep the buys toggle scoped to auction wins', () => {
+test('selected scan log types cover all three buy sources when buys is on', () => {
   assert.deepStrictEqual(P.selectedScanLogTypes({
     buys: true,
     sales: false,
     trades: false,
     mugs: false,
-  }), [P.SCAN_LOG_TYPES.auctionBuy]);
+  }), [P.SCAN_LOG_TYPES.auctionBuy, P.SCAN_LOG_TYPES.itemMarketBuy, P.SCAN_LOG_TYPES.bazaarBuy]);
 });
 
 test('legacy item dictionary cache can still supply auction-win names', () => {

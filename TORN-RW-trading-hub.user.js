@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.135
+// @version      0.3.136
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.135';
+  const SCRIPT_VERSION = '0.3.136';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -370,7 +370,7 @@
   const SCAN_LOG_TYPES = {
     auctionBuy: 4320,
     itemMarketBuy: 1112,
-    bazaarBuy: 1125,
+    bazaarBuy: 1225,
     auctionSale: 4322,
     itemMarketSale: 1113,
     bazaarSale: 1226,
