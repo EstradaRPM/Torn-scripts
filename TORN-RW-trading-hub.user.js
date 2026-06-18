@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.134
+// @version      0.3.135
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.134';
+  const SCRIPT_VERSION = '0.3.135';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1657,25 +1657,52 @@
   // triggers a render; loading/error states render as HTML here, while the
   // ready (`ctx`) state emits an empty anchor div that render() mounts the
   // shared BadgeRenderer v2 two-tier card into post-innerHTML.
+  // TEMP diag (#itemmarket-load) — render the for-sale fetch outcome as a small
+  // readable block so an empty market side shows EXACTLY why (no query / HTTP
+  // status / API error code / count at each filter). Key is already redacted at
+  // capture; this only formats. Returns '' when no diag was captured.
+  function buildListingsDebugLine(diag) {
+    if (!diag || typeof diag !== 'object') return '';
+    const v = x => (x == null ? '∅' : String(x));
+    const parts = [
+      `FOR-SALE FETCH — ${v(diag.itemName)} id=${v(diag.itemId)}`,
+      `kind=${diag.isArmor ? 'armor' : 'weapon'} rarity=${v(diag.rarity)} bonus=${v(diag.bonus)} loadout=${(diag.wantLoadout && diag.wantLoadout.length) ? diag.wantLoadout.join('+') : '∅'}`,
+      `queried=${diag.queryable ? 'yes' : 'NO' + (diag.skipReason ? ' (' + diag.skipReason + ')' : '')}`,
+    ];
+    if (diag.queryable) {
+      parts.push(`url=${v(diag.url)}`);
+      parts.push(`http=${v(diag.httpStatus)} ${diag.httpOk ? 'ok' : 'NOT-ok'}`);
+      if (diag.apiErrorCode != null || diag.apiErrorMsg != null) {
+        parts.push(`API ERROR code=${v(diag.apiErrorCode)} msg=${v(diag.apiErrorMsg)}`);
+      }
+      parts.push(`listings raw=${v(diag.rawCount)} afterRarity=${v(diag.afterRarity)} afterLoadout=${v(diag.afterLoadout)}`);
+    }
+    if (diag.thrown) parts.push(`THREW: ${diag.thrown}`);
+    return `<textarea class="rwth-listings-debug-box" readonly spellcheck="false">${escapeAttr(parts.join('\n'))}</textarea>`;
+  }
+
   function buildPriceCheckPanel(item, state) {
     const s = state || {};
     if (s.loading) {
       return `<div class="rwth-price-panel rwth-tier-loading">⟳ checking prices…</div>`;
     }
+    const dbg = buildListingsDebugLine(s.listingsDebug);
     const askingLine = (s.askingCount && s.askingMedian != null)
       ? `<div class="rwth-price-math">${s.askingCount} for sale (typical ${fmtMoney(s.askingMedian)})</div>`
       : '';
     if (s.skipped === 'trash') {
       const which = s.bonusName ? ` (${escapeAttr(s.bonusName)})` : '';
-      return `<div class="rwth-price-panel rwth-tier-none">skipped — low-value bonus${which}</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">skipped — low-value bonus${which}${dbg}</div>`;
     }
     if (s.error) {
-      return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}${askingLine}</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">${escapeAttr(s.error)}${askingLine}${dbg}</div>`;
     }
     if (!s.ctx) {
-      return `<div class="rwth-price-panel rwth-tier-none">no comparable sales${askingLine}</div>`;
+      return `<div class="rwth-price-panel rwth-tier-none">no comparable sales${askingLine}${dbg}</div>`;
     }
-    return `<div class="rwth-price-panel rwth-pc-anchor" data-pc-id="${escapeAttr(item.id)}"></div>`;
+    // dbg is a SIBLING of the anchor here — renderTwoTierCard overwrites the
+    // anchor's innerHTML, so a box placed inside would be wiped on mount.
+    return `<div class="rwth-price-panel rwth-pc-anchor" data-pc-id="${escapeAttr(item.id)}"></div>${dbg}`;
   }
 
   function buildLedgerForm(mem) {
@@ -4852,6 +4879,9 @@
       }
     }
     await warmups;
+    // TEMP diag (#itemmarket-load) — carried into every panel state below so the
+    // for-sale fetch outcome is visible even when there are no comps at all.
+    const listingsDebug = (composite && composite.listingsDebug) || null;
     // Action math uses cleared sales only — asking is shown as a spread line.
     const comps        = (composite.cleared || []).map(compShape).filter(Boolean);
     const askingRawL   = composite.asking || [];
@@ -4868,7 +4898,7 @@
     const askingMedian = _median(askingShaped.map(c => c.price));
     const askingCount  = askingShaped.length;
     if (!comps.length) {
-      writePriceCheckResult(item.id, { error: 'no comp', askingMedian, askingCount });
+      writePriceCheckResult(item.id, { error: 'no comp', askingMedian, askingCount, listingsDebug });
       return;
     }
 
@@ -4949,6 +4979,7 @@
         widenedBase: Array.isArray(composite.widenedBase) ? composite.widenedBase.slice() : [],
         margins: resolved,
       },
+      listingsDebug,
     });
   }
 
@@ -6240,6 +6271,14 @@
         font: 10px/1.45 var(--rwth-font-mono); padding: 6px;
         white-space: pre; overflow: auto;
       }
+      /* TEMP diag (#itemmarket-load) — for-sale fetch readout in the price panel. */
+      .rwth-listings-debug-box {
+        width: 100%; min-height: 92px; resize: vertical; margin-top: 4px;
+        border: 1px solid var(--rwth-border); border-radius: 4px;
+        background: var(--rwth-bg-alt); color: var(--rwth-secondary);
+        font: 10px/1.4 var(--rwth-font-mono); padding: 5px;
+        white-space: pre; overflow: auto;
+      }
       .rwth-rarity {
         font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
         color: var(--rwth-bg); padding: 1px 5px; border-radius: 3px;
@@ -7150,21 +7189,51 @@
       if (inflight) return inflight;
       const promise = (async () => {
         let market = [];
+        // TEMP diag (#itemmarket-load) — record EXACTLY why the for-sale side is
+        // empty so the price-check panel can show it instead of silently
+        // blanking. Captures: whether we even queried, the redacted URL, the HTTP
+        // status, any API error code/msg, and the listing count at each filter
+        // stage. Key is redacted before it can ever reach the DOM.
+        const diag = {
+          itemName: (item && item.itemName) || null, itemId,
+          isArmor, rarity: rarity || null, bonus: bonus || null,
+          wantLoadout: wantLoadout.slice(),
+          queryable: false, skipReason: null, url: null,
+          httpStatus: null, httpOk: null,
+          apiErrorCode: null, apiErrorMsg: null,
+          rawCount: null, afterRarity: null, afterLoadout: null, thrown: null,
+        };
         try {
           const apiKey = (MEM.settings && MEM.settings.apiKey || '').trim();
           // Weapons require a resolved bonus title; armor needs only the item id.
           const queryable = itemId != null && (isArmor || !!bonus)
             && apiKey && !/^#+PDA-APIKEY#+$/.test(apiKey);
+          diag.queryable = !!queryable;
+          if (!queryable) {
+            diag.skipReason = itemId == null ? 'no item id'
+              : (!apiKey ? 'no API key'
+              : (/^#+PDA-APIKEY#+$/.test(apiKey) ? 'PDA key placeholder'
+              : (!isArmor && !bonus ? 'weapon has no resolved bonus title'
+              : 'unknown')));
+          }
           if (queryable) {
             const url = `${API_BASE}/v2/market/${itemId}/itemmarket?`
               + (isArmor ? '' : `bonus=${encodeURIComponent(bonus)}&`)
               + `limit=50&key=${encodeURIComponent(apiKey)}&comment=rwth-comps`;
+            diag.url = url.replace(/key=[^&]*/, 'key=[redacted]');
             const res = await fetch(url);
+            diag.httpStatus = res && res.status != null ? res.status : null;
+            diag.httpOk = !!(res && res.ok);
             const d   = await res.json();
+            if (d && d.error) {
+              diag.apiErrorCode = d.error.code != null ? d.error.code : null;
+              diag.apiErrorMsg  = d.error.error || d.error.message || null;
+            }
             if (d && !d.error && d.itemmarket && Array.isArray(d.itemmarket.listings)) {
               market = d.itemmarket.listings
                 .map(ListingsFetcher._shapeItemMarket)
                 .filter(Boolean);
+              diag.rawCount = market.length;
               // Weapons only: keep same-colour comps so a yellow (1-bonus) piece
               // is not anchored against pricier orange/red pieces that share the
               // same bonus. Armor is a single RW tier per item id, so its listings
@@ -7173,6 +7242,7 @@
                 market = market.filter(
                   l => (l.rarity || '').toLowerCase() === rarity);
               }
+              diag.afterRarity = market.length;
               // Full-loadout match (#327): keep only listings whose complete bonus
               // set — every name AND the count — equals the candidate's. Drops a
               // single-bonus piece from a 2-combo candidate's pool (and a 2-combo
@@ -7189,10 +7259,11 @@
                     && wantLoadout.every(n => got.includes(n));
                 });
               }
+              diag.afterLoadout = market.length;
             }
           }
-        } catch { market = []; }
-        const data = { market, bazaar: [] };
+        } catch (err) { market = []; diag.thrown = (err && err.message) || String(err); }
+        const data = { market, bazaar: [], debug: diag };
         ListingsFetcher._cache.set(key, { ts: now, data });
         return data;
       })().finally(() => {
@@ -8167,6 +8238,7 @@
         asking,
         listings,
         widenedBase,
+        listingsDebug: (listings && listings.debug) || null,
       };
     },
   };
