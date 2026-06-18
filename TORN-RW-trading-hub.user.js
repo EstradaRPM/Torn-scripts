@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.142
+// @version      0.3.143
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.142';
+  const SCRIPT_VERSION = '0.3.143';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1969,7 +1969,7 @@
       const mug = r.mug || {};
       const key = escapeAttr((r.eventKeys || []).join('|') || `mug-${idx}`);
       const checked = r.checked === false ? '' : ' checked';
-      const label = mug.attacker ? `Mug by ${mug.attacker}` : 'Mug';
+      const label = 'Mug';
       const dest = r.matchedId ? 'matched' : 'no sale match';
       return `<label class="rwth-scan-line rwth-scan-mug-line" data-scan-mug="${key}">
         <input type="checkbox" data-scan-mug-check${checked}>
@@ -2179,15 +2179,40 @@
       // finite soldTimestamp, in time order, accumulating (saleNet − buyPrice)
       // into a running total. Rows missing a sold stamp can't be placed on the
       // time axis, so they're excluded from the curve (still counted in totals).
-      const cumulativeProfit = sold
+      const soldEvents = sold
         .filter(it => fin(it.soldTimestamp) != null)
         .map(it => ({ t: fin(it.soldTimestamp), profit: realizedProfit(it) }))
+        .sort((a, b) => a.t - b.t);
+      const cumulativeProfit = soldEvents.reduce((acc, p) => {
+        const prev = acc.length ? acc[acc.length - 1].cumulative : 0;
+        acc.push({ t: p.t, cumulative: prev + p.profit });
+        return acc;
+      }, []);
+      // The realized curve the chart draws nets mug cash off the banked total so
+      // its endpoint — which anchors every forecast — lands on the same after-mug
+      // P/L as the headline card. Each mug folds in as a dated negative event
+      // (flat, item-agnostic); a mug missing a stamp clamps to the latest
+      // realized point so the full drag still lands. The sold-only
+      // cumulativeProfit above is what drives the pace, and stays untouched.
+      const mugFallbackT = soldEvents.length
+        ? soldEvents[soldEvents.length - 1].t : (fin(now) || 0);
+      const mugEvents = mugList
+        .map(m => {
+          const a = Number(m && m.amount);
+          if (!(Number.isFinite(a) && a > 0)) return null;
+          const mt = fin(m && m.timestamp);
+          return { t: mt != null ? mt : mugFallbackT, profit: -a };
+        })
+        .filter(Boolean);
+      const netRealizedSeries = soldEvents.concat(mugEvents)
         .sort((a, b) => a.t - b.t)
         .reduce((acc, p) => {
           const prev = acc.length ? acc[acc.length - 1].cumulative : 0;
           acc.push({ t: p.t, cumulative: prev + p.profit });
           return acc;
         }, []);
+      const netRealizedLast = netRealizedSeries.length
+        ? netRealizedSeries[netRealizedSeries.length - 1].cumulative : 0;
 
       // Forecast series for the next dashboard slice: realized points remain
       // saleNet-buyPrice; listed projections keep their concrete ask-buy detail,
@@ -2266,9 +2291,9 @@
         ...period,
         profit: Math.round(projectedDailyProfit * period.days),
       }));
-      let forecastTotal = lastRealized;
+      let forecastTotal = netRealizedLast;
       const profitProjection = {
-        realized: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative })),
+        realized: netRealizedSeries.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative })),
         projected: projectedProfit,
         clearDays: projectionClearDays,
         clearDaysSource: avgDaysToClear > 0 ? 'avg-clear' : 'fallback',
@@ -2282,7 +2307,7 @@
         pacedSoldCount,
         newestSaleAgeDays: newestSaleAgeDays == null ? null : round1(newestSaleAgeDays),
         periods: projectedPace,
-        series: cumulativeProfit.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative }))
+        series: netRealizedSeries.map(p => ({ kind: 'realized', t: p.t, cumulative: p.cumulative }))
           .concat(projectedProfit.map(p => {
             forecastTotal += p.profit;
             return {
