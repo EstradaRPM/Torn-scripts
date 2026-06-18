@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.136
+// @version      0.3.137
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.136';
+  const SCRIPT_VERSION = '0.3.137';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -383,12 +383,12 @@
   const LOG_TYPE_AUCTION_WIN = SCAN_LOG_TYPES.auctionBuy;
   const DEFAULT_SCAN_SOURCES = { buys: true, sales: true, trades: true, mugs: true };
   // Key-builder deep link. Keeps the user-selected log categories (logIds) and
-  // market scopes untouched; the only thing it adds is the torn section, which is
-  // required for /v2/torn/items (names) and /v2/torn/{uid}/itemdetails (the
-  // per-instance quality/bonuses/rarity the scan enriches each buy with). Without
-  // torn=items,itemdetails that endpoint returns error 16 and scanned rows come
-  // back with blank stats — that was the missing item-data scope.
-  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,log&logIds=88,182,11,94,18&market=auctionhouse,itemmarket&torn=items,itemdetails';
+  // market scopes; the torn section is required for /v2/torn/items (names) and
+  // /v2/torn/{uid}/itemdetails (the per-instance quality/bonuses/rarity the scan
+  // enriches each buy with). Without torn=items,itemdetails that endpoint returns
+  // error 16 and scanned rows come back with blank stats. logtypes is intentionally
+  // omitted — end users do not need the log-type catalogue for the scan.
+  const RWTH_API_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RWTH_LOG&user=basic,inventory,itemmarket,trade,trades,log&logIds=182,18,11,94,88&market=auctionhouse,auctionhouselisting,itemmarket,bazaar&torn=itemdetails,items';
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const MEM = {
@@ -741,18 +741,37 @@
     },
   };
 
-  // Pure: tie a parsed sell to one open held/listed ledger row. Matches by item
-  // name; when several rows share the name, the sell's bonus name disambiguates.
+  // Pure: tie a parsed sell to one open held/listed ledger row.
+  //
+  // A sale log carries the sold item's armoury uid — the per-instance id, not the
+  // shared itemid. RW weapons (DBK, Enfield, …) and their plain standard variants
+  // share a name and itemid but never a uid, so name-only matching wrongly closes
+  // a held RW row against a cheap non-RW sale (huge fake loss) and lets two
+  // same-name sales collide on one row so one of them never closes. When the uid
+  // is known we trust it over the name.
+  //
   // Returns null when nothing matches — the caller treats that as a historical
   // sale destined for Recent Transactions.
   function matchSell(sell, openPositions) {
     if (!sell || !Array.isArray(openPositions)) return null;
+    const isOpen = p => p && (p.status === 'held' || p.status === 'listed');
+    const sellUid = sell.uid != null ? String(sell.uid) : null;
+    // Instance-exact match first: only the row holding that exact armoury uid.
+    if (sellUid) {
+      const byUid = openPositions.find(p => isOpen(p) && p.uid != null && String(p.uid) === sellUid);
+      if (byUid) return byUid;
+    }
     const want = norm(sell.itemName);
     if (!want) return null;
-    const candidates = openPositions.filter(p =>
-      p && (p.status === 'held' || p.status === 'listed') &&
-      norm(p.itemName) === want);
+    let candidates = openPositions.filter(p => isOpen(p) && norm(p.itemName) === want);
     if (!candidates.length) return null;
+    // No uid match above means any same-name row with a *known, different* uid is a
+    // separate instance (e.g. the non-RW variant) — drop it. Rows with no recorded
+    // uid (older ledger entries) stay eligible so they still close by name.
+    if (sellUid) {
+      candidates = candidates.filter(p => p.uid == null);
+      if (!candidates.length) return null;
+    }
     if (candidates.length === 1) return candidates[0];
     if (sell.bonusName) {
       const wb = norm(sell.bonusName);
@@ -1143,9 +1162,10 @@
   }
 
   function saleFromLogEntry(entry, logType, itemNames) {
-    const parsed = SellParser.parse(logText(entry))[0];
-    if (parsed) return { ...parsed, timestamp: parsed.timestamp || logTimestampMs(entry) };
     const item = itemFromLogEntry(entry, itemNames);
+    const parsed = SellParser.parse(logText(entry))[0];
+    if (parsed) return { ...parsed, uid: item.uid, itemId: item.itemId,
+      timestamp: parsed.timestamp || logTimestampMs(entry) };
     const data = (entry && entry.data) || {};
     const text = logText(entry);
     const venue = logType === SCAN_LOG_TYPES.bazaarSale ? 'bazaar'
@@ -1161,6 +1181,8 @@
     const buyerM = text.match(/\bto\s+(\S+?)\s+(?:at\s+\$|for a total|\$)/i);
     return {
       itemName: item.itemName,
+      uid: item.uid,
+      itemId: item.itemId,
       bonusName: data.bonus || data.bonus_name || null,
       venue,
       buyer: firstText(data.buyer, data.buyer_name, buyerM && buyerM[1]) || null,
@@ -1347,6 +1369,7 @@
             saleMatchItems.push({
               id: stagedId,
               itemName: stagedHit.itemName,
+              uid: stagedHit.uid != null ? stagedHit.uid : null,
               status: 'held',
               bonuses: stagedHit.bonuses || [],
               buyTimestamp: stagedHit.buyTimestamp,
@@ -5635,6 +5658,7 @@
       newItems.push({
         id,
         itemId: hit.itemId != null ? hit.itemId : null,
+        uid: hit.uid != null ? hit.uid : null,
         itemName: hit.itemName || `Item #${hit.itemId}`,
         type: hit.type || 'weapon',
         category: hit.category || null,

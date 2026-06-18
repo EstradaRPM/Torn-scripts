@@ -311,6 +311,44 @@ test('simple RW trade becomes a buy; mixed trade stays review', () => {
   assert.strictEqual(mixed.type, 'review');
 });
 
+test('matchSell will not close a held row against a different-uid sale', () => {
+  const held = [{
+    id: 'held-rw', itemName: 'Enfield SA-80', uid: 111, status: 'held', bonuses: [],
+  }];
+  // Same name, different physical instance (the plain non-RW variant) -> no match.
+  assert.strictEqual(P.matchSell({ itemName: 'Enfield SA-80', uid: 222, saleNet: 5 }, held), null);
+  // Same uid -> closes the exact instance.
+  assert.strictEqual(
+    P.matchSell({ itemName: 'Enfield SA-80', uid: 111, saleNet: 90 }, held).id, 'held-rw');
+});
+
+test('matchSell still closes legacy rows with no recorded uid by name', () => {
+  const held = [{ id: 'legacy', itemName: 'Diamond Bladed Knife', status: 'listed', bonuses: [] }];
+  assert.strictEqual(
+    P.matchSell({ itemName: 'Diamond Bladed Knife', uid: 999 }, held).id, 'legacy');
+});
+
+test('buildScanPreview routes a non-RW variant sale to recent, not the held RW row', () => {
+  const buy = P.classifyLogEvent({
+    id: 'buy-rw',
+    timestamp: 1779280000,
+    data: { item: { id: 614, uid: 111, name: 'Diamond Bladed Knife' }, final_price: 75_000_000 },
+  }, P.SCAN_LOG_TYPES.auctionBuy, 'buy-rw', {}, cats);
+  // The user later sells a *standard* DBK (different uid) cheaply.
+  const sale = P.classifyLogEvent({
+    id: 'sale-nonrw',
+    timestamp: 1779372185,
+    data: { item: [{ id: 614, uid: 222, name: 'Diamond Bladed Knife' }], net: 18_000_000, buyer: 'Buyer' },
+  }, P.SCAN_LOG_TYPES.itemMarketSale, 'sale-nonrw', {}, cats);
+
+  const preview = P.buildScanPreview([buy, sale], { cats, items: [], transactions: [] });
+
+  assert.strictEqual(preview.buys.length, 1);
+  assert.strictEqual(preview.sales.length, 1);
+  // Must NOT attach the cheap non-RW sale to the held RW buy.
+  assert.strictEqual(preview.sales[0].matchedId, null);
+});
+
 test('mug events attach only when one sold row is clearly nearby', () => {
   const mug = P.classifyLogEvent({
     id: 'mug-1',
