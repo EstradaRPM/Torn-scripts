@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.144
+// @version      0.3.145
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.144';
+  const SCRIPT_VERSION = '0.3.145';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4405,7 +4405,7 @@
     // persist. No render() call: the DOM already shows the value, and the hit is
     // now the source of truth, so a close/reopen or reload rebuilds it intact.
     root.addEventListener('input', (e) => { syncScanEdit(e); syncScanPreviewEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); });
-    root.addEventListener('change', (e) => { syncScanEdit(e); syncScanPreviewEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); });
+    root.addEventListener('change', (e) => { syncScanEdit(e); syncScanPreviewEdit(e); syncScanSettings(e); syncAdvertiseEdit(e); syncKeyLock(e); syncLedgerRowEdit(e); syncSortSelect(e); persistSettingField(e); });
     // #340 — Enter commits the inline ask edit. A lone text input (not in a form)
     // does not blur on Enter by itself, so force the blur that fires `change`.
     root.addEventListener('keydown', (e) => {
@@ -4420,6 +4420,15 @@
         return;
       }
       if (e.key === 'Enter' && e.target.matches && e.target.matches('[data-ask-edit]')) {
+        e.preventDefault();
+        e.target.blur();
+      }
+      // Settings-tab single-line fields auto-save on Enter the same way they do
+      // on blur: a lone input outside a form does not blur on Enter by itself,
+      // so force the blur that fires `change` → persistSettingField. Textareas
+      // are excluded so Enter still inserts a newline in the list editors.
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.matches
+          && e.target.matches('[data-setting], [data-intel]')) {
         e.preventDefault();
         e.target.blur();
       }
@@ -4645,6 +4654,79 @@
       MEM.settings = { ...MEM.settings, scanBackTo: el.value || '' };
       Store.set('rwth_settings', MEM.settings);
     }
+  }
+
+  // Settings-tab fields auto-save on blur (and on Enter, forced to blur above),
+  // so the user never has to scroll past the open sections to find the Save
+  // button. Each field persists itself in place — no render(), so typing and
+  // scroll position are never interrupted — then flashes an inline "✓ Saved"
+  // beside it. The bottom Save button still does the full collect + refresh +
+  // re-render as a belt-and-suspenders. Scopes to Settings only: hub/Advertise
+  // fields carry data-adv-* and are handled by syncAdvertiseEdit.
+  function persistSettingField(e) {
+    const el = e.target;
+    if (!el || !el.matches) return;
+    let saved = false;
+    if (el.matches('[data-setting]')) {
+      const key = el.dataset.setting;
+      const val = el.type === 'checkbox' ? el.checked : el.value;
+      MEM.settings = { ...MEM.settings, [key]: val };
+      Store.set('rwth_settings', MEM.settings);
+      saved = true;
+    } else if (el.matches('[data-intel]')) {
+      const path = el.dataset.intel;
+      const val  = el.type === 'checkbox' ? el.checked : el.value;
+      const next = {
+        enabled:  { ...MEM.intel.enabled },
+        mugBuffer:    MEM.intel.mugBuffer,
+        marginTarget: MEM.intel.marginTarget,
+        qualityClampDefault: MEM.intel.qualityClampDefault,
+        excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
+        bonusChangeDates: { ...(MEM.intel.bonusChangeDates || {}) },
+        similarBases: (MEM.intel.similarBases || []).map(c => (c || []).slice()),
+      };
+      if (path === 'enabled.auction')          next.enabled.auction = Boolean(val);
+      else if (path === 'enabled.ledger')      next.enabled.ledger  = Boolean(val);
+      else if (path === 'qualityClampDefault') next.qualityClampDefault = Boolean(val);
+      else if (path === 'mugBuffer')    next.mugBuffer    = Number(val) || 0;
+      else if (path === 'marginTarget') next.marginTarget = Number(val) || 0;
+      MEM.intel = next;
+      Store.set('rwth_intel_settings', next);
+      AuctionScanner.refresh();
+      saved = true;
+    } else if (el.id === 'rwth-intel-trash') {
+      MEM.intel = { ...MEM.intel, excludedBonuses: parseTrashList(el.value) };
+      Store.set('rwth_intel_settings', MEM.intel);
+      saved = true;
+    } else if (el.id === 'rwth-intel-bonus-change-dates') {
+      MEM.intel = { ...MEM.intel, bonusChangeDates: parseBonusChangeDates(el.value, BONUS_CHANGE_DATES_SEED) };
+      Store.set('rwth_intel_settings', MEM.intel);
+      saved = true;
+    } else if (el.id === 'rwth-intel-similar-bases') {
+      MEM.intel = { ...MEM.intel, similarBases: parseSimilarBases(el.value, SIMILAR_BASES_SEED) };
+      Store.set('rwth_intel_settings', MEM.intel);
+      saved = true;
+    }
+    if (saved) flashFieldSaved(el);
+  }
+
+  // Flash a small green "✓ Saved" inside the field that just auto-saved, then
+  // fade it after a beat. Re-saving the same field restarts the timer.
+  function flashFieldSaved(el) {
+    const field = el.closest && el.closest('.rwth-field');
+    if (!field) return;
+    let tag = field.querySelector('.rwth-field-saved');
+    if (!tag) {
+      tag = document.createElement('span');
+      tag.className = 'rwth-field-saved';
+      field.appendChild(tag);
+    }
+    tag.textContent = '✓ Saved';
+    tag.classList.add('rwth-field-saved-show');
+    clearTimeout(tag._hideTimer);
+    tag._hideTimer = setTimeout(() => {
+      tag.classList.remove('rwth-field-saved-show');
+    }, 1600);
   }
 
   // Collect every settings input from the DOM, persist, re-render, then flash
@@ -6295,6 +6377,12 @@
         opacity: 0; transition: opacity .15s ease-out;
       }
       .rwth-settings-status.rwth-saved-show { opacity: 1; }
+      .rwth-field-saved {
+        display: block; margin-top: 4px;
+        font: 700 11px var(--rwth-font-mono); color: var(--rwth-accent);
+        opacity: 0; transition: opacity .15s ease-out;
+      }
+      .rwth-field-saved.rwth-field-saved-show { opacity: 1; }
       .rwth-key-test { display: flex; align-items: center; gap: var(--rwth-gap-sm); flex-wrap: wrap; }
       .rwth-key-test-status { font: 600 11px var(--rwth-font-mono); color: var(--rwth-muted); }
       .rwth-key-test-status.rwth-key-test-ok { color: var(--rwth-accent); }
