@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.149
+// @version      0.3.150
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.149';
+  const SCRIPT_VERSION = '0.3.150';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -764,22 +764,27 @@
     if (!sell || !Array.isArray(openPositions)) return null;
     const isOpen = p => p && (p.status === 'held' || p.status === 'listed');
     const sellUid = sell.uid != null ? String(sell.uid) : null;
-    // Instance-exact match first: only the row holding that exact armoury uid.
+    // The armoury uid is the only unequivocal key. RW weapons (DBK, Enfield, …)
+    // and their plain standard variants share a name + itemid but never a uid,
+    // and the sale log alone carries no rarity/bonus to tell them apart — so a
+    // name match on a uid-bearing sale is a guess that wrongly closes a held RW
+    // row against a cheap non-RW sale (the −100% phantom loss). When the sale
+    // names its instance we therefore match THAT instance and nothing else: no
+    // uid hit means the sold item isn't a tracked row, so it routes to Recent
+    // Transactions and the user reconciles any pre-uid / hand-entered row via
+    // the Edit-item status control. Auction wins (log 4320) always supply the
+    // uid, so every scanned row closes cleanly; only legacy uid-less rows opt
+    // out of auto-close, which is exactly the unsafe guess we want to drop.
     if (sellUid) {
-      const byUid = openPositions.find(p => isOpen(p) && p.uid != null && String(p.uid) === sellUid);
-      if (byUid) return byUid;
+      return openPositions.find(p =>
+        isOpen(p) && p.uid != null && String(p.uid) === sellUid) || null;
     }
+    // No uid on the sale at all (older logs / manual entry): the instance can't
+    // be identified, so fall back to name (+ bonus tiebreak) as before.
     const want = norm(sell.itemName);
     if (!want) return null;
-    let candidates = openPositions.filter(p => isOpen(p) && norm(p.itemName) === want);
+    const candidates = openPositions.filter(p => isOpen(p) && norm(p.itemName) === want);
     if (!candidates.length) return null;
-    // No uid match above means any same-name row with a *known, different* uid is a
-    // separate instance (e.g. the non-RW variant) — drop it. Rows with no recorded
-    // uid (older ledger entries) stay eligible so they still close by name.
-    if (sellUid) {
-      candidates = candidates.filter(p => p.uid == null);
-      if (!candidates.length) return null;
-    }
     if (candidates.length === 1) return candidates[0];
     if (sell.bonusName) {
       const wb = norm(sell.bonusName);

@@ -741,6 +741,26 @@ test('matchSell ignores already-sold rows', () => {
   assert.strictEqual(matchSell({ itemName: 'Riot Body' }, [sold]), null);
 });
 
+// uid is the unequivocal key: a uid-bearing sale closes only its exact instance.
+test('matchSell closes the held row holding the sold uid', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  const held = { id: 'h2', itemName: 'Enfield SA-80', status: 'held', uid: '111', bonuses: [] };
+  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', uid: '111' }, [held]).id, 'h2');
+});
+
+// The reported bug: a non-RW sale (its own uid) must NOT name-fall-back onto a
+// same-name held RW row — whether that row carries a different uid or none.
+test('matchSell never name-matches a uid-bearing sale onto a different/uid-less row', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  const rwWithUid = { id: 'r1', itemName: 'Enfield SA-80', status: 'held', uid: '111',
+                      rarity: 'orange', bonuses: [], buyPrice: 80000000 };
+  const rwNoUid   = { id: 'r2', itemName: 'Enfield SA-80', status: 'held', uid: null,
+                      rarity: 'orange', bonuses: [], buyPrice: 80000000 };
+  const nonRwSale = { itemName: 'Enfield SA-80', uid: '999', saleNet: 250000 };
+  assert.strictEqual(matchSell(nonRwSale, [rwWithUid]), null);
+  assert.strictEqual(matchSell(nonRwSale, [rwNoUid]), null);
+});
+
 // Every non-duplicate sale posts to Recent Transactions (matched ones also
 // close their ledger row); duplicates are already logged and skipped.
 test('summarizeSells counts parsed / matched / duplicate / recent', () => {
