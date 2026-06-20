@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.150
+// @version      0.3.151
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.150';
+  const SCRIPT_VERSION = '0.3.151';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -760,31 +760,64 @@
   //
   // Returns null when nothing matches — the caller treats that as a historical
   // sale destined for Recent Transactions.
+  // A name match that would realize a loss worse than this is treated as the
+  // non-RW phantom (a cheap standard-variant sale colliding with a held RW row),
+  // not a real sale of that row. RW items — even dumped at a loss — clear for a
+  // meaningful fraction of cost; the standard variant sells for a sliver of it.
+  // 0.2 ⇒ refuse to auto-close on an implied loss steeper than ~80%.
+  const SALE_MATCH_MIN_RATIO = 0.2;
+
+  // Pure: tie a parsed sell to one open held/listed ledger row, across all four
+  // venues (auction / item market / bazaar / trade).
+  //
+  // RW weapons (DBK, Enfield, …) and their plain standard variants share a name
+  // + itemid but never an armoury uid, and the sale log alone carries no
+  // rarity/bonus to separate them. So matching has two lines of defence:
+  //
+  //   1. uid — the unequivocal key. If the sale names an armoury instance we
+  //      hold, that row wins outright. If it names one we DON'T hold, any
+  //      same-name row with a known *different* uid is provably a separate item
+  //      and is dropped; only rows we can't identify (uid-less legacy / hand-
+  //      entered) stay eligible. Auction wins always carry the uid; trades now
+  //      do too; item-market/bazaar carry it when the log provides it.
+  //
+  //   2. value guard — for any match that falls through to name (a uid-less sale
+  //      or a uid-less candidate), refuse to close a row when the proceeds are a
+  //      tiny fraction of its cost. That is the −100% phantom, never a real sale
+  //      of a multi-million RW item. A refused row simply stays open for manual
+  //      close (Edit-item status); the sale still posts to Recent Transactions.
+  //
+  // Returns null when nothing matches — caller treats that as a historical sale
+  // destined for Recent Transactions.
   function matchSell(sell, openPositions) {
     if (!sell || !Array.isArray(openPositions)) return null;
     const isOpen = p => p && (p.status === 'held' || p.status === 'listed');
     const sellUid = sell.uid != null ? String(sell.uid) : null;
-    // The armoury uid is the only unequivocal key. RW weapons (DBK, Enfield, …)
-    // and their plain standard variants share a name + itemid but never a uid,
-    // and the sale log alone carries no rarity/bonus to tell them apart — so a
-    // name match on a uid-bearing sale is a guess that wrongly closes a held RW
-    // row against a cheap non-RW sale (the −100% phantom loss). When the sale
-    // names its instance we therefore match THAT instance and nothing else: no
-    // uid hit means the sold item isn't a tracked row, so it routes to Recent
-    // Transactions and the user reconciles any pre-uid / hand-entered row via
-    // the Edit-item status control. Auction wins (log 4320) always supply the
-    // uid, so every scanned row closes cleanly; only legacy uid-less rows opt
-    // out of auto-close, which is exactly the unsafe guess we want to drop.
+    // 1a. Exact instance — unequivocal, closes even at a steep real loss.
     if (sellUid) {
-      return openPositions.find(p =>
-        isOpen(p) && p.uid != null && String(p.uid) === sellUid) || null;
+      const exact = openPositions.find(p =>
+        isOpen(p) && p.uid != null && String(p.uid) === sellUid);
+      if (exact) return exact;
     }
-    // No uid on the sale at all (older logs / manual entry): the instance can't
-    // be identified, so fall back to name (+ bonus tiebreak) as before.
     const want = norm(sell.itemName);
     if (!want) return null;
-    const candidates = openPositions.filter(p => isOpen(p) && norm(p.itemName) === want);
+    let candidates = openPositions.filter(p => isOpen(p) && norm(p.itemName) === want);
     if (!candidates.length) return null;
+    // 1b. Sale named an instance we don't hold → drop provably-different uids.
+    if (sellUid) {
+      candidates = candidates.filter(p => p.uid == null);
+      if (!candidates.length) return null;
+    }
+    // 2. Value guard: drop candidates a near-zero-proceeds sale couldn't be.
+    const net = Number(sell.saleNet);
+    if (Number.isFinite(net) && net > 0) {
+      candidates = candidates.filter(p => {
+        const buy = Number(p.buyPrice);
+        if (!Number.isFinite(buy) || buy <= 0) return true; // unknown cost — can't misjudge
+        return net >= buy * SALE_MATCH_MIN_RATIO;
+      });
+      if (!candidates.length) return null;
+    }
     if (candidates.length === 1) return candidates[0];
     if (sell.bonusName) {
       const wb = norm(sell.bonusName);
@@ -1312,6 +1345,8 @@
       eventKeys,
       sell: {
         itemName: item.itemName,
+        itemId: item.itemId,
+        uid: item.uid,
         bonusName: null,
         venue: 'trade',
         buyer: null,

@@ -741,24 +741,40 @@ test('matchSell ignores already-sold rows', () => {
   assert.strictEqual(matchSell({ itemName: 'Riot Body' }, [sold]), null);
 });
 
-// uid is the unequivocal key: a uid-bearing sale closes only its exact instance.
-test('matchSell closes the held row holding the sold uid', () => {
+// uid is the unequivocal key: a uid-bearing sale closes its exact instance,
+// even when the realized number is a steep (but real) loss.
+test('matchSell closes the held row holding the sold uid, even at a big loss', () => {
   const { matchSell } = globalThis.__RwthPure;
-  const held = { id: 'h2', itemName: 'Enfield SA-80', status: 'held', uid: '111', bonuses: [] };
-  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', uid: '111' }, [held]).id, 'h2');
+  const held = { id: 'h2', itemName: 'Enfield SA-80', status: 'held', uid: '111',
+                 buyPrice: 80000000, bonuses: [] };
+  assert.strictEqual(
+    matchSell({ itemName: 'Enfield SA-80', uid: '111', saleNet: 1000 }, [held]).id, 'h2');
 });
 
-// The reported bug: a non-RW sale (its own uid) must NOT name-fall-back onto a
-// same-name held RW row — whether that row carries a different uid or none.
-test('matchSell never name-matches a uid-bearing sale onto a different/uid-less row', () => {
+// The reported bug: a cheap non-RW sale must NOT close a held RW row — whether
+// the sale carries its own uid, a different uid, or none at all (any venue).
+test('matchSell never closes a held RW row from a cheap non-RW sale', () => {
   const { matchSell } = globalThis.__RwthPure;
   const rwWithUid = { id: 'r1', itemName: 'Enfield SA-80', status: 'held', uid: '111',
                       rarity: 'orange', bonuses: [], buyPrice: 80000000 };
   const rwNoUid   = { id: 'r2', itemName: 'Enfield SA-80', status: 'held', uid: null,
                       rarity: 'orange', bonuses: [], buyPrice: 80000000 };
-  const nonRwSale = { itemName: 'Enfield SA-80', uid: '999', saleNet: 250000 };
-  assert.strictEqual(matchSell(nonRwSale, [rwWithUid]), null);
-  assert.strictEqual(matchSell(nonRwSale, [rwNoUid]), null);
+  // sale carries a different uid (item market / bazaar with uid)
+  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', uid: '999', saleNet: 250000 }, [rwWithUid]), null);
+  // sale carries a uid, held row is uid-less legacy → value guard catches it
+  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', uid: '999', saleNet: 250000 }, [rwNoUid]), null);
+  // sale carries NO uid at all (a venue whose log omits it) → value guard catches it
+  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', saleNet: 250000 }, [rwNoUid]), null);
+});
+
+// A real sale (plausible proceeds) still auto-closes a uid-less legacy row.
+test('matchSell auto-closes a uid-less legacy row when the proceeds are plausible', () => {
+  const { matchSell } = globalThis.__RwthPure;
+  const legacy = { id: 'g1', itemName: 'Enfield SA-80', status: 'held', uid: null,
+                   bonuses: [], buyPrice: 80000000 };
+  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', uid: '111', saleNet: 90000000 }, [legacy]).id, 'g1');
+  // a uid-less sale (no uid either side) with plausible value also closes it
+  assert.strictEqual(matchSell({ itemName: 'Enfield SA-80', saleNet: 70000000 }, [legacy]).id, 'g1');
 });
 
 // Every non-duplicate sale posts to Recent Transactions (matched ones also
