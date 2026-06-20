@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.146
+// @version      0.3.147
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.146';
+  const SCRIPT_VERSION = '0.3.147';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -4302,8 +4302,8 @@
             <span id="rwth-version">v${SCRIPT_VERSION}</span>
           </div>
           <div id="rwth-header-actions">
-            <button id="rwth-max" data-action="maximize" aria-label="Toggle full screen" title="Toggle full screen">⛶</button>
-            <button id="rwth-close" data-action="close" aria-label="Close" title="Close">×</button>
+            <button id="rwth-max" data-action="maximize" aria-label="Toggle full screen" title="Toggle full screen"><span class="rwth-ico-expand"></span></button>
+            <button id="rwth-close" data-action="close" aria-label="Close" title="Close"><span class="rwth-ico-line"></span></button>
           </div>
         </header>
         <nav id="rwth-tabs">
@@ -6262,14 +6262,34 @@
       }
       #rwth-title { font: 700 13px var(--rwth-font-ui); color: var(--rwth-accent); letter-spacing: .3px; }
       #rwth-version { font: 10px var(--rwth-font-mono); color: var(--rwth-secondary); margin-left: 8px; }
-      #rwth-header-actions { display: flex; align-items: center; gap: 6px; }
+      #rwth-header-actions { display: flex; align-items: stretch; gap: 2px; }
+      /* Big square tap targets — the old font glyphs were near-unhittable on
+         mobile. Both icons are drawn in CSS at a matched 2px stroke and, crucially,
+         share one low baseline (align-items: flex-end + equal padding-bottom): the
+         close is the panel's "floor" bar (sits low, so it reads as "drop down"),
+         the expand is that same bar grown into a full frame. This is the Windows
+         titlebar min/max idiom, so the pair reads as one family rather than two
+         clashing glyphs. The -4px margin keeps the 40px hit area from bloating the
+         header while letting the icons ride its bottom edge. */
       #rwth-max, #rwth-close {
-        background: none; border: none; color: var(--rwth-secondary);
-        cursor: pointer; line-height: 1; padding: 0;
+        display: flex; align-items: flex-end; justify-content: center;
+        width: 40px; height: 40px; margin: -4px 0; padding: 0 0 10px;
+        background: none; border: none; cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
       }
-      #rwth-close { font-size: 18px; }
-      #rwth-max { font-size: 14px; }
-      #rwth-max:hover, #rwth-close:hover { color: var(--rwth-accent); }
+      /* Torn-style solid minimize line, anchored low (still closes — matched look). */
+      .rwth-ico-line {
+        display: block; width: 16px; height: 2px;
+        background: var(--rwth-secondary); border-radius: 1px;
+      }
+      /* Full-screen toggle: square outline whose bottom edge lands on the line's
+         baseline, same stroke weight so the two stay a uniform set. */
+      .rwth-ico-expand {
+        display: block; width: 13px; height: 13px;
+        border: 2px solid var(--rwth-secondary); border-radius: 2px;
+      }
+      #rwth-close:hover .rwth-ico-line, #rwth-close:active .rwth-ico-line { background: var(--rwth-accent); }
+      #rwth-max:hover .rwth-ico-expand, #rwth-max:active .rwth-ico-expand { border-color: var(--rwth-accent); }
 
       #rwth-tabs { display: flex; border-bottom: 1px solid var(--rwth-border); }
       .rwth-tab {
