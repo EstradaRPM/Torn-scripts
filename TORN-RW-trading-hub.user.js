@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.147
+// @version      0.3.148
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.147';
+  const SCRIPT_VERSION = '0.3.148';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -414,6 +414,10 @@
         // (it used to be its own always-open section), so it starts open.
         advImagesAdv: true, advOutputs: false,
         saleLog: true, analytics: true,
+        // Ledger dashboard charts drawer (cards + hero + analytics) folds by
+        // default so the spreadsheet rows sit above the fold; the compact
+        // summary strip stays visible.
+        dashCharts: true,
         // Settings-tab sections (#311). "Advanced lists" starts folded.
         setAccount: false, setReach: false,
         setPricing: false, setAdvanced: true, setDiag: false,
@@ -1557,93 +1561,119 @@
     biggestPl: (a, b) => cmpNullsLast(rowPl(a),       rowPl(b),       -1),
   };
 
-  // Line 2 of a row: the lifecycle strip. A fixed-cell CSS grid (buy / ask /
-  // net / roi / age) so every figure lands in the same column down the list.
-  // Legs the RowModel leaves null (held has no ask/net; listed has no net)
-  // render as a dimmed em-dash so the strip reads consistently across statuses.
-  function rowStrip(m, id) {
-    const cell = (k, v, cls) =>
-      `<span class="rwth-cell${v == null ? ' rwth-cell-empty' : ''}${cls ? ' ' + cls : ''}">`
-      + `<span class="rwth-cell-k">${k}</span>`
-      + `<span class="rwth-cell-v">${v == null ? '—' : v}</span></span>`;
-    // Aging severity colors the age cell so idle capital separates from fresh
-    // stock; ok is the neutral default (no class).
-    const ageCls = m.agingLevel === 'amber' ? 'rwth-cell-amber'
-      : m.agingLevel === 'red' ? 'rwth-cell-red' : '';
-    return `<div class="rwth-row-strip">`
-      + cell('buy', m.buy == null ? null : fmtMoney(m.buy))
-      + askCell(m, id)
-      + cell('net', m.net == null ? null : fmtMoney(m.net))
-      + roiCell(m)
-      + cell('age', m.age == null ? null : m.age + 'd', ageCls)
-      + `</div>`;
+  // Spreadsheet column model. Each status shows only the legs it actually has,
+  // so dead em-dash columns never crowd the row and the freed width goes to live
+  // figures at 360px. `buy` is always the first numeric column so the order does
+  // not shift when the status filter changes. The header (buildLedgerHeader) and
+  // the per-row cells (rowCells) both read this map, so labels and values can
+  // never drift out of column. The active *filter* picks the set, not each item's
+  // own status, so every row under one filter shares one grid (the "all" view
+  // uses a lowest-common set since ask/net vary across statuses).
+  const COLUMN_SETS = {
+    held:   ['buy', 'ask', 'age'],          // ask column = one-click "list"
+    listed: ['buy', 'ask', 'roi'],          // ask column = inline price input
+    sold:   ['buy', 'net', 'roi', 'age'],
+    all:    ['buy', 'roi', 'age'],
+  };
+  // Header label for a column under a status. Held's ask column is the one-click
+  // list action, so it reads "list" there rather than "ask".
+  function colLabel(col, status) {
+    if (col === 'ask' && status === 'held') return 'list';
+    return col;
   }
 
-  // #340 — the ask cell carries the row's two highest-frequency edits inline, so
-  // re-pricing and advancing stock never need an expand. A listed row renders its
-  // ask as an in-place input (commits listPrice on blur/Enter via Ledger.update,
-  // the same path the Advertise tab uses); a held row, which has no ask yet,
-  // renders a one-click "list" button (Ledger.markListed) in the same slot. Both
-  // are tagged data-row-ctl so the row-toggle handler ignores their clicks and
-  // does not collapse the row. Sold/other rows keep the static value.
-  function askCell(m, id) {
+  // A label-less figure cell for the row grid; the column name now lives once in
+  // the header row, so the figures stay lean and align down each column. Null
+  // legs render the dimmed em-dash. Money is compact (fmtCompactMoney) so b/m/k
+  // values never clip in a narrow track at panel width.
+  function valCell(v, cls) {
+    return `<span class="rwth-cell-v${v == null ? ' rwth-cell-empty' : ''}${cls ? ' ' + cls : ''}">`
+      + `${v == null ? '—' : v}</span>`;
+  }
+
+  // #340 — the ask column carries the row's two highest-frequency edits inline,
+  // so re-pricing and advancing stock never need an expand. A listed row renders
+  // its ask as an in-place input (commits listPrice on blur/Enter via
+  // Ledger.update, the same path the Advertise tab uses); a held row renders a
+  // one-click "list" button (Ledger.markListed). Both are tagged data-row-ctl so
+  // the row-toggle handler ignores their clicks. Sold/other rows keep the value.
+  function askCellV(m, id) {
     if (m.status === 'held') {
-      return `<span class="rwth-cell rwth-cell-ctl">`
-        + `<span class="rwth-cell-k">ask</span>`
+      return `<span class="rwth-cell-v rwth-cell-ctl">`
         + `<button class="rwth-cell-btn" type="button" data-action="mark-listed" data-row-ctl`
         + ` data-id="${escapeAttr(id)}">list</button></span>`;
     }
     if (m.status === 'listed') {
       const v = m.ask == null ? '' : m.ask;
-      return `<span class="rwth-cell rwth-cell-ctl">`
-        + `<span class="rwth-cell-k">ask</span>`
+      return `<span class="rwth-cell-v rwth-cell-ctl">`
         + `<input class="rwth-ask-edit" type="text" inputmode="numeric" data-ask-edit data-row-ctl`
         + ` data-id="${escapeAttr(id)}" value="${escapeAttr(v)}" aria-label="ask price"></span>`;
     }
-    return `<span class="rwth-cell${m.ask == null ? ' rwth-cell-empty' : ''}">`
-      + `<span class="rwth-cell-k">ask</span>`
-      + `<span class="rwth-cell-v">${m.ask == null ? '—' : fmtMoney(m.ask)}</span></span>`;
+    return valCell(m.ask == null ? null : fmtCompactMoney(m.ask));
   }
 
   // The ROI cell, rendered so hope never reads like banked money: a projected
   // (listed) ROI is tilde-prefixed and muted (~+47%); a realized (sold) ROI is
-  // solid and P/L-colored (+80%). A below-cost listed ask gets a loud,
-  // distinct marker so a guaranteed loss never reads like a small win. Null
-  // ROI (no buy basis or missing leg) renders the dimmed em-dash like any
-  // not-set leg.
-  function roiCell(m) {
-    if (m.roiPct == null) {
-      return `<span class="rwth-cell rwth-cell-empty">`
-        + `<span class="rwth-cell-k">roi</span>`
-        + `<span class="rwth-cell-v">—</span></span>`;
-    }
+  // solid and P/L-colored (+80%). A below-cost listed ask gets a loud, distinct
+  // marker so a guaranteed loss never reads like a small win. Null ROI renders
+  // the dimmed em-dash like any not-set leg.
+  function roiCellV(m) {
+    if (m.roiPct == null) return valCell(null);
     const pct = Math.round(m.roiPct * 100);
     const body = (pct >= 0 ? '+' : '') + pct + '%';
-    if (m.belowCost) {
-      return `<span class="rwth-cell rwth-cell-belowcost">`
-        + `<span class="rwth-cell-k">roi</span>`
-        + `<span class="rwth-cell-v">! ${body}</span></span>`;
-    }
-    if (m.roiKind === 'projected') {
-      return `<span class="rwth-cell">`
-        + `<span class="rwth-cell-k">roi</span>`
-        + `<span class="rwth-cell-v rwth-roi-projected">~${body}</span></span>`;
-    }
+    if (m.belowCost) return `<span class="rwth-cell-v rwth-cell-belowcost">! ${body}</span>`;
+    if (m.roiKind === 'projected') return `<span class="rwth-cell-v rwth-roi-projected">~${body}</span>`;
     const pl = pct >= 0 ? 'rwth-roi-pos' : 'rwth-roi-neg';
-    return `<span class="rwth-cell">`
-      + `<span class="rwth-cell-k">roi</span>`
-      + `<span class="rwth-cell-v rwth-roi ${pl}">${body}</span></span>`;
+    return `<span class="rwth-cell-v rwth-roi ${pl}">${body}</span>`;
+  }
+
+  // One row's figure cells for the active status's column set — label-less and in
+  // the same order as the header. Reads the RowModel projection `m`; legs the
+  // model leaves null render the em-dash via valCell.
+  function rowCells(m, id, status) {
+    // Aging severity colors the age cell so idle capital separates from fresh
+    // stock; ok is the neutral default (no class).
+    const ageCls = m.agingLevel === 'amber' ? 'rwth-cell-amber'
+      : m.agingLevel === 'red' ? 'rwth-cell-red' : '';
+    const cols = COLUMN_SETS[status] || COLUMN_SETS.all;
+    return cols.map(col => {
+      switch (col) {
+        case 'buy': return valCell(m.buy == null ? null : fmtCompactMoney(m.buy));
+        case 'ask': return askCellV(m, id);
+        case 'net': return valCell(m.net == null ? null : fmtCompactMoney(m.net));
+        case 'roi': return roiCellV(m);
+        case 'age': return valCell(m.age == null ? null : m.age + 'd', ageCls);
+        default:    return valCell(null);
+      }
+    }).join('');
+  }
+
+  // The column-label header — names each column ONCE so the figures below stay
+  // label-less and the tab reads as a real ledger. Shares the per-status grid
+  // track (rwth-cols-<status>) with every row so headers and values line up down
+  // each column. Sorting stays on the bar's sort control.
+  function buildLedgerHeader(status) {
+    const st = COLUMN_SETS[status] ? status : 'all';
+    return `<div class="rwth-thead rwth-cols-${st}">`
+      + `<span class="rwth-th rwth-th-name">item</span>`
+      + COLUMN_SETS[st].map(col => `<span class="rwth-th">${colLabel(col, st)}</span>`).join('')
+      + `</div>`;
   }
 
   function buildLedgerRow(item, expanded, ctx) {
     const c = ctx || {};
     const bonus = fmtBonuses(item);
     const model = RowModel.forItem(item, c.now || Date.now());
-    const head = `<div class="rwth-row-head" data-row-toggle="${item.id}">
+    // The active filter's column set drives the grid, so every row under one
+    // filter shares one track (the "all" view falls back to the common set).
+    const status = COLUMN_SETS[c.colStatus] ? c.colStatus : 'all';
+    // One-line grid row: a truncating name cell (name + bonus + rarity, ellipsed
+    // when narrow but kept in the markup) then the status-driven figure cells.
+    const head = `<div class="rwth-row-head rwth-cols-${status}" data-row-toggle="${item.id}">
         <span class="rwth-row-name">${escapeAttr(item.itemName)}${
           bonus ? ` <span class="rwth-row-bonus">${escapeAttr(bonus)}</span>` : ''} ${
           rarityChip(item.rarity)}</span>
-        ${rowStrip(model, item.id)}
+        ${rowCells(model, item.id, status)}
       </div>`;
     if (!expanded) return `<div class="rwth-row">${head}</div>`;
     const ledgerIntelOn = c.intelLedger !== false;
@@ -2715,16 +2745,37 @@
     const projectionView = buildProjectionView(s.profitProjection, ui.projectionPeriod, now);
     const projectionOpen = !!ui.projectionPanelOpen;
 
+    // Compact always-on summary strip so the spreadsheet rows sit above the fold.
+    // P/L and capital use compact money to stay on one line at 360px; the cards +
+    // hero + analytics live in a drawer that still RENDERS (so the pure chart
+    // tests keep matching) but hides when folded. Folded by default via the
+    // dashCharts collapse key.
+    const csigned = n => (n >= 0 ? '+' : '') + fmtCompactMoney(n);
+    const chartsOpen = !!(ui.collapsed && ui.collapsed.dashCharts === false);
+    const stripBits = [
+      `<span class="rwth-dash-stat">P/L <b class="${cls(s.realized)}">${csigned(s.realized)}</b></span>`,
+      `<span class="rwth-dash-stat">Cap <b>${fmtCompactMoney(s.capitalDeployed)}</b></span>`,
+    ];
+    if (s.soldCount) stripBits.push(`<span class="rwth-dash-stat">${s.winRate}% win</span>`);
+    if (s.mugLossTotal > 0) stripBits.push(`<span class="rwth-dash-stat">mugs <b class="rwth-roi-neg">${fmtCompactMoney(-s.mugLossTotal)}</b></span>`);
+
     return `<div class="rwth-dash">
-      <div class="rwth-stats">
-        ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
-        ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
-        ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
-        ${card('Mug losses', s.mugLossTotal > 0 ? fmtMoney(-s.mugLossTotal) : fmtMoney(0), mugSub, s.mugLossTotal > 0 ? 'rwth-roi-neg' : '')}
+      <div class="rwth-dash-strip">
+        <div class="rwth-dash-stats">${stripBits.join('')}</div>
+        <button class="rwth-dash-toggle" type="button" data-action="toggle-collapse" data-collapse="dashCharts"
+          aria-expanded="${chartsOpen ? 'true' : 'false'}">${chartsOpen ? '▾' : '▸'} charts</button>
       </div>
-      ${buildLedgerHeroChart(projectionView, { interactive: true, open: projectionOpen })}
-      ${buildProjectionPopup(projectionView, projectionOpen)}
-      ${buildLedgerAnalytics(s, analyticsCollapsed)}
+      <div class="rwth-dash-drawer${chartsOpen ? '' : ' rwth-collapsed'}">
+        <div class="rwth-stats">
+          ${card('Realized P/L', signed(s.realized), roiSub, cls(s.realized))}
+          ${card('Pending (at list)', signed(s.pending), `${s.listedCount} listed`, cls(s.pending))}
+          ${card('Capital deployed', fmtMoney(s.capitalDeployed), 'held + listed')}
+          ${card('Mug losses', s.mugLossTotal > 0 ? fmtMoney(-s.mugLossTotal) : fmtMoney(0), mugSub, s.mugLossTotal > 0 ? 'rwth-roi-neg' : '')}
+        </div>
+        ${buildLedgerHeroChart(projectionView, { interactive: true, open: projectionOpen })}
+        ${buildProjectionPopup(projectionView, projectionOpen)}
+        ${buildLedgerAnalytics(s, analyticsCollapsed)}
+      </div>
     </div>`;
   }
 
@@ -2765,6 +2816,7 @@
       intelLedger: !!(intel.enabled && intel.enabled.ledger),
       priceCheckId: L.priceCheckId,
       priceCheckResults: L.priceCheckResults || {},
+      colStatus: filter,
       now,
     };
     // #341 — sort the FILTERED list (so "best ROI among my listed" is one move)
@@ -2808,6 +2860,7 @@
       ${buildScanChecklist(mem)}
       ${L.editingId ? buildLedgerForm(mem) : ''}
       ${buildSellBox(mem)}
+      ${sorted.length ? buildLedgerHeader(filter) : ''}
       <div class="rwth-rows">${list}</div>
     </div>`;
   }
@@ -6519,7 +6572,26 @@
       }
       .rwth-btn-ghost:hover { box-shadow: none; color: var(--rwth-accent); border-color: var(--rwth-accent); }
 
-      .rwth-dash { display: flex; flex-direction: column; gap: var(--rwth-gap-lg); }
+      .rwth-dash { display: flex; flex-direction: column; gap: var(--rwth-gap-sm); }
+      /* Compact always-on summary; the cards/charts drawer folds beneath it. */
+      .rwth-dash-strip {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        border: 1px solid var(--rwth-border); border-radius: 6px;
+        padding: 7px var(--rwth-pad-card); background: var(--rwth-fill-faint);
+      }
+      .rwth-dash-stats { display: flex; flex-wrap: wrap; gap: 3px 12px; min-width: 0; }
+      .rwth-dash-stat {
+        font: 11px var(--rwth-font-mono); color: var(--rwth-muted); white-space: nowrap;
+      }
+      .rwth-dash-stat b { font: 700 13px var(--rwth-font-mono); color: var(--rwth-text); }
+      .rwth-dash-toggle {
+        flex: none; background: none; border: 1px solid var(--rwth-border-strong);
+        border-radius: 4px; color: var(--rwth-secondary); cursor: pointer; padding: 3px 8px;
+        font: 700 10px var(--rwth-font-mono); text-transform: uppercase;
+      }
+      .rwth-dash-toggle:hover { color: var(--rwth-accent); border-color: var(--rwth-accent); }
+      .rwth-dash-drawer { display: flex; flex-direction: column; gap: var(--rwth-gap-lg); }
+      .rwth-collapsed { display: none; }
       .rwth-stats {
         display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--rwth-gap-sm);
       }
@@ -6646,42 +6718,64 @@
       .rwth-mini-cell b { font-size: 11px; color: var(--rwth-text); }
       .rwth-mini-empty { font: 11px var(--rwth-font-mono); color: var(--rwth-muted); font-style: italic; }
 
-      .rwth-rows { display: flex; flex-direction: column; gap: 4px; }
-      .rwth-row { border: 1px solid var(--rwth-border-soft); border-radius: 4px; }
-      .rwth-row-expanded { border-color: var(--rwth-border-bright); }
-      .rwth-row-head {
-        display: flex; flex-direction: column; gap: 5px; cursor: pointer;
-        padding: 7px 9px;
+      /* Spreadsheet table: one header names the columns, then zebra/hairline rows
+         share the same per-status grid track so every figure lines up down its
+         column. Numeric columns are fixed-width and right-aligned (number
+         convention); the item column flexes and ellipses. */
+      .rwth-rows { display: flex; flex-direction: column; }
+      .rwth-row { border: 0; border-bottom: 1px solid var(--rwth-border-soft); }
+      .rwth-rows .rwth-row:last-child { border-bottom: 0; }
+      .rwth-row:nth-child(even) { background: var(--rwth-fill-faint); }
+      .rwth-row-expanded {
+        border: 1px solid var(--rwth-border-bright); border-radius: 4px;
+        margin: 2px 0; background: transparent;
       }
+      /* Shared column tracks — header (.rwth-thead) and each row (.rwth-row-head)
+         carry the same rwth-cols-* class so they align. */
+      .rwth-thead, .rwth-row-head {
+        display: grid; align-items: baseline; gap: 6px; padding: 6px 9px;
+      }
+      .rwth-cols-held   { grid-template-columns: minmax(0, 1fr) 58px 48px; }
+      .rwth-cols-listed { grid-template-columns: minmax(0, 1fr) 58px 58px 58px; }
+      .rwth-cols-sold   { grid-template-columns: minmax(0, 1fr) 56px 56px 56px 46px; }
+      .rwth-cols-all    { grid-template-columns: minmax(0, 1fr) 58px 58px 48px; }
+      .rwth-thead {
+        position: sticky; top: 0; z-index: 1; padding-top: 4px; padding-bottom: 4px;
+        background: var(--rwth-bg); border-bottom: 1px solid var(--rwth-border-strong);
+      }
+      .rwth-th {
+        font: 700 9px var(--rwth-font-mono); text-transform: uppercase;
+        letter-spacing: .4px; color: var(--rwth-muted); text-align: right;
+      }
+      .rwth-th-name { text-align: left; }
+      .rwth-row-head { cursor: pointer; }
       .rwth-row-head:hover { background: var(--rwth-fill-hover); }
-      .rwth-row-name { font: 600 12px var(--rwth-font-ui); color: var(--rwth-text); }
+      .rwth-row-name {
+        min-width: 0; font: 600 12px var(--rwth-font-ui); color: var(--rwth-text);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
       .rwth-row-bonus { font: 400 11px var(--rwth-font-mono); color: var(--rwth-secondary); }
       .rwth-row-price { font: 600 11px var(--rwth-font-mono); color: var(--rwth-text); }
-      .rwth-row-strip {
-        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 6px; align-items: baseline;
-      }
-      .rwth-cell { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
-      .rwth-cell-k {
-        flex: none; font: 400 9px var(--rwth-font-mono); color: var(--rwth-muted);
-        text-transform: uppercase; letter-spacing: .3px;
-      }
+      /* Figure cells: ellipsed if a value runs long. Color is a single-class
+         rule so the roi color classes (also single-class, declared after) win;
+         the right-alignment is scoped to the row grid only. */
       .rwth-cell-v {
         min-width: 0; font: 600 11px var(--rwth-font-mono); color: var(--rwth-text);
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
-      .rwth-cell-empty .rwth-cell-v { color: var(--rwth-muted); opacity: .55; }
-      .rwth-cell-amber .rwth-cell-v { color: var(--rwth-warn); }
-      .rwth-cell-red .rwth-cell-v { color: var(--rwth-danger); font-weight: 700; }
+      .rwth-row-head .rwth-cell-v { text-align: right; }
+      .rwth-cell-v.rwth-cell-empty { color: var(--rwth-muted); opacity: .55; }
+      .rwth-cell-v.rwth-cell-amber { color: var(--rwth-warn); }
+      .rwth-cell-v.rwth-cell-red { color: var(--rwth-danger); font-weight: 700; }
       .rwth-roi { font: 700 11px var(--rwth-font-mono); }
       .rwth-roi-pos { color: var(--rwth-accent); }
       .rwth-roi-neg { color: var(--rwth-danger); }
       .rwth-roi-projected { color: var(--rwth-muted); font-weight: 400; opacity: .85; }
-      /* #340 — inline ask edit + one-click list, both sized to live inside a
-         strip cell so the grid stays aligned at 360px docked. */
-      .rwth-cell-ctl { gap: 4px; }
+      /* #340 — inline ask edit + one-click list, sized to live inside a grid
+         cell so the table stays aligned at 360px docked. */
+      .rwth-cell-v.rwth-cell-ctl { overflow: visible; }
       .rwth-ask-edit {
-        width: 100%; min-width: 0; box-sizing: border-box;
+        width: 100%; min-width: 0; box-sizing: border-box; text-align: right;
         background: var(--rwth-fill-faint); border: 1px solid var(--rwth-border-strong);
         border-radius: 3px; color: var(--rwth-text);
         font: 600 11px var(--rwth-font-mono); padding: 1px 4px;
@@ -6693,8 +6787,7 @@
         font: 700 10px var(--rwth-font-mono); text-transform: uppercase; line-height: 1.5;
       }
       .rwth-cell-btn:hover { color: var(--rwth-accent); border-color: var(--rwth-accent); }
-      .rwth-cell-belowcost .rwth-cell-k { color: var(--rwth-danger); }
-      .rwth-cell-belowcost .rwth-cell-v {
+      .rwth-cell-v.rwth-cell-belowcost {
         color: #fff; background: var(--rwth-danger); font-weight: 700;
         padding: 0 5px; border-radius: 3px;
       }
