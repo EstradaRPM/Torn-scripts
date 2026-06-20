@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.148
+// @version      0.3.149
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.148';
+  const SCRIPT_VERSION = '0.3.149';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -1828,6 +1828,16 @@
           </select>
         </label>
       </div>
+      ${editing ? `<div class="rwth-form-row">
+        <label class="rwth-field rwth-field-grow">
+          <span class="rwth-field-label">Status</span>
+          <select class="rwth-field-input" data-form="status">
+            ${['held', 'listed', 'sold'].map(s =>
+              `<option value="${s}"${(v.status || 'held') === s ? ' selected' : ''}>${
+                s[0].toUpperCase() + s.slice(1)}</option>`).join('')}
+          </select>
+        </label>
+      </div>` : ''}
       <div class="rwth-form-error" id="rwth-form-error"></div>
       <div class="rwth-form-actions">
         <button class="rwth-btn" type="button" data-action="save-item">Save</button>
@@ -5194,8 +5204,24 @@
       buyTimestamp,
       buySource: get('buySource') || 'market',
     };
-    if (MEM.ledger.editingId === 'new') Ledger.add(patch);
-    else Ledger.update(MEM.ledger.editingId, patch);
+    if (MEM.ledger.editingId === 'new') {
+      Ledger.add(patch);
+    } else {
+      // Status is editable only when editing an existing row. Moving a row out
+      // of 'sold' is the "undo" for a sale that closed the wrong ledger row
+      // (e.g. a non-RW sale matched onto a held RW variant): drop the sale
+      // record so P/L and the sold filter stop counting the bad close, and
+      // strip the list price when returning to plain inventory. The Recent
+      // Transaction stays — it logged a real sale, just against the wrong row.
+      const status = get('status') || (editing && editing.status) || 'held';
+      patch.status = status;
+      if (status !== 'sold') {
+        patch.saleGross = null; patch.saleFees = null; patch.saleNet = null;
+        patch.soldTimestamp = null; patch.soldVenue = null; patch.buyer = null;
+      }
+      if (status === 'held') patch.listPrice = null;
+      Ledger.update(MEM.ledger.editingId, patch);
+    }
   }
 
   // ─── ItemDict — item id → name, fetched once and cached a week ───────────────
