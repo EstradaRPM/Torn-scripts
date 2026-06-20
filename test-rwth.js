@@ -162,9 +162,11 @@ test('buildSettingsTab tolerates a missing settings object', () => {
   assert.strictEqual(typeof buildSettingsTab(), 'string');
 });
 
-test('buildSettingsTab renders a Save button', () => {
+test('buildSettingsTab auto-saves: no Save button', () => {
   const { buildSettingsTab } = globalThis.__RwthPure;
-  assert.match(buildSettingsTab({ settings: {} }), /data-action="save-settings"/);
+  // Fields persist on blur/Enter (persistSettingField), so the tab no longer
+  // renders a manual Save button to scroll down to.
+  assert.doesNotMatch(buildSettingsTab({ settings: {} }), /data-action="save-settings"/);
 });
 
 test('buildSettingsTab masks the API key as a password field', () => {

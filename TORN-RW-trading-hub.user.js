@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.145
+// @version      0.3.146
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.145';
+  const SCRIPT_VERSION = '0.3.146';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -3193,10 +3193,6 @@
     return `<div class="rwth-settings">
       ${sections}
       <div class="rwth-settings-actions">
-        <button class="rwth-btn" type="button" data-action="save-settings">Save</button>
-        <span id="rwth-settings-status" class="rwth-settings-status" role="status" aria-live="polite"></span>
-      </div>
-      <div class="rwth-settings-actions">
         <button class="rwth-btn rwth-btn-danger" type="button" data-action="clear-data" title="Testing only: wipe all stored data and reload as a fresh install">Clear all data (testing)</button>
       </div>
     </div>`;
@@ -4353,7 +4349,6 @@
       switch (actionEl.dataset.action) {
         case 'close':         setState({ ui: { ...MEM.ui, open: false } }); break;
         case 'maximize':      setState({ ui: { ...MEM.ui, maximized: !MEM.ui.maximized } }); break;
-        case 'save-settings': saveSettings(); break;
         case 'test-key':      testApiKey(); break;
         case 'smoke-weav3r':  smokeWeav3r(); break;
         case 'add-item':      setState({ ledger: { ...MEM.ledger, editingId: 'new' } }); break;
@@ -4729,61 +4724,6 @@
     }, 1600);
   }
 
-  // Collect every settings input from the DOM, persist, re-render, then flash
-  // a confirmation. Reading on click (not on each keystroke) means render()
-  // never fires mid-typing.
-  function saveSettings() {
-    const next = { ...MEM.settings };
-    document.querySelectorAll('#rwth-content [data-setting]').forEach((input) => {
-      next[input.dataset.setting] = input.type === 'checkbox' ? input.checked : input.value;
-    });
-    Store.set('rwth_settings', next);
-
-    // Collect intel settings.
-    const nextIntel = {
-      enabled:  { ...MEM.intel.enabled },
-      mugBuffer:    MEM.intel.mugBuffer,
-      marginTarget: MEM.intel.marginTarget,
-      qualityClampDefault: MEM.intel.qualityClampDefault,
-      excludedBonuses: (MEM.intel.excludedBonuses || []).slice(),
-      bonusChangeDates: { ...(MEM.intel.bonusChangeDates || {}) },
-      similarBases: (MEM.intel.similarBases || []).map(c => (c || []).slice()),
-    };
-    document.querySelectorAll('#rwth-content [data-intel]').forEach((el) => {
-      const path = el.dataset.intel;
-      const val  = el.type === 'checkbox' ? el.checked : el.value;
-      if (path === 'enabled.auction')           nextIntel.enabled.auction  = Boolean(val);
-      else if (path === 'enabled.ledger')       nextIntel.enabled.ledger   = Boolean(val);
-      else if (path === 'qualityClampDefault') nextIntel.qualityClampDefault = Boolean(val);
-      else if (path === 'mugBuffer')    nextIntel.mugBuffer    = Number(val) || 0;
-      else if (path === 'marginTarget') nextIntel.marginTarget = Number(val) || 0;
-    });
-
-    // Trash list — hard "don't fetch" filter.
-    const trashEl = document.getElementById('rwth-intel-trash');
-    if (trashEl) nextIntel.excludedBonuses = parseTrashList(trashEl.value);
-
-    // v0.3.0 slice 19a (#285) — bonus-mechanic change dates editor.
-    const bcdEl = document.getElementById('rwth-intel-bonus-change-dates');
-    if (bcdEl) nextIntel.bonusChangeDates = parseBonusChangeDates(bcdEl.value, BONUS_CHANGE_DATES_SEED);
-
-    // v0.3.0 slice 19d (#288) — similar-base clusters editor.
-    const sbEl = document.getElementById('rwth-intel-similar-bases');
-    if (sbEl) nextIntel.similarBases = parseSimilarBases(sbEl.value, SIMILAR_BASES_SEED);
-
-    Store.set('rwth_intel_settings', nextIntel);
-    setState({ settings: next, intel: nextIntel });
-    AuctionScanner.refresh();
-
-    const status = document.getElementById('rwth-settings-status');
-    if (!status) return;
-    status.textContent = '✓ Saved';
-    status.classList.add('rwth-saved-show');
-    setTimeout(() => {
-      const el = document.getElementById('rwth-settings-status');
-      if (el) { el.textContent = ''; el.classList.remove('rwth-saved-show'); }
-    }, 2200);
-  }
 
   // #313 — verify the API key against Torn v2 /user (v2 only). On success the
   // status reads "Connected as <Name> [<ID>]", the Player ID is auto-filled
@@ -6372,11 +6312,6 @@
         font: 700 12px var(--rwth-font-ui); letter-spacing: .3px;
       }
       .rwth-btn:hover { box-shadow: 0 0 6px var(--rwth-accent); }
-      .rwth-settings-status {
-        font: 700 11px var(--rwth-font-mono); color: var(--rwth-accent);
-        opacity: 0; transition: opacity .15s ease-out;
-      }
-      .rwth-settings-status.rwth-saved-show { opacity: 1; }
       .rwth-field-saved {
         display: block; margin-top: 4px;
         font: 700 11px var(--rwth-font-mono); color: var(--rwth-accent);
