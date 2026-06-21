@@ -964,6 +964,37 @@ test('toSignatureHtml uses the signature override, falling back to the shared ba
   assert.match(shared, /src="https:\/\/i\.gyazo\.com\/banner\.jpg"/);
 });
 
+// #332 — the availability line and the markup notice were merged into ONE
+// composed line. Browse venues join a "Find my items in ..." clause; ticking
+// Item Market appends the markup clause (verbatim the old notice wording) and a
+// closer. No second post line is emitted.
+test('AvailabilityLine composes one line covering browse venues and the item-market markup clause', () => {
+  const { AvailabilityLine } = globalThis.__RwthPure;
+  const C = (l, o) => AvailabilityLine.compose(l, o);
+  assert.strictEqual(C([]), '');
+  assert.strictEqual(C(['displayCase']),
+    'Find my items in my display case. Message me for any item below.');
+  assert.strictEqual(C(['bazaar', 'displayCase']),
+    'Find my items in my bazaar and my display case. Message me for any item below.');
+  // Item Market only reproduces the wording of the retired markup notice.
+  assert.strictEqual(C(['itemMarket']),
+    'Some items are listed on the item market at a markup, so the price after fees still matches the deal. Message me for any item below.');
+  // All three: browse clause + item-market clause + closer, in one line.
+  assert.strictEqual(C(['bazaar', 'itemMarket', 'displayCase']),
+    'Find my items in my bazaar and my display case. Some items are listed on the item market at a markup, so the price after fees still matches the deal. Message me for any item below.');
+  // A manual override wins verbatim (trimmed).
+  assert.strictEqual(C(['bazaar'], '  my own words  '), 'my own words');
+});
+
+test('toForumHtml emits the merged line once, not a separate markup-notice row', () => {
+  const { AdvertiseGenerator } = globalThis.__RwthPure;
+  const settings = { locations: { bazaar: true, itemMarket: true }, markup: true };
+  const html = AdvertiseGenerator.toForumHtml(advItems, [], settings);
+  // The item-market markup wording appears exactly once (one line, no duplicate).
+  assert.strictEqual((html.match(/listed on the item market at a markup/g) || []).length, 1);
+  assert.match(html, /Find my items in my bazaar\./);
+});
+
 // #325 — the three per-surface boxes were unified into one surface switcher:
 // segmented Forum/Bazaar/Signature buttons over a single rwth-out-surface
 // copy box, plus a Preview/Edit-HTML flip.

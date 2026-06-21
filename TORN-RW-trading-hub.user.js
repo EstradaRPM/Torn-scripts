@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.151
+// @version      0.3.152
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.151';
+  const SCRIPT_VERSION = '0.3.152';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -104,15 +104,13 @@
   // still gets it in the footer; blanking footerTagline hides just the footer
   // line. Resolved under config.copy; the builder renders a block only when its
   // copy string is non-empty.
-  // #321 — markupNotice is the editable replacement for the retired
-  // ITEM_MARKET_NOTICE constant. It follows the same copy rule (absent -> neutral
-  // default, explicit blank -> hidden), but the markup-notice callout is rendered
-  // only when the markup toggle (config.markup) is on, regardless of its text.
+  // #332 — the retired markupNotice copy field folded into the composed
+  // availability line (AvailabilityLine.compose): its wording is now the
+  // item-market clause of that single line, so there is no second post line.
   const ADV_COPY_DEFAULTS = {
     subBanner: 'Open shop // Competitively priced',
     intro: 'Rotating collection of RW weapons/gear and other useful items. Message me if you want something not listed below.',
     alsoRotating: 'Also rotating: drugs, plushies, flowers. Check bazaar for live stock.',
-    markupNotice: 'Some items are listed on the item market at a markup, so the price after fees still matches the deal. Message me for any item below.',
   };
 
   // #317 — the post palette is themeable. Every colour the HTML builders draw
@@ -219,36 +217,54 @@
   // apply it, preserving the "every token is a defined colour" invariant.
   const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
-  // #320 — where the shop sells. The Advertise tab exposes one checkbox per
-  // location; the selected `phrase`s compose the availability sentence. `key`
-  // persists under settings.locations as a boolean; render/compose order is the
-  // array order, so a sentence always reads bazaar -> item market -> display
-  // case regardless of the order the boxes were ticked. These are pure copy —
-  // they never touch pricing (the item-market markup is a separate control).
+  // #320/#332 — where the shop sells. The Advertise tab exposes one checkbox per
+  // location; the ticked boxes compose ONE availability line (no second markup
+  // line). `key` persists under settings.locations as a boolean. The browse
+  // venues (bazaar, display case) carry a `findPhrase` and join into a single
+  // "Find my items in ..." clause; Item Market has no findPhrase because it gets
+  // its own clause — the markup wording the user liked — appended whenever it is
+  // ticked. Render/compose order is the array order, so the line always reads
+  // bazaar -> item market -> display case regardless of tick order.
   const ADV_LOCATIONS = [
-    { key: 'bazaar',      label: 'Bazaar',       phrase: 'my bazaar' },
-    { key: 'itemMarket',  label: 'Item Market',  phrase: 'the item market' },
-    { key: 'displayCase', label: 'Display Case', phrase: 'my display case' },
+    { key: 'bazaar',      label: 'Bazaar',       findPhrase: 'my bazaar' },
+    { key: 'itemMarket',  label: 'Item Market' },
+    { key: 'displayCase', label: 'Display Case', findPhrase: 'my display case' },
   ];
+  // #332 — the item-market clause (verbatim the wording of the retired markup
+  // notice). Appended to the composed line whenever Item Market is ticked, so
+  // the one line covers display case / bazaar AND the item-market markup framing.
+  const ADV_ITEM_MARKET_CLAUSE =
+    'Some items are listed on the item market at a markup, so the price after fees still matches the deal.';
+  const ADV_AVAILABILITY_CLOSER = 'Message me for any item below.';
 
-  // #320 — composes the "where my items are" sentence from structured input.
-  // Pure; exposed via __RwthPure for the Node test seam. A non-blank manual
-  // override wins verbatim (trimmed). Otherwise the selected location phrases
-  // compose a natural Oxford-joined sentence; the 0-selected case yields '' so
-  // the builders hide the line. Selection order is irrelevant — the output
-  // always follows the canonical ADV_LOCATIONS order; unknown keys are ignored.
+  // #320/#332 — composes the single "where my items are" line from structured
+  // input. Pure; exposed via __RwthPure for the Node test seam. A non-blank
+  // manual override wins verbatim (trimmed). Otherwise the ticked browse venues
+  // form an Oxford-joined "Find my items in ..." clause, the item-market clause
+  // is appended when Item Market is ticked, and a closer is added if anything
+  // showed. The 0-selected case yields '' so the builders hide the line.
+  // Selection order is irrelevant — output follows ADV_LOCATIONS order; unknown
+  // keys are ignored.
   const AvailabilityLine = {
     compose(locations, manualOverride) {
       const override = (manualOverride == null ? '' : String(manualOverride)).trim();
       if (override) return override;
       const keys = Array.isArray(locations) ? locations : [];
-      const phrases = ADV_LOCATIONS.filter(l => keys.includes(l.key)).map(l => l.phrase);
-      if (!phrases.length) return '';
-      let list;
-      if (phrases.length === 1) list = phrases[0];
-      else if (phrases.length === 2) list = `${phrases[0]} and ${phrases[1]}`;
-      else list = `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`;
-      return `Find my items on ${list}.`;
+      const findPhrases = ADV_LOCATIONS
+        .filter(l => l.findPhrase && keys.includes(l.key))
+        .map(l => l.findPhrase);
+      const parts = [];
+      if (findPhrases.length) {
+        let list;
+        if (findPhrases.length === 1) list = findPhrases[0];
+        else if (findPhrases.length === 2) list = `${findPhrases[0]} and ${findPhrases[1]}`;
+        else list = `${findPhrases.slice(0, -1).join(', ')}, and ${findPhrases[findPhrases.length - 1]}`;
+        parts.push(`Find my items in ${list}.`);
+      }
+      if (keys.includes('itemMarket')) parts.push(ADV_ITEM_MARKET_CLAUSE);
+      if (!parts.length) return '';
+      parts.push(ADV_AVAILABILITY_CLOSER);
+      return parts.join(' ');
     },
   };
 
@@ -573,6 +589,14 @@
         if (!String(MEM.settings.signatureImageUrl || '').trim()) MEM.settings.signatureImageUrl = legacy;
       }
       delete MEM.settings.forumHeaderImageUrl;
+      Store.set('rwth_settings', MEM.settings);
+    }
+
+    // #332 — drop the retired standalone markup-notice copy field; its wording is
+    // now the item-market clause of the single composed availability line, so a
+    // stored value would only sit dead in localStorage. Cleared once on upgrade.
+    if (Object.prototype.hasOwnProperty.call(MEM.settings, 'markupNotice')) {
+      delete MEM.settings.markupNotice;
       Store.set('rwth_settings', MEM.settings);
     }
 
@@ -3696,7 +3720,7 @@
     // rows + Recent Transactions; cards grouped under category dividers.
     toForumHtml(items, transactions, settings) {
       const s = settings || {};
-      const { theme: t, copy, sections, availability, markup } = AdvConfig.resolve(s);
+      const { theme: t, copy, sections, availability } = AdvConfig.resolve(s);
       const txs = transactions || [];
       const rows = [];
       rows.push(forumHeader(s, t));
@@ -3713,21 +3737,11 @@
         rows.push(`<tr><td style="background: ${t.bg}; padding: 6px 22px 16px; text-align: center; line-height: 1.7; border: 0;">`
           + `<span style="color: ${t.textBody}; font-size: 13px;">${escapeAttr(copy.intro)}</span></td></tr>`);
       }
-      // Availability — composed "where my items are" line (#320); blank hides it.
+      // Availability — the single composed "where my items are" line (#320/#332),
+      // which now also carries the item-market markup framing; blank hides it.
       if (availability) {
         rows.push(`<tr><td style="background: ${t.bg}; padding: 0 22px 14px; text-align: center; border: 0;">`
           + `<span style="color: ${t.textMuted}; font-size: 12px;">${escapeAttr(availability)}</span></td></tr>`);
-      }
-      // Markup notice (#321) — a callout so buyers expect a listing priced above
-      // the advertised (net) deal. Shown only when the markup toggle is on and
-      // the editable notice copy is non-blank.
-      if (markup && copy.markupNotice) {
-        rows.push(`<tr><td style="background: ${t.bg}; padding: 0 22px 14px; border: 0;">`
-          + `<table ${TBL} width="100%" style="background: ${t.bgCard}; border: 0; border-collapse: collapse;"><tbody><tr>`
-          + `<td style="width: 3px; background: ${t.warn}; font-size: 0; line-height: 0; padding: 0; border: 0;">&nbsp;</td>`
-          + `<td style="padding: 10px 14px; text-align: center; border: 0;">`
-          + `<span style="color: ${t.warnText}; font-size: 12px; line-height: 1.6;">${escapeAttr(copy.markupNotice)}</span>`
-          + `</td></tr></tbody></table></td></tr>`);
       }
       rows.push(forumSectionHeader('Currently Available', t));
       for (const group of groupByCategory(items)) {
@@ -3829,7 +3843,7 @@
     // strip along the foot.
     toSignatureHtml(items, settings) {
       const s = settings || {};
-      const { identity, theme: t, availability, copy, markup, images } = AdvConfig.resolve(s);
+      const { identity, theme: t, availability, images } = AdvConfig.resolve(s);
       const { shopName } = identity;
       const img = images.signature;
       // Header — the configured banner image; a wordmark bar only if none set.
@@ -3842,15 +3856,8 @@
           + `<span style="color: ${t.primary}; font-size: 14px; font-weight: bold; letter-spacing: 0.28em; `
           + `text-transform: uppercase;">${escapeAttr(shopName)}</span></td></tr>`;
       const bodyRows = [];
-      // Markup notice (#321) — a slim strip under the banner; shown only when the
-      // markup toggle is on and the editable notice copy is non-blank.
-      if (markup && copy.markupNotice) {
-        bodyRows.push(`<tr><td colspan="2" style="background: ${t.bgCard}; padding: 8px 14px; `
-          + `text-align: center; border: 0;">`
-          + `<span style="color: ${t.warnText}; font-size: 10px; line-height: 1.5;">${escapeAttr(copy.markupNotice)}</span>`
-          + `</td></tr>`);
-      }
-      // Availability — composed "where my items are" line (#320); blank hides it.
+      // Availability — the single composed "where my items are" line (#320/#332),
+      // which now also carries the item-market markup framing; blank hides it.
       if (availability) {
         bodyRows.push(`<tr><td colspan="2" style="background: ${t.bg}; padding: 7px 14px 2px; `
           + `text-align: center; border: 0;">`
@@ -4147,34 +4154,21 @@
     // branding/copy fold away beneath it, then the unified Copy-to-Torn section
     // (#325) carrying the quick-copy text strip and the surface preview/copy switcher.
 
-    // Items working area — the item-market markup toggle lives here because it is
-    // what surfaces the per-item reference price on the rows; it never touches
-    // where buyers find your items (that is set in Post text).
-    const markupNoticeField = markup ? `
-        <label class="rwth-field">
-          <span class="rwth-field-label">Markup notice</span>
-          <input class="rwth-field-input" type="text" data-adv-copy="markupNotice"
-                 value="${escapeAttr(copy.markupNotice)}"
-                 placeholder="${escapeAttr(ADV_COPY_DEFAULTS.markupNotice)}"
-                 autocomplete="off" spellcheck="false">
-        </label>` : '';
-    // #331 — the "include mug buffer" toggle surfaces only when markup is on. It
-    // grosses each item-market list price up further (using the mug cushion from
-    // Settings) so the price still nets the ask after both the fee and a mug.
+    // #332 — the item-market markup controls moved to Post text (the "Where
+    // buyers find & pay you" group) so every "how I sell" control lives together.
+    // The item rows still surface the per-item item-market reference price when
+    // markup is on; only the toggle itself relocated.
+    const itemsBody = `
+        ${markup ? '<span class="rwth-field-help">Item-market list prices (marked up) are shown on the rows below; the markup toggle is in <b>Post text → Where buyers find &amp; pay you</b>.</span>' : ''}
+        ${itemRows}`;
+    // #331/#332 — the "include mug buffer" toggle surfaces only when markup is on.
+    // It grosses each item-market list price up further (using the mug cushion
+    // from Settings) so the price still nets the ask after both the fee and a mug.
     const mugMarkupField = markup ? `
         <label class="rwth-intel-check">
           <input type="checkbox" data-adv-mug${mugMarkup ? ' checked' : ''}>
           Also cover a mug on the sale (lists higher so the price after fees and a possible mug still nets your ask, using your ${Number(intel.mugBuffer) || 0}% mug cushion)
         </label>` : '';
-    const itemsBody = `
-        <label class="rwth-intel-check">
-          <input type="checkbox" data-adv-markup${markup ? ' checked' : ''}>
-          Mark prices up for the item market (lists 5% over your ask so the price after fees still nets your ask)
-        </label>
-        <span class="rwth-field-help">This is the only control that changes your prices. It shows each item-market list price on the rows below and adds a notice to your posts. It never changes where buyers find your items.</span>
-        ${mugMarkupField}
-        ${markupNoticeField}
-        ${itemRows}`;
 
     // Brand & look — set-once identity, links, theme/colours and pictures.
     const brandBody = `
@@ -4276,15 +4270,21 @@
                  value="${escapeAttr(copy.footerTagline)}"
                  autocomplete="off" spellcheck="false">
         </label>
-        <div class="rwth-form-title">Where to find your items</div>
-        <span class="rwth-field-help">Tick where you sell. The post writes the sentence for you; these boxes never change your prices.</span>
+        <div class="rwth-form-title">Where buyers find &amp; pay you</div>
+        <span class="rwth-field-help">Tick where you sell — the post writes one line covering all of it. Ticking a box never changes your prices; only the markup toggle below does.</span>
         ${ADV_LOCATIONS.map(l => `
         <label class="rwth-intel-check">
           <input type="checkbox" data-adv-location="${l.key}"${locations[l.key] ? ' checked' : ''}>
           ${l.label}
         </label>`).join('')}
+        <label class="rwth-intel-check">
+          <input type="checkbox" data-adv-markup${markup ? ' checked' : ''}>
+          Mark prices up for the item market (lists 5% over your ask so the price after fees still nets your ask)
+        </label>
+        <span class="rwth-field-help">This is the only control that changes your prices. When on, your item-market list prices are grossed up so the price after fees still nets your ask, and those prices show on the item rows in &ldquo;Items to advertise&rdquo;.</span>
+        ${mugMarkupField}
         <label class="rwth-field">
-          <span class="rwth-field-label">Availability sentence override</span>
+          <span class="rwth-field-label">Availability line override</span>
           <input class="rwth-field-input" type="text" data-adv-availability
                  value="${escapeAttr(settings.availabilityOverride || '')}"
                  placeholder="${escapeAttr(resolved.availability || 'Composed from the boxes above')}"
