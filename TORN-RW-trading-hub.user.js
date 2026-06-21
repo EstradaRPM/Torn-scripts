@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.153
+// @version      0.3.154
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.153';
+  const SCRIPT_VERSION = '0.3.154';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -6127,11 +6127,20 @@
   function promoteTransaction(id) {
     const item = MEM.ledger.items.find(i => i.id === id);
     if (!item) return;
+    // A scanned ledger row carries the raw numeric buyer XID; the paste path
+    // resolves it but a manual promote did not. Swap in the cached name when we
+    // already have it, then fire resolveBuyerNames() below to fetch any id we
+    // don't — so the promoted line shows the username, never the bare id.
+    let buyer = item.buyer || '';
+    if (isBuyerId(buyer)) {
+      const cached = loadUsernameCache()[String(buyer).trim()];
+      if (cached) buyer = cached;
+    }
     const tx = {
       id: makeId(),
       itemName: item.itemName,
       bonusName: (item.bonuses && item.bonuses[0] && item.bonuses[0].name) || null,
-      buyer: item.buyer || '',
+      buyer,
       // Full price the buyer paid (gross), matching Recent Transactions.
       price: item.saleGross != null ? item.saleGross : item.saleNet,
       timestamp: item.soldTimestamp,
@@ -6144,6 +6153,8 @@
     const transactions = [tx, ...MEM.advertise.transactions];
     Store.set('rwth_transactions', transactions);
     setState({ advertise: { ...MEM.advertise, transactions } });
+    // Resolve a still-numeric buyer to its username (cached ids are a no-op).
+    if (isBuyerId(buyer)) void resolveBuyerNames();
   }
 
   // Copy a windowed output box's live content to the clipboard, flashing the
