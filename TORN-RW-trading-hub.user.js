@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RW Trading Hub
 // @namespace    estradarpm-rw-trading-hub
-// @version      0.3.152
+// @version      0.3.153
 // @description  Trader's workbench for ranked-war armor & weapon flipping — ledger + advertising hub
 // @author       Built for EstradaRPM
 // @match        https://www.torn.com/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.3.152';
+  const SCRIPT_VERSION = '0.3.153';
 
   // Skip the DOM bootstrap when required by the Node test shim (ADR-0002).
   const TEST = typeof globalThis !== 'undefined' && globalThis.__RWTH_TEST__ === true;
@@ -852,12 +852,26 @@
     return candidates[0];
   }
 
+  // A scanned sale log carries no bonus name (only the buy / armoury instance
+  // does), so a matched sale's bonus lives on the ledger row it closes. Copy it
+  // onto the sell in place — before any txKey/dedup runs — so Recent
+  // Transactions shows "(Pinpoint)" and the keyed identity stays consistent.
+  // A pasted sale already names its own bonus, so this only fills a blank.
+  function enrichSellBonus(sell, matched) {
+    if (!sell || sell.bonusName || !matched) return;
+    const b = matched.bonuses && matched.bonuses[0] && matched.bonuses[0].name;
+    if (b) sell.bonusName = b;
+  }
+
   // Pure: stable identity for a Recent Transaction, so re-pasting a log that's
   // already logged can't double-post (logs are the source of truth). Built from
-  // the fields a buyer verifies: item, bonus, buyer, net price, sale time.
-  // Accepts a ParsedSell (saleNet) or a stored tx (price) interchangeably.
+  // the fields a buyer verifies: item, bonus, buyer, price paid, sale time.
+  // Accepts a ParsedSell (saleGross) or a stored tx (price) interchangeably —
+  // both resolve to the gross price the buyer paid so the keys line up.
   function txKey(t) {
-    const price = (t && t.price != null) ? t.price : (t ? t.saleNet : null);
+    const price = (t && t.price != null) ? t.price
+      : (t && t.saleGross != null) ? t.saleGross
+        : (t ? t.saleNet : null);
     return [
       norm(t && t.itemName), norm(t && t.bonusName), norm(t && t.buyer),
       price == null ? '' : price,
@@ -1450,6 +1464,7 @@
         const sell = row.sell || {};
         const cat = scanCategory(sell.itemName, cats);
         const matched = matchSell(sell, saleMatchItems);
+        enrichSellBonus(sell, matched);
         if (cat && !isRwCategory(cat) && !matched) {
           preview.ignored.push({ type: 'ignored', reason: 'non-RW sale', eventKeys, itemName: sell.itemName });
         } else {
@@ -1478,6 +1493,7 @@
       else if (trade.type === 'sale') {
         const sell = trade.sell || {};
         const matched = matchSell(sell, open);
+        enrichSellBonus(sell, matched);
         const duplicate = txSeen.has(txKey(sell));
         if (!duplicate) txSeen.add(txKey(sell));
         preview.sales.push({ sell, matchedId: matched ? matched.id : null, duplicate, eventKeys });
@@ -5983,6 +5999,7 @@
     const seen = new Set((MEM.advertise.transactions || []).map(txKey));
     const rows = sells.map((sell) => {
       const match = matchSell(sell, open);
+      enrichSellBonus(sell, match);
       const key = txKey(sell);
       const duplicate = seen.has(key);
       if (!duplicate) seen.add(key);
@@ -6004,7 +6021,9 @@
       itemName: sell.itemName,
       bonusName: sell.bonusName,
       buyer: sell.buyer,
-      price: sell.saleNet,
+      // Recent Transactions is social proof — show the full price the buyer
+      // paid (gross), not the seller's net after market fee.
+      price: sell.saleGross != null ? sell.saleGross : sell.saleNet,
       timestamp: sell.timestamp,
       origin: 'paste',
     };
@@ -6113,7 +6132,8 @@
       itemName: item.itemName,
       bonusName: (item.bonuses && item.bonuses[0] && item.bonuses[0].name) || null,
       buyer: item.buyer || '',
-      price: item.saleNet,
+      // Full price the buyer paid (gross), matching Recent Transactions.
+      price: item.saleGross != null ? item.saleGross : item.saleNet,
       timestamp: item.soldTimestamp,
       origin: 'ledger',
     };
