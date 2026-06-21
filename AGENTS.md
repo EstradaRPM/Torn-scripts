@@ -5,9 +5,8 @@ This repo is a multi-script workspace. Do not assume every file is current.
 Before changing anything, read:
 
 1. `docs/agent-contract.md`
-2. `docs/current-rwth.md` when working on `TORN-RW-trading-hub.user.js`
-3. `docs/doc-authority.md` before using any docs as implementation guidance
-4. `docs/test-policy.md` before running or changing tests
+2. `docs/doc-authority.md` before using any docs as implementation guidance
+3. `docs/test-policy.md` before running or changing tests
 
 Current priority unless the user says otherwise:
 

@@ -20,10 +20,6 @@ Unless the user explicitly changes focus, the active script is:
 
 - `TORN-RW-trading-hub.user.js`
 
-The current handoff for that script is:
-
-- `docs/current-rwth.md`
-
 The doc authority map is:
 
 - `docs/doc-authority.md`
@@ -39,10 +35,9 @@ When working on RW Trading Hub, use this order:
 1. The user's current message.
 2. `TORN-RW-trading-hub.user.js`.
 3. Focused tests that directly require the shipped userscript through `globalThis.__RwthPure`.
-4. `docs/current-rwth.md`.
-5. Current docs listed as `ACTIVE` in `docs/doc-authority.md`.
-6. Reference docs listed as `REFERENCE`, only as background.
-7. Archived/stale docs listed as `ARCHIVE` or `STALE-NEEDS-UPDATE`, only when the user explicitly asks for historical context.
+4. Current docs listed as `ACTIVE` in `docs/doc-authority.md`.
+5. Reference docs listed as `REFERENCE`, only as background.
+6. Archived/stale docs listed as `ARCHIVE` or `STALE-NEEDS-UPDATE`, only when the user explicitly asks for historical context.
 
 If a lower-priority source conflicts with a higher-priority source, the higher-priority source wins.
 
@@ -72,7 +67,3 @@ If a lower-priority source conflicts with a higher-priority source, the higher-p
 - Keep third-party host changes explicit and documented.
 - Work in PowerShell by default.
 - On this machine, GitHub CLI is at `C:\Program Files\GitHub CLI\gh.exe`; long issue/PR bodies should go through `--body-file`.
-
-## Handoff rule
-
-If you finish a meaningful RW Trading Hub change, update `docs/current-rwth.md` only when the current-state facts changed. Do not update broad docs or audits unless the user requested a doc-maintenance task.

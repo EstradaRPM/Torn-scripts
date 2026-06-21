@@ -6,10 +6,6 @@ This repo contains active scripts, parked scripts, reference material, stale gen
 
 - **RW Trading Hub** → `TORN-RW-trading-hub.user.js`
 
-Current RW Trading Hub handoff:
-
-- `docs/current-rwth.md`
-
 Doc authority map:
 
 - `docs/doc-authority.md`

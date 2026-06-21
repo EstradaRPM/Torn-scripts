@@ -17,7 +17,6 @@ Classification meanings:
 | `AGENTS.md` | ACTIVE | Root startup contract for Codex-style agents. |
 | `CLAUDE.md` | ACTIVE | Root startup contract for Claude Code. |
 | `docs/agent-contract.md` | ACTIVE | Shared operating contract for all agents. |
-| `docs/current-rwth.md` | ACTIVE | Current RW Trading Hub handoff. |
 | `docs/doc-authority.md` | ACTIVE | This authority map. |
 | `docs/test-policy.md` | ACTIVE | Scoped test policy. |
 | `CONTEXT.md` | ACTIVE | Current pointer model for domain context and doc authority. |
@@ -48,7 +47,7 @@ Classification meanings:
 | `docs/agents/domain.md` | STALE-NEEDS-UPDATE | File tree and instruction model drifted. |
 | `docs/agents/issue-tracker.md` | STALE-NEEDS-UPDATE | GitHub CLI usage details drifted. |
 | `docs/scripts/_template.md` | STALE-NEEDS-UPDATE | Template does not reflect current v2/third-party guidance. |
-| `docs/scripts/rw-trading-hub.md` | STALE-NEEDS-UPDATE | Contains old RWTH version/scope claims. Use `docs/current-rwth.md` instead. |
+| `docs/scripts/rw-trading-hub.md` | STALE-NEEDS-UPDATE | Contains old RWTH version/scope claims; do not use as current authority. |
 | `docs/rw-api-reference.md` | STALE-NEEDS-UPDATE | Does not reflect current RWTH data flow. |
 | `docs/rw-pricing-logic.md` | STALE-NEEDS-UPDATE | Advisor-era/current-RWTH mismatch. |
 | `docs/adr/0003-third-party-api-exception.md` | STALE-NEEDS-UPDATE | Host/source details drifted. |
